@@ -37,7 +37,7 @@ export function applyRulesToPrompt(
       nextPrompt =
         rule.mode === "all"
           ? nextPrompt.split(target).join(replacement)
-          : nextPrompt.replace(target, replacement);
+          : nextPrompt.replace(target, () => replacement);
       events.push({ level: "info", message: "rule applied", ruleId: rule.id });
       continue;
     }

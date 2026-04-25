@@ -52,6 +52,18 @@ describe("applyRulesToPrompt", () => {
     expect(result.systemPrompt).toBe("keep  done");
   });
 
+  it("treats literal mode first replacements as plain text even when they contain dollar patterns", () => {
+    const dollarRule: NormalizedRule = {
+      ...literalRule,
+      id: "literal-dollar-text",
+      target: "Hello",
+      replacementSource: { kind: "inline", value: "Hi $& there" },
+      mode: "first",
+    };
+    const result = applyRulesToPrompt("Hello World", [dollarRule], () => "Hi $& there");
+    expect(result.systemPrompt).toBe("Hi $& there World");
+  });
+
   it("records a miss when an enabled rule no longer matches", () => {
     const result = applyRulesToPrompt("nothing here", [regexRule], () => "Rules: trimmed End");
     expect(result.events.some((event) => event.level === "warn" && event.ruleId === "remove-guidelines")).toBe(true);
