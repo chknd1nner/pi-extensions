@@ -5,7 +5,7 @@ import type { NormalizedLiteralRule, NormalizedRegexRule } from "./types";
 export function resolveReplacementText(
   rule: NormalizedLiteralRule | NormalizedRegexRule,
   dirs: { projectDir: string | null; globalDir: string | null },
-): string {
+): string | null {
   if (rule.replacementSource.kind === "inline") {
     return rule.replacementSource.value;
   }
@@ -15,10 +15,16 @@ export function resolveReplacementText(
     .map((baseDir) => path.join(baseDir, rule.replacementSource.value));
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+
+    try {
       return fs.readFileSync(candidate, "utf8");
+    } catch {
+      return null;
     }
   }
 
-  throw new Error(`Replacement file not found for rule ${rule.id}`);
+  return null;
 }

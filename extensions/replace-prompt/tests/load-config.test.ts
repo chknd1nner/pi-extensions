@@ -94,6 +94,22 @@ describe("loadScopeConfig", () => {
     expect(text).toBe("project text");
   });
 
+  it("returns null instead of throwing when a replacement file is missing", async () => {
+    const globalDir = makeDir();
+    fs.writeFileSync(
+      path.join(globalDir, "rules.ts"),
+      `export default { rules: [
+        { id: "missing-file", type: "literal", target: "A", replacementFile: "missing.md" }
+      ] };`,
+    );
+
+    const config = await loadScopeConfig("global", globalDir);
+    const rule = config?.rules[0];
+    if (!rule || rule.enabled === false) throw new Error("expected enabled rule");
+
+    expect(resolveReplacementText(rule, { globalDir, projectDir: null })).toBeNull();
+  });
+
   it("selects the log path in the most specific installed scope", () => {
     expect(
       selectLogPath({

@@ -44,7 +44,7 @@ function getRawConfig(loaded: { default?: RawConfig } | RawConfig): RawConfig {
     return loaded.default ?? {};
   }
 
-  return loaded ?? {};
+  return loaded as RawConfig;
 }
 
 function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rules"][number] | null {
@@ -71,14 +71,14 @@ function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rule
     return null;
   }
 
-  const replacementSource = hasFileReplacement
-    ? { kind: "file" as const, value: rawRule.replacementFile }
-    : { kind: "inline" as const, value: rawRule.replacement ?? "" };
-
   if (rawRule.type === "literal") {
     if (typeof rawRule.target !== "string" || rawRule.target === "") {
       return null;
     }
+
+    const replacementSource = hasFileReplacement
+      ? { kind: "file" as const, value: rawRule.replacementFile! }
+      : { kind: "inline" as const, value: rawRule.replacement ?? "" };
 
     return {
       id: rawRule.id,
@@ -95,6 +95,10 @@ function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rule
     if (!(rawRule.target instanceof RegExp)) {
       return null;
     }
+
+    const replacementSource = hasFileReplacement
+      ? { kind: "file" as const, value: rawRule.replacementFile! }
+      : { kind: "inline" as const, value: rawRule.replacement ?? "" };
 
     return {
       id: rawRule.id,
