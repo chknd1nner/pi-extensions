@@ -1,5 +1,10 @@
 # Replace Prompt Conditional Rules Implementation Plan
 
+| Version | Date | Author | Description |
+|---------|------|--------|-------------|
+| 1.0 | 2026-04-25 | GPT-5.4 | Initial plan |
+| 1.1 | 2026-04-26 | Claude Opus 4.6 | Fix cross-task signature migration gaps and defensive ctx access |
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add synchronous conditional rule support to `extensions/replace-prompt`, including model-aware conditions, strict boolean evaluation, `originalSystemPrompt`, soft-failure logging, and updated authoring docs.
@@ -189,6 +194,15 @@ export type RawRule =
 
 - [ ] **Step 4: Normalize `condition` in `load-config.ts` and carry load-time warnings through `merge-rules.ts`**
 
+Update the import in `load-config.ts` to include the new types:
+
+```ts
+// extensions/replace-prompt/load-config.ts — updated import
+import type { LogEvent, RawConfig, RawRule, RuleCondition, ScopeConfig, ScopeName } from "./types";
+```
+
+Then update `loadScopeConfig` to return events alongside rules, and add condition validation to `normalizeRawRule`:
+
 ```ts
 // extensions/replace-prompt/load-config.ts
 export async function loadScopeConfig(scope: ScopeName, baseDir: string): Promise<ScopeConfig | null> {
@@ -317,8 +331,10 @@ function normalizeRawRule(
 }
 ```
 
+Update `mergeScopeConfigs` in `merge-rules.ts` to forward the `events` arrays from both scope configs. Only the return statement changes — add the `events` line:
+
 ```ts
-// extensions/replace-prompt/merge-rules.ts
+// extensions/replace-prompt/merge-rules.ts — updated return statement in mergeScopeConfigs
 return {
   logging: {
     file: projectConfig?.logging.file ?? globalConfig?.logging.file ?? false,
@@ -480,7 +496,21 @@ it("exposes current and original prompt states to later rules", () => {
 });
 ```
 
-- [ ] **Step 2: Run the targeted rule-engine tests to verify they fail against the current signature**
+- [ ] **Step 2: Update existing `applyRulesToPrompt` call sites to pass the runtime argument**
+
+The new 4th `runtime` parameter is required. All existing calls in `apply-rules.test.ts` must be updated to pass it, otherwise the file won't compile after Step 3. Add the shared `runtime` constant (from Step 1) above the existing tests and update all 6 existing call sites:
+
+```ts
+// extensions/replace-prompt/tests/apply-rules.test.ts — existing calls to update
+// Before (3 args):
+applyRulesToPrompt("Hello\nWorld", [literalRule], () => "Hi\nWorld")
+// After (4 args):
+applyRulesToPrompt("Hello\nWorld", [literalRule], () => "Hi\nWorld", runtime)
+```
+
+Apply this to all existing `applyRulesToPrompt(...)` calls in the test file. The existing tests serve as regression coverage that rules without `condition` still behave unchanged (spec testing requirement #10).
+
+- [ ] **Step 3: Run the targeted rule-engine tests to verify they fail against the current signature**
 
 Run:
 ```bash
@@ -490,7 +520,7 @@ npm test -- tests/apply-rules.test.ts
 
 Expected: FAIL because `applyRulesToPrompt()` does not yet accept runtime context or evaluate `condition`.
 
-- [ ] **Step 3: Implement strict boolean condition handling in `apply-rules.ts`**
+- [ ] **Step 4: Implement strict boolean condition handling in `apply-rules.ts`**
 
 ```ts
 // extensions/replace-prompt/apply-rules.ts
@@ -581,7 +611,7 @@ export function applyRulesToPrompt(
 }
 ```
 
-- [ ] **Step 4: Run the rule-engine tests again and confirm the condition behavior passes**
+- [ ] **Step 5: Run the rule-engine tests again and confirm the condition behavior passes**
 
 Run:
 ```bash
@@ -594,7 +624,7 @@ Expected:
 ✓ tests/apply-rules.test.ts
 ```
 
-- [ ] **Step 5: Commit the rule-engine changes**
+- [ ] **Step 6: Commit the rule-engine changes**
 
 ```bash
 git add extensions/replace-prompt/apply-rules.ts extensions/replace-prompt/tests/apply-rules.test.ts
@@ -701,7 +731,26 @@ it("writes invalid-condition warnings collected during config loading", async ()
 });
 ```
 
-- [ ] **Step 2: Run the targeted integration tests to verify they fail before entrypoint wiring changes**
+- [ ] **Step 2: Update existing `index.test.ts` tests to pass a metadata context argument**
+
+The existing two tests capture the handler with type `(event: any) => Promise<any>` and call it with one argument. Update them to use the two-argument type `(event: any, ctx?: any) => Promise<any>` and pass `{}` as the second argument so they continue to work with the new handler signature:
+
+```ts
+// extensions/replace-prompt/tests/index.test.ts — existing tests to update
+// Before:
+let handler: ((event: any) => Promise<any>) | undefined;
+// After:
+let handler: ((event: any, ctx?: any) => Promise<any>) | undefined;
+
+// Before:
+const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot });
+// After:
+const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot }, {});
+```
+
+Apply this pattern to all existing handler captures and invocations in `index.test.ts`. Passing `{}` means `ctx?.model?.id` evaluates to `undefined`, which is correct — rules without conditions are unaffected, and rules with model conditions see `model` as `undefined`.
+
+- [ ] **Step 3: Run the targeted integration tests to verify they fail before entrypoint wiring changes**
 
 Run:
 ```bash
@@ -709,9 +758,13 @@ cd extensions/replace-prompt
 npm test -- tests/index.test.ts
 ```
 
-Expected: FAIL because `index.ts` does not read `ctx.model?.id`, does not pass runtime context into `applyRulesToPrompt()`, and returns early before writing load-time warning events when no valid rules remain.
+Expected: FAIL because `index.ts` does not read `ctx?.model?.id`, does not pass runtime context into `applyRulesToPrompt()`, and returns early before writing load-time warning events when no valid rules remain.
 
-- [ ] **Step 3: Update `index.ts` to pass runtime metadata and append all events**
+- [ ] **Step 4: Update `index.ts` to pass runtime metadata and append all events**
+
+This step also fixes a behavioral change: the current `index.ts` returns early when `merged.rules.length === 0`, which would silently discard load-time warning events from `merged.events`. The updated code always reaches the logging block.
+
+Use `ctx?.model?.id` (defensive optional chaining on `ctx`) so the handler does not throw when Pi calls `before_agent_start` without a metadata context argument.
 
 ```ts
 // extensions/replace-prompt/index.ts
@@ -742,7 +795,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
               }),
             {
               cwd,
-              model: ctx.model?.id,
+              model: ctx?.model?.id,
               env: process.env,
             },
           );
@@ -768,7 +821,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
 }
 ```
 
-- [ ] **Step 4: Run the integration tests again and confirm model-aware behavior works end-to-end**
+- [ ] **Step 5: Run the integration tests again and confirm model-aware behavior works end-to-end**
 
 Run:
 ```bash
@@ -781,7 +834,7 @@ Expected:
 ✓ tests/index.test.ts
 ```
 
-- [ ] **Step 5: Commit the entrypoint wiring changes**
+- [ ] **Step 6: Commit the entrypoint wiring changes**
 
 ```bash
 git add extensions/replace-prompt/index.ts extensions/replace-prompt/tests/index.test.ts
@@ -886,6 +939,8 @@ git commit -m "docs: add replace-prompt conditional rules guide"
 
 ## Self-review checklist
 
-- Spec coverage: Task 1 covers `ConditionContext`, disable-only ignore semantics, invalid non-function handling, and warning accumulation. Task 2 covers strict boolean evaluation, thrown-condition continuation, `systemPrompt`, and `originalSystemPrompt`. Task 3 covers model sourcing from `ctx.model?.id` and end-to-end event logging. Task 4 covers the documentation updates and final verification.
+- Spec coverage: Task 1 covers `ConditionContext`, disable-only ignore semantics, invalid non-function handling, and warning accumulation. Task 2 covers strict boolean evaluation, thrown-condition continuation, `systemPrompt`, and `originalSystemPrompt`. Task 3 covers model sourcing from `ctx?.model?.id` and end-to-end event logging. Task 4 covers the documentation updates and final verification.
 - Placeholder scan: no `TBD`, `TODO`, or implied follow-up tasks remain.
 - Type consistency: the plan uses `ConditionContext`, `RuleCondition`, `ApplyRuntimeContext`, `events`, `condition returned non-boolean`, and `invalid condition; expected function` consistently across code, tests, and docs.
+- Signature migration: Task 2 Step 2 updates all existing `applyRulesToPrompt` call sites to pass the new `runtime` argument. Task 3 Step 2 updates all existing `index.test.ts` handler captures and invocations to pass a metadata context argument. Existing tests passing with the new code constitutes regression coverage for spec testing requirement #10 (rules without conditions behave unchanged).
+- Defensive access: `index.ts` uses `ctx?.model?.id` (not `ctx.model?.id`) so the handler tolerates `before_agent_start` being called without a metadata context argument.
