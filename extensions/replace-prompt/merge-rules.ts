@@ -3,6 +3,10 @@ import type { MergedConfig, NormalizedRule, ScopeConfig } from "./types";
 export function mergeScopeConfigs(
   globalConfig: ScopeConfig | null,
   projectConfig: ScopeConfig | null,
+  installedDirs: { projectDir: string | null; globalDir: string | null } = {
+    projectDir: projectConfig?.baseDir ?? null,
+    globalDir: globalConfig?.baseDir ?? null,
+  },
 ): MergedConfig {
   const inheritedRules = [...(globalConfig?.rules ?? [])];
   const mergedRules: NormalizedRule[] = [...inheritedRules];
@@ -19,10 +23,12 @@ export function mergeScopeConfigs(
   }
 
   return {
-    logging: projectConfig?.logging ?? globalConfig?.logging ?? { file: false },
+    logging: {
+      file: projectConfig?.logging.file ?? globalConfig?.logging.file ?? false,
+    },
     rules: mergedRules,
-    projectDir: projectConfig?.baseDir ?? null,
-    globalDir: globalConfig?.baseDir ?? null,
-    logBaseDir: projectConfig?.baseDir ?? globalConfig?.baseDir ?? null,
+    projectDir: installedDirs.projectDir,
+    globalDir: installedDirs.globalDir,
+    logBaseDir: installedDirs.projectDir ?? installedDirs.globalDir,
   };
 }

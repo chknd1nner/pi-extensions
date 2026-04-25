@@ -48,7 +48,10 @@ const projectConfig: ScopeConfig = {
 
 describe("mergeScopeConfigs", () => {
   it("keeps inherited order, applies project override in place, and appends project-only rules", () => {
-    const merged = mergeScopeConfigs(globalConfig, projectConfig);
+    const merged = mergeScopeConfigs(globalConfig, projectConfig, {
+      projectDir: "/repo/.pi/extensions/replace-prompt",
+      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+    });
     expect(merged.rules.map((rule) => rule.id)).toEqual([
       "replace-opening",
       "keep-second",
@@ -59,8 +62,41 @@ describe("mergeScopeConfigs", () => {
     expect(merged.logBaseDir).toBe("/repo/.pi/extensions/replace-prompt");
   });
 
+  it("inherits global logging when project logging is unset", () => {
+    const merged = mergeScopeConfigs(
+      {
+        ...globalConfig,
+        logging: { file: true },
+      },
+      {
+        ...projectConfig,
+        logging: {},
+      },
+      {
+        projectDir: "/repo/.pi/extensions/replace-prompt",
+        globalDir: "/home/.pi/agent/extensions/replace-prompt",
+      },
+    );
+
+    expect(merged.logging.file).toBe(true);
+  });
+
+  it("keeps the most specific installed directory for logging even when no project rules file exists", () => {
+    const merged = mergeScopeConfigs(globalConfig, null, {
+      projectDir: "/repo/.pi/extensions/replace-prompt",
+      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+    });
+
+    expect(merged.projectDir).toBe("/repo/.pi/extensions/replace-prompt");
+    expect(merged.globalDir).toBe("/home/.pi/agent/extensions/replace-prompt");
+    expect(merged.logBaseDir).toBe("/repo/.pi/extensions/replace-prompt");
+  });
+
   it("returns global order when no project config exists", () => {
-    const merged = mergeScopeConfigs(globalConfig, null);
+    const merged = mergeScopeConfigs(globalConfig, null, {
+      projectDir: null,
+      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+    });
     expect(merged.rules.map((rule) => rule.id)).toEqual([
       "replace-opening",
       "keep-second",

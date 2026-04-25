@@ -35,7 +35,7 @@ export type NormalizedRule = DisableRule | NormalizedLiteralRule | NormalizedReg
 export type ScopeConfig = {
   scope: ScopeName;
   baseDir: string;
-  logging: { file: boolean };
+  logging: { file?: boolean };
   rules: NormalizedRule[];
 };
 
