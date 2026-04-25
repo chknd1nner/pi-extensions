@@ -58,3 +58,37 @@ export type ApplyResult = {
   systemPrompt: string;
   events: LogEvent[];
 };
+
+export type RawRule =
+  | {
+      id: string;
+      enabled: false;
+      type?: "literal" | "regex";
+      target?: string | RegExp;
+      replacement?: string;
+      replacementFile?: string;
+      mode?: RuleMode;
+    }
+  | {
+      id: string;
+      enabled?: true;
+      type: "literal";
+      target: string;
+      replacement?: string;
+      replacementFile?: string;
+      mode?: RuleMode;
+    }
+  | {
+      id: string;
+      enabled?: true;
+      type: "regex";
+      target: RegExp;
+      replacement?: string;
+      replacementFile?: string;
+      mode?: RuleMode;
+    };
+
+export type RawConfig = {
+  logging?: { file?: boolean };
+  rules?: RawRule[];
+};
