@@ -160,10 +160,15 @@ No other fields are required.
 ### Validation rules
 
 - `id` is required for every rule
+- `id` must be a non-empty kebab-case string
+- duplicate rule IDs within the same `rules.ts` file are invalid; the first occurrence wins, later duplicates are skipped, and the issue is logged
 - `enabled` defaults to `true` for full rules
+- a full rule with `enabled: false` behaves the same as a disable-only override for the same `id`
 - `type` is required for full rules and must be either `"literal"` or `"regex"`
 - `target` must be a string for `literal` rules and a native `RegExp` for `regex` rules
+- `target: ""` is invalid for literal rules and is skipped with a log entry
 - exactly one of `replacement` or `replacementFile` must be present for full rules
+- `replacement: ""` is valid and means delete the matched text
 - `mode` defaults to `"first"`
 - a disable-only rule with `enabled: false` may omit all other fields
 - invalid rules are skipped and logged rather than crashing the extension
@@ -221,6 +226,15 @@ This precedence applies regardless of where the rule originated. If both scopes 
 
 If no matching file is found or a file cannot be read, the rule is skipped and the issue is logged.
 
+When file logging is enabled, file-resolution log lines must be explicit about:
+
+- the rule `id`
+- the candidate project path
+- the candidate global path
+- which path won, if any
+
+This is required because project-first lookup intentionally allows local file content to override inherited global rules without redefining the rule itself.
+
 ## Matching and replacement behavior
 
 ### Hook choice
@@ -259,6 +273,19 @@ Implementation behavior:
 - when `mode === "all"`, replacement behaves as global
 
 This avoids JavaScript `RegExp.lastIndex` pitfalls and keeps string and regex rule semantics aligned.
+
+### Line ending normalization
+
+To reduce silent mismatches between authored config and Pi's runtime prompt, the extension should normalize line endings to `\n` before matching and replacement.
+
+Normalization applies to:
+
+- the incoming `systemPrompt`
+- inline literal targets
+- replacement text loaded from files
+- inline replacement text
+
+Regex sources themselves are not rewritten, but matching is performed against the normalized prompt text. This makes LF/CRLF differences predictable while keeping the user-facing behavior simple.
 
 ## Ordered rule execution
 
@@ -311,12 +338,14 @@ File logging should capture at least:
 - config files discovered
 - config load/import failures
 - invalid rule definitions
+- duplicate rule IDs skipped within a single scope
 - merge decisions by rule `id`
 - disable-only overrides
-- replacement file resolution decisions
+- replacement file resolution decisions, including both candidate paths and the winning path
 - replacement file read failures
 - rule applied successfully
 - rule enabled but no match found
+- prompt line-ending normalization behavior when relevant to troubleshooting
 - overall no-op outcomes
 
 Severity can be represented in log lines, but normal runtime behavior remains non-interactive.
