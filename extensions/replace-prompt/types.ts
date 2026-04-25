@@ -1,6 +1,22 @@
 export type RuleMode = "first" | "all";
 export type ScopeName = "global" | "project";
 
+export type ConditionContext = {
+  model?: string;
+  cwd: string;
+  systemPrompt: string;
+  originalSystemPrompt: string;
+  env: NodeJS.ProcessEnv;
+};
+
+export type RuleCondition = (ctx: ConditionContext) => boolean;
+
+export type ApplyRuntimeContext = {
+  model?: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+};
+
 export type ReplacementSource =
   | { kind: "inline"; value: string }
   | { kind: "file"; value: string };
@@ -18,6 +34,7 @@ export type NormalizedLiteralRule = {
   replacementSource: ReplacementSource;
   mode: RuleMode;
   sourceScope: ScopeName;
+  condition?: RuleCondition;
 };
 
 export type NormalizedRegexRule = {
@@ -28,6 +45,7 @@ export type NormalizedRegexRule = {
   replacementSource: ReplacementSource;
   mode: RuleMode;
   sourceScope: ScopeName;
+  condition?: RuleCondition;
 };
 
 export type NormalizedRule = DisableRule | NormalizedLiteralRule | NormalizedRegexRule;
@@ -37,11 +55,13 @@ export type ScopeConfig = {
   baseDir: string;
   logging: { file?: boolean };
   rules: NormalizedRule[];
+  events: LogEvent[];
 };
 
 export type MergedConfig = {
   logging: { file: boolean };
   rules: NormalizedRule[];
+  events: LogEvent[];
   projectDir: string | null;
   globalDir: string | null;
   logBaseDir: string | null;
@@ -68,6 +88,7 @@ export type RawRule =
       replacement?: string;
       replacementFile?: string;
       mode?: RuleMode;
+      condition?: unknown;
     }
   | {
       id: string;
@@ -77,6 +98,7 @@ export type RawRule =
       replacement?: string;
       replacementFile?: string;
       mode?: RuleMode;
+      condition?: unknown;
     }
   | {
       id: string;
@@ -86,6 +108,7 @@ export type RawRule =
       replacement?: string;
       replacementFile?: string;
       mode?: RuleMode;
+      condition?: unknown;
     };
 
 export type RawConfig = {

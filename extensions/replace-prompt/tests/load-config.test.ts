@@ -119,6 +119,48 @@ describe("loadScopeConfig", () => {
     ).toBe("/repo/.pi/extensions/replace-prompt/replace-prompt.log");
   });
 
+  it("accepts function conditions, ignores condition on disable-only rules, and rejects non-function conditions", async () => {
+    const dir = makeDir();
+    fs.writeFileSync(
+      path.join(dir, "rules.ts"),
+      `export default { logging: { file: true }, rules: [
+      {
+        id: "claude-only",
+        type: "literal",
+        target: "Hello",
+        replacement: "Hi",
+        condition: (ctx) => ctx.model?.includes("claude") ?? false
+      },
+      {
+        id: "disable-me",
+        enabled: false,
+        condition: "ignored"
+      },
+      {
+        id: "bad-condition",
+        type: "literal",
+        target: "Nope",
+        replacement: "Still nope",
+        condition: "claude"
+      }
+    ] };`,
+    );
+
+    const config = await loadScopeConfig("project", dir);
+    expect(config?.rules.map((rule) => rule.id)).toEqual(["claude-only", "disable-me"]);
+
+    const conditionalRule = config?.rules[0];
+    if (!conditionalRule || conditionalRule.enabled === false) throw new Error("expected enabled rule");
+    expect(typeof conditionalRule.condition).toBe("function");
+
+    expect(config?.rules[1]).toEqual({ id: "disable-me", enabled: false });
+    expect(config?.events).toContainEqual({
+      level: "warn",
+      message: "invalid condition; expected function",
+      ruleId: "bad-condition",
+    });
+  });
+
   it("appends log events to the selected log file", () => {
     const dir = makeDir();
     const logPath = path.join(dir, "replace-prompt.log");

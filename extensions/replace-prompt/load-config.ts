@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createJiti } from "jiti";
-import type { RawConfig, RawRule, ScopeConfig, ScopeName } from "./types";
+import type { LogEvent, RawConfig, RawRule, RuleCondition, ScopeConfig, ScopeName } from "./types";
 
 const kebabCaseId = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -16,9 +16,13 @@ export async function loadScopeConfig(scope: ScopeName, baseDir: string): Promis
   const config = getRawConfig(loaded);
   const seen = new Set<string>();
   const rules: ScopeConfig["rules"] = [];
+  const events: LogEvent[] = [];
 
   for (const rawRule of config.rules ?? []) {
-    const normalized = normalizeRawRule(rawRule, scope);
+    const { rule: normalized, event } = normalizeRawRule(rawRule, scope);
+    if (event) {
+      events.push(event);
+    }
     if (!normalized) {
       continue;
     }
@@ -36,6 +40,7 @@ export async function loadScopeConfig(scope: ScopeName, baseDir: string): Promis
     baseDir,
     logging: { file: config.logging?.file },
     rules,
+    events,
   };
 }
 
@@ -47,33 +52,45 @@ function getRawConfig(loaded: { default?: RawConfig } | RawConfig): RawConfig {
   return loaded as RawConfig;
 }
 
-function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rules"][number] | null {
+function normalizeRawRule(
+  rawRule: RawRule,
+  scope: ScopeName,
+): { rule: ScopeConfig["rules"][number] | null; event?: LogEvent } {
   if (!rawRule || typeof rawRule !== "object") {
-    return null;
+    return { rule: null };
   }
 
   if (typeof rawRule.id !== "string" || !kebabCaseId.test(rawRule.id)) {
-    return null;
+    return { rule: null };
   }
 
   if (rawRule.enabled === false) {
-    return { id: rawRule.id, enabled: false };
+    return { rule: { id: rawRule.id, enabled: false } };
   }
+
+  if (rawRule.condition !== undefined && typeof rawRule.condition !== "function") {
+    return {
+      rule: null,
+      event: { level: "warn", message: "invalid condition; expected function", ruleId: rawRule.id },
+    };
+  }
+
+  const condition = rawRule.condition as RuleCondition | undefined;
 
   const mode = rawRule.mode ?? "first";
   if (mode !== "first" && mode !== "all") {
-    return null;
+    return { rule: null };
   }
 
   const hasInlineReplacement = rawRule.replacement !== undefined;
   const hasFileReplacement = rawRule.replacementFile !== undefined;
   if (hasInlineReplacement === hasFileReplacement) {
-    return null;
+    return { rule: null };
   }
 
   if (rawRule.type === "literal") {
     if (typeof rawRule.target !== "string" || rawRule.target === "") {
-      return null;
+      return { rule: null };
     }
 
     const replacementSource = hasFileReplacement
@@ -81,19 +98,22 @@ function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rule
       : { kind: "inline" as const, value: rawRule.replacement ?? "" };
 
     return {
-      id: rawRule.id,
-      enabled: true,
-      type: "literal",
-      target: rawRule.target,
-      replacementSource,
-      mode,
-      sourceScope: scope,
+      rule: {
+        id: rawRule.id,
+        enabled: true,
+        type: "literal",
+        target: rawRule.target,
+        replacementSource,
+        mode,
+        sourceScope: scope,
+        condition,
+      },
     };
   }
 
   if (rawRule.type === "regex") {
     if (!(rawRule.target instanceof RegExp)) {
-      return null;
+      return { rule: null };
     }
 
     const replacementSource = hasFileReplacement
@@ -101,17 +121,20 @@ function normalizeRawRule(rawRule: RawRule, scope: ScopeName): ScopeConfig["rule
       : { kind: "inline" as const, value: rawRule.replacement ?? "" };
 
     return {
-      id: rawRule.id,
-      enabled: true,
-      type: "regex",
-      target: rawRule.target,
-      replacementSource,
-      mode,
-      sourceScope: scope,
+      rule: {
+        id: rawRule.id,
+        enabled: true,
+        type: "regex",
+        target: rawRule.target,
+        replacementSource,
+        mode,
+        sourceScope: scope,
+        condition,
+      },
     };
   }
 
-  return null;
+  return { rule: null };
 }
 
 export function selectLogPath(dirs: { projectDir: string | null; globalDir: string | null }): string | null {

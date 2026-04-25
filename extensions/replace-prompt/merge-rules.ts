@@ -27,6 +27,7 @@ export function mergeScopeConfigs(
       file: projectConfig?.logging.file ?? globalConfig?.logging.file ?? false,
     },
     rules: mergedRules,
+    events: [...(globalConfig?.events ?? []), ...(projectConfig?.events ?? [])],
     projectDir: installedDirs.projectDir,
     globalDir: installedDirs.globalDir,
     logBaseDir: installedDirs.projectDir ?? installedDirs.globalDir,
