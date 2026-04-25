@@ -51,6 +51,9 @@ env/
 ENV/
 .ipynb_checkpoints/
 
+# Pi Documentation (symlink for IDE convenience)
+docs/pi/
+
 # TypeScript / Node
 node_modules/
 npm-debug.log*
