@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { applyRulesToPrompt } from "./apply-rules";
@@ -10,7 +11,8 @@ function getScopeDirs(cwd: string) {
   const globalDir = process.env.HOME
     ? path.join(process.env.HOME, ".pi/agent/extensions/replace-prompt")
     : null;
-  const projectDir = path.join(cwd, ".pi/extensions/replace-prompt");
+  const projectCandidate = path.join(cwd, ".pi/extensions/replace-prompt");
+  const projectDir = fs.existsSync(projectCandidate) ? projectCandidate : null;
 
   return {
     globalDir,
@@ -26,7 +28,9 @@ export default function replacePrompt(pi: ExtensionAPI) {
     const globalConfig = installedDirs.globalDir
       ? await loadScopeConfig("global", installedDirs.globalDir).catch(() => null)
       : null;
-    const projectConfig = await loadScopeConfig("project", installedDirs.projectDir).catch(() => null);
+    const projectConfig = installedDirs.projectDir
+      ? await loadScopeConfig("project", installedDirs.projectDir).catch(() => null)
+      : null;
     const merged = mergeScopeConfigs(globalConfig, projectConfig, installedDirs);
 
     if (merged.rules.length === 0) {
