@@ -69,3 +69,6 @@ build/
 .svelte-kit/
 .turbo/
 .parcel-cache/
+
+# Launcher
+launcher/
