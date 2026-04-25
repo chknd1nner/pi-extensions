@@ -46,3 +46,15 @@ export type MergedConfig = {
   globalDir: string | null;
   logBaseDir: string | null;
 };
+
+export type LogEvent = {
+  level: "info" | "warn" | "error";
+  message: string;
+  ruleId?: string;
+};
+
+export type ApplyResult = {
+  changed: boolean;
+  systemPrompt: string;
+  events: LogEvent[];
+};
