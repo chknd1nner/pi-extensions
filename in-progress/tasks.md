@@ -12,10 +12,10 @@ Branch: `feature/replace-prompt`
    - Status: Complete
    - Review output: `in-progress/task-2-spec/code-review.md`
 3. **Implement prompt application with line-ending normalization and regex mode control**
-   - Status: In progress
+   - Status: Complete
    - Review output: `in-progress/task-3-spec/code-review.md`
 4. **Implement config loading, validation, replacement resolution, and file logging**
-   - Status: Pending
+   - Status: In progress
    - Review output: `in-progress/task-4-spec/code-review.md`
 5. **Wire the runtime, add the sample config, and verify end-to-end behavior**
    - Status: Pending
