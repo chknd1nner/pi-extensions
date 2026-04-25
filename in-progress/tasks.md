@@ -18,5 +18,5 @@ Branch: `feature/replace-prompt`
    - Status: Complete
    - Review output: `in-progress/task-4-spec/code-review.md`
 5. **Wire the runtime, add the sample config, and verify end-to-end behavior**
-   - Status: In progress
+   - Status: Complete
    - Review output: `in-progress/task-5-spec/code-review.md`
