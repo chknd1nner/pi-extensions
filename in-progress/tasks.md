@@ -6,10 +6,10 @@ Branch: `feature/replace-prompt`
 ## Tasks
 
 1. **Bootstrap the test harness and extension skeleton**
-   - Status: In progress
+   - Status: Complete
    - Review output: `in-progress/task-1-spec/code-review.md`
 2. **Implement rule typing, validation, and merge behavior**
-   - Status: Pending
+   - Status: In progress
    - Review output: `in-progress/task-2-spec/code-review.md`
 3. **Implement prompt application with line-ending normalization and regex mode control**
    - Status: Pending
