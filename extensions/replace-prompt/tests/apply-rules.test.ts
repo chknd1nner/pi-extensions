@@ -64,6 +64,24 @@ describe("applyRulesToPrompt", () => {
     expect(result.systemPrompt).toBe("Hi $& there World");
   });
 
+  it("skips a rule and records a warning when replacement resolution returns null", () => {
+    const missingFileRule: NormalizedRule = {
+      ...literalRule,
+      id: "missing-file",
+      target: "Hello",
+      replacementSource: { kind: "file", value: "missing.md" },
+      mode: "first",
+    };
+    const result = applyRulesToPrompt("Hello World", [missingFileRule], () => null);
+    expect(result.systemPrompt).toBe("Hello World");
+    expect(result.changed).toBe(false);
+    expect(result.events).toContainEqual({
+      level: "warn",
+      message: "replacement file not found",
+      ruleId: "missing-file",
+    });
+  });
+
   it("records a miss when an enabled rule no longer matches", () => {
     const result = applyRulesToPrompt("nothing here", [regexRule], () => "Rules: trimmed End");
     expect(result.events.some((event) => event.level === "warn" && event.ruleId === "remove-guidelines")).toBe(true);

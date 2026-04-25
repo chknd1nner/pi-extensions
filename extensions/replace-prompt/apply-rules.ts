@@ -13,7 +13,7 @@ function cloneRegexForMode(regex: RegExp, mode: "first" | "all"): RegExp {
 export function applyRulesToPrompt(
   systemPrompt: string,
   rules: NormalizedRule[],
-  resolveReplacement: (rule: Exclude<NormalizedRule, { enabled: false }>) => string,
+  resolveReplacement: (rule: Exclude<NormalizedRule, { enabled: false }>) => string | null,
 ): ApplyResult {
   const events: LogEvent[] = [];
   const normalizedOriginal = normalizeLineEndings(systemPrompt);
@@ -25,7 +25,13 @@ export function applyRulesToPrompt(
       continue;
     }
 
-    const replacement = normalizeLineEndings(resolveReplacement(rule));
+    const resolvedReplacement = resolveReplacement(rule);
+    if (resolvedReplacement === null) {
+      events.push({ level: "warn", message: "replacement file not found", ruleId: rule.id });
+      continue;
+    }
+
+    const replacement = normalizeLineEndings(resolvedReplacement);
 
     if (rule.type === "literal") {
       const target = normalizeLineEndings(rule.target);
