@@ -10,6 +10,9 @@ Icon?
 # Project-local / agent files
 .pi/
 .claude/
+.opencode/
+.agent/
+.codex/
 
 # Editor / IDE
 .vscode/
@@ -72,3 +75,4 @@ build/
 
 # Launcher
 launcher/
+.claude-launcher-state.json
