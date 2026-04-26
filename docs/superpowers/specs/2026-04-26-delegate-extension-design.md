@@ -65,7 +65,8 @@ Spawns a new worker. Fails immediately if the concurrency cap (2) is reached.
 | model | string | yes | | Model ID, e.g. "claude-sonnet-4-6", "claude-haiku-4-5" |
 | provider | string | yes | | Provider ID, e.g. "anthropic", "github-copilot" |
 | thinking | string | no | (none) | "off", "minimal", "low", "medium", "high", or "xhigh" |
-| tools | string[] | no | all | Restrict worker's available tools |
+| tools | string[] | no | (none) | Tool allowlist — only these tools enabled. Mutually exclusive with `denied_tools`. |
+| denied_tools | string[] | no | (none) | Tool deny list — all tools except these. Mutually exclusive with `tools`. |
 | timeout | number | no | 1800 | Seconds; extension auto-aborts the worker at this limit (clean RPC abort, status becomes "aborted") |
 | visibility | string | no | "log" | "log" (progress file on disk) |
 | system_prompt | string | no | (none) | Additional system prompt appended to worker |
@@ -150,13 +151,14 @@ Manages a single Pi RPC subprocess.
 **Spawning:**
 
 ```
-pi --mode rpc --no-session --no-extensions --model <model> --provider <provider> \
-  [--thinking <level>] [--tools <tools>] \
+pi --mode rpc --no-session --model <model> --provider <provider> \
+  [--thinking <level>] [--tools <allowlist>] \
   [--append-system-prompt <prompt>]
 ```
 
 - `--no-session` prevents workers from creating persistent session files in the user's session history.
-- `--no-extensions` prevents workers from loading extensions (including the delegate extension itself), avoiding recursive delegation.
+- Workers load extensions normally so they can use the user's custom tools. Recursive delegation is prevented by always excluding `delegate_*` tools from the `--tools` allowlist.
+- **Tool filtering:** `tools` (allowlist) and `denied_tools` (denylist) are mutually exclusive parameters on `delegate_start`. If `tools` is provided, only those tools (minus `delegate_*`) are enabled. If `denied_tools` is provided, the extension subtracts the denied set (plus `delegate_*`) from all available tools to compute the allowlist. If neither is provided, all tools except `delegate_*` are enabled. The extension always translates to a `--tools` allowlist for the Pi CLI.
 - Workers auto-load project context files (AGENTS.md, CLAUDE.md) by default. The user can include role-specific instructions in these files (e.g. "If you have been spawned as a worker agent, follow the directions here:").
 - `cwd` set via `spawn()` options, not CLI flag.
 

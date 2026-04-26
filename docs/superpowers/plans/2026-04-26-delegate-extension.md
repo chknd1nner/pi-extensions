@@ -52,9 +52,15 @@ extensions/delegate/
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "typebox": "*"
+  },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "latest",
     "@mariozechner/pi-ai": "latest",
+    "typebox": "latest",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
@@ -81,16 +87,17 @@ extensions/delegate/
 - [ ] **Step 3: Create `types.ts`**
 
 ```typescript
-import type { ChildProcess } from "node:child_process";
-
 export type WorkerStatus = "running" | "completed" | "failed" | "aborted";
+
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type DelegateStartParams = {
   task: string;
   model: string;
   provider: string;
-  thinking?: string;
+  thinking?: ThinkingLevel;
   tools?: string[];
+  denied_tools?: string[];
   timeout?: number;
   visibility?: string;
   system_prompt?: string;
@@ -103,18 +110,6 @@ export type ToolCallRecord = {
   result?: string;
   startedAt: number;
   endedAt?: number;
-};
-
-export type WorkerSummary = {
-  status: WorkerStatus;
-  elapsed_seconds: number;
-  tool_calls: number;
-  last_activity_seconds_ago: number;
-  recent_activity: string[];
-  input_tokens: number;
-  output_tokens: number;
-  context_usage_percent: number;
-  error?: string;
 };
 
 export type WorkerResult = {
@@ -155,7 +150,7 @@ export default function delegate(pi: ExtensionAPI) {
 - [ ] **Step 5: Install dependencies**
 
 Run: `cd extensions/delegate && npm install`
-Expected: `node_modules/` created with pi-coding-agent, pi-ai, typescript, vitest
+Expected: `node_modules/` created with pi-coding-agent, pi-ai, typebox, typescript, vitest
 
 - [ ] **Step 6: Verify typecheck passes**
 
@@ -183,7 +178,7 @@ Create `tests/rpc-client.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "vitest";
-import { parseJsonlBuffer } from "../rpc-client";
+import { parseJsonlBuffer, RPCClient } from "../rpc-client";
 
 describe("parseJsonlBuffer", () => {
   it("extracts complete lines and returns remainder", () => {
@@ -213,9 +208,9 @@ describe("parseJsonlBuffer", () => {
   });
 
   it("splits only on LF, not Unicode line separators", () => {
-    const unicodeLine = '{"text":"has   inside"}\n';
+    const unicodeLine = `{"text":"has   and   inside"}\n`;
     const { lines, remainder } = parseJsonlBuffer(unicodeLine);
-    expect(lines).toEqual(['{"text":"has   inside"}']);
+    expect(lines).toEqual([`{"text":"has   and   inside"}`]);
     expect(remainder).toBe("");
   });
 
@@ -223,6 +218,18 @@ describe("parseJsonlBuffer", () => {
     const { lines, remainder } = parseJsonlBuffer('{"type":"ok"}\r\n');
     expect(lines).toEqual(['{"type":"ok"}']);
     expect(remainder).toBe("");
+  });
+});
+
+describe("RPCClient.sendAndWait", () => {
+  it("returns null on timeout when no response arrives", async () => {
+    const client = new RPCClient(
+      { model: "test", provider: "test", cwd: "/tmp" },
+      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
+    );
+    // Don't start — just test sendAndWait returns null when stdin isn't writable
+    const result = await client.sendAndWait({ type: "get_session_stats" }, 100);
+    expect(result).toBeNull();
   });
 });
 ```
@@ -259,6 +266,8 @@ export type RPCClientOptions = {
   tools?: string[];
   systemPrompt?: string;
   cwd: string;
+  allToolNames?: string[];
+  deniedTools?: string[];
 };
 
 export type RPCClientCallbacks = {
@@ -271,7 +280,11 @@ export class RPCClient {
   private proc: ChildProcess | null = null;
   private buffer = "";
   private stderr = "";
+  private exited = false;
+  private exitPromise: Promise<void> | null = null;
   private callbacks: RPCClientCallbacks;
+  private responseWaiters = new Map<string, (event: RPCEvent) => void>();
+  private requestCounter = 0;
 
   constructor(
     private options: RPCClientOptions,
@@ -287,6 +300,18 @@ export class RPCClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    this.exitPromise = new Promise<void>((resolve) => {
+      this.proc!.once("exit", (code, signal) => {
+        this.exited = true;
+        this.callbacks.onExit(code, signal);
+        resolve();
+      });
+    });
+
+    this.proc.on("error", (err) => {
+      this.callbacks.onError(err.message);
+    });
+
     this.proc.stdout!.on("data", (chunk: Buffer) => {
       this.buffer += chunk.toString("utf8");
       const { lines, remainder } = parseJsonlBuffer(this.buffer);
@@ -295,6 +320,13 @@ export class RPCClient {
         if (!line) continue;
         try {
           const event = JSON.parse(line) as RPCEvent;
+          if (event.type === "response" && event.id) {
+            const waiter = this.responseWaiters.get(event.id as string);
+            if (waiter) {
+              waiter(event);
+              continue;
+            }
+          }
           this.callbacks.onEvent(event);
         } catch {
           // skip malformed lines
@@ -308,10 +340,6 @@ export class RPCClient {
         this.stderr = this.stderr.slice(-5_000);
       }
     });
-
-    this.proc.on("exit", (code, signal) => {
-      this.callbacks.onExit(code, signal);
-    });
   }
 
   send(command: RPCCommand): void {
@@ -324,34 +352,45 @@ export class RPCClient {
   }
 
   async kill(): Promise<void> {
-    if (!this.proc || this.proc.exitCode !== null) return;
+    if (!this.proc || this.exited) return;
 
+    // Step 1: RPC abort for clean shutdown
     this.send({ type: "abort" });
+    await Promise.race([this.exitPromise, new Promise((r) => setTimeout(r, 2000))]);
+    if (this.exited) return;
 
-    const exited = await Promise.race([
-      new Promise<boolean>((resolve) => {
-        this.proc!.on("exit", () => resolve(true));
-      }),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
-    ]);
+    // Step 2: Close stdin to trigger process exit
+    this.proc.stdin?.end();
+    await Promise.race([this.exitPromise, new Promise((r) => setTimeout(r, 2000))]);
+    if (this.exited) return;
 
-    if (!exited && this.proc.exitCode === null) {
-      this.proc.stdin?.end();
-      const stdinExited = await Promise.race([
-        new Promise<boolean>((resolve) => {
-          this.proc!.on("exit", () => resolve(true));
-        }),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000)),
-      ]);
+    // Step 3: SIGTERM
+    this.proc.kill("SIGTERM");
+    await Promise.race([this.exitPromise, new Promise((r) => setTimeout(r, 3000))]);
+    if (this.exited) return;
 
-      if (!stdinExited && this.proc.exitCode === null) {
-        this.proc.kill("SIGTERM");
-        await new Promise<void>((resolve) => setTimeout(resolve, 3000));
-        if (this.proc.exitCode === null) {
-          this.proc.kill("SIGKILL");
-        }
-      }
-    }
+    // Step 4: SIGKILL
+    this.proc.kill("SIGKILL");
+  }
+
+  async sendAndWait(command: RPCCommand, timeoutMs = 2000): Promise<RPCEvent | null> {
+    const id = `req-${++this.requestCounter}`;
+    const cmd = { ...command, id };
+
+    return new Promise<RPCEvent | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.responseWaiters.delete(id);
+        resolve(null);
+      }, timeoutMs);
+
+      this.responseWaiters.set(id, (event) => {
+        clearTimeout(timer);
+        this.responseWaiters.delete(id);
+        resolve(event);
+      });
+
+      this.send(cmd);
+    });
   }
 
   closeStdin(): void {
@@ -359,23 +398,32 @@ export class RPCClient {
   }
 
   isAlive(): boolean {
-    return this.proc !== null && this.proc.exitCode === null;
+    return this.proc !== null && !this.exited;
   }
 
   private buildArgs(): string[] {
     const args = [
       "--mode", "rpc",
       "--no-session",
-      "--no-extensions",
       "--model", this.options.model,
       "--provider", this.options.provider,
     ];
+    // Workers load extensions normally so they can use the user's custom tools.
+    // delegate_* tools are excluded via the --tools allowlist to prevent recursive delegation.
     if (this.options.thinking) {
       args.push("--thinking", this.options.thinking);
     }
     if (this.options.tools && this.options.tools.length > 0) {
       args.push("--tools", this.options.tools.join(","));
+    } else if (this.options.deniedTools && this.options.deniedTools.length > 0 && this.options.allToolNames) {
+      const denied = new Set(this.options.deniedTools);
+      const allowed = this.options.allToolNames.filter((t) => !denied.has(t));
+      if (allowed.length > 0) {
+        args.push("--tools", allowed.join(","));
+      }
     }
+    // Workers auto-load AGENTS.md and CLAUDE.md for project context.
+    // Role-specific instructions can be addressed via @worker.md references in AGENTS.md.
     if (this.options.systemPrompt) {
       args.push("--append-system-prompt", this.options.systemPrompt);
     }
@@ -387,7 +435,7 @@ export class RPCClient {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd extensions/delegate && npx vitest run tests/rpc-client.test.ts`
-Expected: All 6 tests PASS
+Expected: All 7 tests PASS
 
 - [ ] **Step 5: Run typecheck**
 
@@ -875,6 +923,13 @@ describe("WorkerManager", () => {
     expect(worker!.status).toBe("completed");
   });
 
+  it("rejects transitions out of terminal states", () => {
+    manager.register("w1", baseParams);
+    manager.setStatus("w1", "completed");
+    manager.setStatus("w1", "running");
+    expect(manager.get("w1")!.status).toBe("completed");
+  });
+
   it("reads max workers from env var", () => {
     const envManager = new WorkerManager({ maxWorkers: 2, projectRoot: "/tmp", maxWorkersEnv: "5" });
     for (let i = 1; i <= 5; i++) {
@@ -957,6 +1012,7 @@ export class WorkerManager {
   setStatus(taskId: string, status: WorkerStatus, error?: string): void {
     const entry = this.workers.get(taskId);
     if (!entry) return;
+    if (entry.status === "completed" || entry.status === "failed" || entry.status === "aborted") return;
     entry.status = status;
     if (error) entry.error = error;
   }
@@ -983,11 +1039,16 @@ export class WorkerManager {
     return result;
   }
 
-  disposeAll(): void {
+  async disposeAll(): Promise<void> {
+    const kills: Promise<void>[] = [];
     for (const entry of this.workers.values()) {
       if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+      if (entry.status === "running" && entry.rpcClient) {
+        kills.push(entry.rpcClient.kill());
+      }
       entry.logWriter?.close();
     }
+    await Promise.allSettled(kills);
   }
 }
 ```
@@ -995,7 +1056,7 @@ export class WorkerManager {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd extensions/delegate && npx vitest run tests/worker-manager.test.ts`
-Expected: All 8 tests PASS
+Expected: All 9 tests PASS
 
 - [ ] **Step 5: Run typecheck**
 
@@ -1039,21 +1100,26 @@ function resolveGitRoot(cwd: string): string {
   }
 }
 
-function getSessionId(pi: ExtensionAPI): string {
-  try {
-    const sm = (pi as any).sessionManager;
-    if (sm?.getSessionId) return sm.getSessionId();
-  } catch {}
-  return `run-${Date.now().toString(36)}`;
+function todayDate(): string {
+  return new Date().toLocaleDateString("en-CA");
 }
 
-function todayDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result"];
 
 export default function delegate(pi: ExtensionAPI) {
   const initialCwd = process.cwd();
   const projectRoot = resolveGitRoot(initialCwd);
+
+  // Session ID is resolved from ctx.sessionManager inside event handlers.
+  // Cached here and updated on each session_start event.
+  let sessionId = `run-${Date.now().toString(36)}`;
+
+  pi.on("session_start", async (_event, ctx) => {
+    try {
+      const file = ctx.sessionManager.getSessionFile?.();
+      if (file) sessionId = file;
+    } catch {}
+  });
 
   const manager = new WorkerManager({
     maxWorkers: 2,
@@ -1082,7 +1148,10 @@ export default function delegate(pi: ExtensionAPI) {
         }),
       ),
       tools: Type.Optional(
-        Type.Array(Type.String(), { description: 'Tool allowlist, e.g. ["read", "grep", "bash"]' }),
+        Type.Array(Type.String(), { description: 'Tool allowlist — only these tools enabled. Mutually exclusive with denied_tools.' }),
+      ),
+      denied_tools: Type.Optional(
+        Type.Array(Type.String(), { description: 'Tool deny list — all tools except these. Mutually exclusive with tools. delegate_* tools are always denied.' }),
       ),
       timeout: Type.Optional(
         Type.Number({ description: "Timeout in seconds (default 1800)", default: 1800 }),
@@ -1096,6 +1165,14 @@ export default function delegate(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (params.tools && params.denied_tools) {
+        return {
+          content: [{ type: "text" as const, text: "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one." }],
+          details: { error: "invalid_params" },
+          isError: true,
+        };
+      }
+
       if (!manager.canStart()) {
         const active = manager.activeWorkerDescriptions();
         const desc = active.map((w) => `  ${w.taskId}: ${w.task.slice(0, 80)}`).join("\n");
@@ -1109,7 +1186,18 @@ export default function delegate(pi: ExtensionAPI) {
       const taskId = manager.nextTaskId();
       const workerCwd = params.cwd ?? projectRoot;
       const timeout = params.timeout ?? 1800;
-      const sessionId = getSessionId(pi);
+
+      // Resolve tool allowlist: always exclude delegate_* tools to prevent recursive delegation.
+      let toolsAllowlist: string[] | undefined = params.tools;
+      if (toolsAllowlist) {
+        toolsAllowlist = toolsAllowlist.filter((t) => !DELEGATE_TOOLS.includes(t));
+      }
+
+      // For denied_tools mode, we need the full list of available tool names.
+      const allToolNames = pi.getAllTools().map((t) => t.name);
+      const deniedTools = params.denied_tools
+        ? [...new Set([...params.denied_tools, ...DELEGATE_TOOLS])]
+        : DELEGATE_TOOLS;
 
       const entry = manager.register(taskId, params as DelegateStartParams);
 
@@ -1124,7 +1212,9 @@ export default function delegate(pi: ExtensionAPI) {
           model: params.model,
           provider: params.provider,
           thinking: params.thinking,
-          tools: params.tools,
+          tools: toolsAllowlist,
+          deniedTools: toolsAllowlist ? undefined : deniedTools,
+          allToolNames: toolsAllowlist ? undefined : allToolNames,
           systemPrompt: params.system_prompt,
           cwd: workerCwd,
         },
@@ -1248,29 +1338,16 @@ Add the following tool registration inside the `delegate` function, after the `d
 
       let tokenInfo = { input: 0, output: 0, contextPercent: 0 };
       if (entry.rpcClient && entry.status === "running") {
-        try {
-          const statsPromise = new Promise<{ input: number; output: number; contextPercent: number }>((resolve) => {
-            const handler = (event: any) => {
-              if (event.type === "response" && event.command === "get_session_stats" && event.success) {
-                const tokens = event.data?.tokens ?? {};
-                const ctx = event.data?.contextUsage ?? {};
-                resolve({
-                  input: tokens.input ?? 0,
-                  output: tokens.output ?? 0,
-                  contextPercent: ctx.percent ?? 0,
-                });
-              }
-            };
-            entry.rpcClient!.send({ type: "get_session_stats" });
-            // Listen for the response via the existing event handler
-            // The progress accumulator will ignore this event type, and we handle it here
-            const origHandler = (entry as any)._statsHandler;
-            (entry as any)._statsHandler = handler;
-            setTimeout(() => resolve({ input: 0, output: 0, contextPercent: 0 }), 2000);
-          });
-          tokenInfo = await statsPromise;
-        } catch {
-          // Ignore stats fetch failures
+        const resp = await entry.rpcClient.sendAndWait({ type: "get_session_stats" });
+        if (resp && (resp as any).success && (resp as any).data) {
+          const data = (resp as any).data;
+          const tokens = data.tokens ?? {};
+          const ctxUsage = data.contextUsage ?? {};
+          tokenInfo = {
+            input: tokens.input ?? 0,
+            output: tokens.output ?? 0,
+            contextPercent: ctxUsage.percent ?? 0,
+          };
         }
       }
 
@@ -1367,10 +1444,12 @@ Add after `delegate_check`:
         };
       }
 
+      // Note: steer requires active streaming. During compaction (compaction_start → compaction_end)
+      // the RPC layer may return an error. The orchestrator can retry after a brief delay.
       entry.rpcClient.send({ type: "steer", message: params.message });
 
       return {
-        content: [{ type: "text" as const, text: `Steering message sent to ${params.task_id}.` }],
+        content: [{ type: "text" as const, text: `Steering message sent to ${params.task_id}. Note: if the worker is mid-compaction, the steer may not be delivered — retry shortly.` }],
         details: { success: true },
       };
     },
@@ -1476,11 +1555,16 @@ Add after `delegate_abort`:
       const transcript = entry.progress?.getFullTranscript() ?? "";
       const finalMessages = entry.progress?.getFinalMessages() ?? [];
 
+      // AssistantMessage.content is (TextContent | ThinkingContent | ToolCall)[], not a string.
       let resultText = "";
       for (const msg of finalMessages) {
-        const m = msg as { role?: string; content?: string };
-        if (m.role === "assistant" && m.content) {
-          resultText += m.content + "\n";
+        const m = msg as { role?: string; content?: unknown[] };
+        if (m.role === "assistant" && Array.isArray(m.content)) {
+          for (const block of m.content) {
+            if ((block as { type: string }).type === "text") {
+              resultText += (block as { text: string }).text;
+            }
+          }
         }
       }
 
@@ -1521,8 +1605,8 @@ Delete the comment in `index.ts` that says:
 At the end of the `delegate` function, before the closing brace, add:
 
 ```typescript
-  pi.on("session_end" as any, () => {
-    manager.disposeAll();
+  pi.on("session_shutdown", async () => {
+    await manager.disposeAll();
   });
 ```
 
@@ -1540,119 +1624,9 @@ git commit -m "feat(delegate): add delegate_result tool, complete all 5 tools"
 
 ---
 
-### Task 10: Fix `delegate_check` Token Stats via RPC Response Handling
+### Task 10: Integration Test — Full Delegate Lifecycle
 
-The initial `delegate_check` implementation in Task 7 has a placeholder approach for reading `get_session_stats` responses. The RPC client event stream processes all stdout lines through the same `onEvent` callback — responses to commands arrive as events too. This task adds proper request-response correlation.
-
-**Files:**
-- Modify: `extensions/delegate/rpc-client.ts`
-- Modify: `extensions/delegate/index.ts`
-
-- [ ] **Step 1: Add `sendAndWait` method to `RPCClient`**
-
-Add this method to the `RPCClient` class in `rpc-client.ts`:
-
-```typescript
-  private responseWaiters = new Map<string, (event: RPCEvent) => void>();
-  private requestCounter = 0;
-
-  async sendAndWait(command: RPCCommand, timeoutMs = 2000): Promise<RPCEvent | null> {
-    const id = `req-${++this.requestCounter}`;
-    const cmd = { ...command, id };
-
-    return new Promise<RPCEvent | null>((resolve) => {
-      const timer = setTimeout(() => {
-        this.responseWaiters.delete(id);
-        resolve(null);
-      }, timeoutMs);
-
-      this.responseWaiters.set(id, (event) => {
-        clearTimeout(timer);
-        this.responseWaiters.delete(id);
-        resolve(event);
-      });
-
-      this.send(cmd);
-    });
-  }
-```
-
-Update the stdout `onData` handler in the `start()` method to check for response waiters before dispatching to the general callback. In the loop where events are parsed, add before the `this.callbacks.onEvent(event)` line:
-
-```typescript
-        // Check for response waiters
-        if (event.type === "response" && event.id) {
-          const waiter = this.responseWaiters.get(event.id as string);
-          if (waiter) {
-            waiter(event);
-            continue;
-          }
-        }
-```
-
-- [ ] **Step 2: Simplify `delegate_check` token stats in `index.ts`**
-
-Replace the token stats block in `delegate_check` with:
-
-```typescript
-      let tokenInfo = { input: 0, output: 0, contextPercent: 0 };
-      if (entry.rpcClient && entry.status === "running") {
-        const resp = await entry.rpcClient.sendAndWait({ type: "get_session_stats" });
-        if (resp && (resp as any).success && (resp as any).data) {
-          const data = (resp as any).data;
-          const tokens = data.tokens ?? {};
-          const ctxUsage = data.contextUsage ?? {};
-          tokenInfo = {
-            input: tokens.input ?? 0,
-            output: tokens.output ?? 0,
-            contextPercent: ctxUsage.percent ?? 0,
-          };
-        }
-      }
-```
-
-Remove the old `statsPromise` / `_statsHandler` code.
-
-- [ ] **Step 3: Run typecheck**
-
-Run: `cd extensions/delegate && npx tsc --noEmit`
-Expected: No errors
-
-- [ ] **Step 4: Add test for `sendAndWait`**
-
-Add to `tests/rpc-client.test.ts`:
-
-```typescript
-describe("sendAndWait", () => {
-  it("returns null on timeout when no response arrives", async () => {
-    // This tests the timeout path without spawning a real Pi process.
-    // We create an RPCClient with a non-existent command to test the timeout.
-    const client = new RPCClient(
-      { model: "test", provider: "test", cwd: "/tmp" },
-      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
-    );
-    // Don't start — just test sendAndWait returns null when stdin isn't writable
-    const result = await client.sendAndWait({ type: "get_session_stats" }, 100);
-    expect(result).toBeNull();
-  });
-});
-```
-
-- [ ] **Step 5: Run all tests**
-
-Run: `cd extensions/delegate && npx vitest run`
-Expected: All tests PASS
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add extensions/delegate/rpc-client.ts extensions/delegate/index.ts extensions/delegate/tests/rpc-client.test.ts
-git commit -m "feat(delegate): add sendAndWait for RPC request-response correlation"
-```
-
----
-
-### Task 11: Integration Test — Full Delegate Lifecycle
+> **Note:** Task 10 was originally "Fix delegate_check Token Stats via RPC Response Handling" — that code has been collapsed into Tasks 2 (sendAndWait on RPCClient) and 7 (delegate_check uses sendAndWait directly).
 
 **Files:**
 - Create: `extensions/delegate/tests/integration.test.ts`
@@ -1747,7 +1721,7 @@ git commit -m "test(delegate): add integration test for full worker lifecycle"
 
 ---
 
-### Task 12: Final Typecheck, Full Test Suite, and Smoke Test
+### Task 11: Final Typecheck, Full Test Suite, and Smoke Test
 
 **Files:**
 - No new files; verification only.
