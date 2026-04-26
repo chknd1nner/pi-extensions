@@ -21,7 +21,7 @@ function getScopeDirs(cwd: string) {
 }
 
 export default function replacePrompt(pi: ExtensionAPI) {
-  pi.on("before_agent_start", async (event: any, ctx: any) => {
+  pi.on("before_agent_start", async (event: any, ctx?: any) => {
     const cwd = event.cwd ?? process.cwd();
     const installedDirs = getScopeDirs(cwd);
 
