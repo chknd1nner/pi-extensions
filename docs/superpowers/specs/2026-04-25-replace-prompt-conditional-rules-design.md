@@ -148,17 +148,17 @@ export default {
       condition: (ctx) => ctx.systemPrompt.includes("[CLAUDE]"),
     },
     {
-      id: "note-original-greeting",
+      id: "add-verbose-logging-note",
       type: "literal",
-      target: "[CLAUDE]",
-      replacement: "[CLAUDE-ORIGINAL-HELLO]",
-      condition: (ctx) => ctx.originalSystemPrompt.startsWith("Hello"),
+      target: "# Logging",
+      replacement: "# Logging\nUse verbose output for all log entries.",
+      condition: (ctx) => ctx.originalSystemPrompt.includes("debug mode"),
     },
   ],
 };
 ```
 
-Under this design, the second rule can react to the marker introduced by the first rule, while the third rule can still reason about the original prompt even after earlier rules have mutated the current prompt.
+Under this design, the second rule can react to the marker introduced by the first rule via `systemPrompt`. The third rule uses `originalSystemPrompt` to check whether the incoming prompt mentioned "debug mode" before any rules ran — its condition and its target are independent of earlier rule output.
 
 ## Failure handling and logging
 
