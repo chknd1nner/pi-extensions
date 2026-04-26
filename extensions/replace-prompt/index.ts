@@ -21,7 +21,7 @@ function getScopeDirs(cwd: string) {
 }
 
 export default function replacePrompt(pi: ExtensionAPI) {
-  pi.on("before_agent_start", async (event: any) => {
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
     const cwd = event.cwd ?? process.cwd();
     const installedDirs = getScopeDirs(cwd);
 
@@ -33,16 +33,26 @@ export default function replacePrompt(pi: ExtensionAPI) {
       : null;
     const merged = mergeScopeConfigs(globalConfig, projectConfig, installedDirs);
 
-    if (merged.rules.length === 0) {
-      return undefined;
-    }
+    const basePrompt = event.systemPrompt ?? "";
+    const result =
+      merged.rules.length === 0
+        ? { changed: false, systemPrompt: basePrompt, events: [] }
+        : applyRulesToPrompt(
+            basePrompt,
+            merged.rules,
+            (rule) =>
+              resolveReplacementText(rule, {
+                globalDir: merged.globalDir,
+                projectDir: merged.projectDir,
+              }),
+            {
+              cwd,
+              model: ctx?.model?.id,
+              env: process.env,
+            },
+          );
 
-    const result = applyRulesToPrompt(event.systemPrompt ?? "", merged.rules, (rule) =>
-      resolveReplacementText(rule, {
-        globalDir: merged.globalDir,
-        projectDir: merged.projectDir,
-      }),
-    );
+    const allEvents = [...merged.events, ...result.events];
 
     if (merged.logging.file) {
       appendLog(
@@ -50,7 +60,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
           projectDir: merged.projectDir,
           globalDir: merged.globalDir,
         }),
-        result.events,
+        allEvents,
       );
     }
 
