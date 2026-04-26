@@ -6,6 +6,7 @@ const globalConfig: ScopeConfig = {
   scope: "global",
   baseDir: "/home/.pi/agent/extensions/replace-prompt",
   logging: { file: false },
+  events: [],
   rules: [
     {
       id: "replace-opening",
@@ -32,6 +33,7 @@ const projectConfig: ScopeConfig = {
   scope: "project",
   baseDir: "/repo/.pi/extensions/replace-prompt",
   logging: { file: true },
+  events: [],
   rules: [
     { id: "replace-opening", enabled: false },
     {
@@ -102,5 +104,24 @@ describe("mergeScopeConfigs", () => {
       "keep-second",
     ]);
     expect(merged.logBaseDir).toBe("/home/.pi/agent/extensions/replace-prompt");
+  });
+
+  it("merges global and project events in order", () => {
+    const globalWithEvents: ScopeConfig = {
+      ...globalConfig,
+      events: [{ level: "info", message: "global event" }],
+    };
+    const projectWithEvents: ScopeConfig = {
+      ...projectConfig,
+      events: [{ level: "warn", message: "project event" }],
+    };
+    const merged = mergeScopeConfigs(globalWithEvents, projectWithEvents, {
+      projectDir: "/repo/.pi/extensions/replace-prompt",
+      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+    });
+    expect(merged.events).toEqual([
+      { level: "info", message: "global event" },
+      { level: "warn", message: "project event" },
+    ]);
   });
 });
