@@ -1,4 +1,4 @@
-import type { ApplyResult, LogEvent, NormalizedRule } from "./types";
+import type { ApplyResult, ApplyRuntimeContext, ConditionContext, LogEvent, NormalizedRule } from "./types";
 
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n?/g, "\n");
@@ -14,6 +14,7 @@ export function applyRulesToPrompt(
   systemPrompt: string,
   rules: NormalizedRule[],
   resolveReplacement: (rule: Exclude<NormalizedRule, { enabled: false }>) => string | null,
+  runtime: ApplyRuntimeContext,
 ): ApplyResult {
   const events: LogEvent[] = [];
   const normalizedOriginal = normalizeLineEndings(systemPrompt);
@@ -23,6 +24,34 @@ export function applyRulesToPrompt(
     if (rule.enabled === false) {
       events.push({ level: "info", message: "rule disabled", ruleId: rule.id });
       continue;
+    }
+
+    if (rule.condition) {
+      const conditionContext: ConditionContext = {
+        model: runtime.model,
+        cwd: runtime.cwd,
+        systemPrompt: nextPrompt,
+        originalSystemPrompt: normalizedOriginal,
+        env: runtime.env,
+      };
+
+      let conditionResult: unknown;
+      try {
+        conditionResult = rule.condition(conditionContext);
+      } catch {
+        events.push({ level: "warn", message: "condition threw", ruleId: rule.id });
+        continue;
+      }
+
+      if (typeof conditionResult !== "boolean") {
+        events.push({ level: "warn", message: "condition returned non-boolean", ruleId: rule.id });
+        continue;
+      }
+
+      if (conditionResult === false) {
+        events.push({ level: "info", message: "rule skipped by condition", ruleId: rule.id });
+        continue;
+      }
     }
 
     const resolvedReplacement = resolveReplacement(rule);
