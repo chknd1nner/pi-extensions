@@ -253,15 +253,14 @@ The `?? false` matters because `ctx.model?.includes("claude")` evaluates to `boo
   target: "Hello",
   replacement: "Hello with Claude-specific guidance",
   condition: (ctx) => ctx.systemPrompt.includes("[CLAUDE]"),
-}
-
+},
 {
   id: "note-original-greeting",
   type: "literal",
   target: "[CLAUDE]",
   replacement: "[CLAUDE-ORIGINAL-HELLO]",
   condition: (ctx) => ctx.originalSystemPrompt.startsWith("Hello"),
-}
+},
 ```
 
 ### Condition result handling
