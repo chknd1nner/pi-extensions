@@ -26,7 +26,7 @@ extensions/delegate/
 ├── rpc-client.ts         # Spawn pi --mode rpc, JSONL framing, send/receive
 ├── worker-manager.ts     # Track active workers, enforce concurrency cap
 ├── progress.ts           # Accumulate RPC events into queryable transcript
-├── visibility.ts         # Write progress to disk or spawn tmux pane
+├── visibility.ts         # Write progress to disk for human observability
 ├── types.ts              # Shared interfaces
 ├── package.json
 ├── tsconfig.json
@@ -47,7 +47,7 @@ User <-> Pi (orchestrator, LLM)
               |
               |-- delegate_check(task_id) --> query progress accumulator
               |-- delegate_steer(task_id, msg) --> RPC stdin: {"type":"steer",...}
-              |-- delegate_abort(task_id) --> SIGTERM/SIGKILL worker process
+              |-- delegate_abort(task_id) --> RPC abort, close stdin, SIGTERM/SIGKILL fallback
               |-- delegate_result(task_id) --> read final output
 ```
 
@@ -62,12 +62,12 @@ Spawns a new worker. Fails immediately if the concurrency cap (2) is reached.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | task | string | yes | | Prompt/instructions for the worker |
-| model | string | yes | | Model ID, e.g. "claude-sonnet-4.6" |
+| model | string | yes | | Model ID, e.g. "claude-sonnet-4-6", "claude-haiku-4-5" |
 | provider | string | yes | | Provider ID, e.g. "anthropic", "github-copilot" |
-| thinking | string | no | (none) | "low", "medium", "high", or "max" |
+| thinking | string | no | (none) | "off", "minimal", "low", "medium", "high", or "xhigh" |
 | tools | string[] | no | all | Restrict worker's available tools |
-| timeout | number | no | 1800 | Seconds before the worker is considered timed out |
-| visibility | string | no | "log" | "log" (progress file on disk) or "tmux" (named tmux pane) |
+| timeout | number | no | 1800 | Seconds; extension auto-aborts the worker at this limit (clean RPC abort, status becomes "aborted") |
+| visibility | string | no | "log" | "log" (progress file on disk) |
 | system_prompt | string | no | (none) | Additional system prompt appended to worker |
 | cwd | string | no | project root | Working directory for the worker process |
 
@@ -92,7 +92,10 @@ Summary response:
 | elapsed_seconds | number | Time since worker started |
 | tool_calls | number | Total tool calls made |
 | last_activity_seconds_ago | number | Seconds since last RPC event |
-| recent_activity | string[] | Last 5 tool calls: name + primary arg |
+| recent_activity | string[] | Last 5 tool calls: name + truncated args (~80 chars) |
+| input_tokens | number | Total input tokens consumed so far |
+| output_tokens | number | Total output tokens consumed so far |
+| context_usage_percent | number | Percentage of context window used (from RPC `get_session_stats`) |
 | error | string | Stderr/diagnostic output (only present when status is "failed") |
 
 Full response adds:
@@ -103,7 +106,7 @@ Full response adds:
 
 ### delegate_steer
 
-Send a steering message to a running worker. Delivered between turns via RPC `steer` command.
+Send a steering message to a running worker. Delivered between turns via RPC `steer` command. Returns an error if the worker is not actively streaming (i.e. has already reached `agent_end`).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -114,7 +117,7 @@ Returns: `{ success: boolean }`
 
 ### delegate_abort
 
-Terminate a running worker. Sends SIGTERM, waits 5 seconds, then SIGKILL.
+Terminate a running worker. Sends RPC `{"type":"abort"}` command first for a clean shutdown (preserves partial transcript and usage data). Waits up to 2 seconds for `agent_end` with `stopReason: "aborted"`, then closes stdin to trigger process exit. Falls back to SIGTERM/SIGKILL only if the process doesn't exit cleanly.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -147,13 +150,17 @@ Manages a single Pi RPC subprocess.
 **Spawning:**
 
 ```
-pi --mode rpc --no-session --model <model> --provider <provider> \
-  [--thinking-level <level>] [--tools <tools>] \
-  [--system-prompt <prompt> | --append-system-prompt <prompt>]
+pi --mode rpc --no-session --no-extensions --model <model> --provider <provider> \
+  [--thinking <level>] [--tools <tools>] \
+  [--append-system-prompt <prompt>]
 ```
 
 - `--no-session` prevents workers from creating persistent session files in the user's session history.
+- `--no-extensions` prevents workers from loading extensions (including the delegate extension itself), avoiding recursive delegation.
+- Workers auto-load project context files (AGENTS.md, CLAUDE.md) by default. The user can include role-specific instructions in these files (e.g. "If you have been spawned as a worker agent, follow the directions here:").
 - `cwd` set via `spawn()` options, not CLI flag.
+
+**Task delivery:** RPC mode starts and waits for input on stdin. After spawning, the client sends the task as: `{"type":"prompt","message":"<task>"}\n`. The worker begins execution only after receiving this command.
 
 **JSONL framing:** Splits strictly on `\n` only, per Pi's RPC docs. Does not use generic line readers that split on Unicode line separators (U+2028/U+2029).
 
@@ -161,8 +168,10 @@ pi --mode rpc --no-session --model <model> --provider <provider> \
 
 - `send(command: RPCCommand): void` — write JSON + `\n` to stdin
 - `onEvent(callback: (event: RPCEvent) => void): void` — parse stdout lines, dispatch
-- `kill(): Promise<void>` — SIGTERM, wait 5s, SIGKILL
+- `kill(): Promise<void>` — send RPC abort, close stdin, await exit; SIGTERM/SIGKILL as fallback
 - Detects unexpected process exit, captures stderr for diagnostics
+
+**Worker completion:** The RPC process does not exit after `agent_end`. The client must close stdin to trigger process exit. Completion lifecycle: receive `agent_end` event → mark worker complete → close stdin → await process exit → dispose client.
 
 **One client per worker, no reuse.** Worker finishes, client is disposed.
 
@@ -172,14 +181,14 @@ Central registry of active workers.
 
 **State per worker:**
 
-- `taskId` — 8-char random hex
+- `taskId` — sequential counter per session (`w1`, `w2`, ...)
 - `status` — "running" | "completed" | "failed" | "aborted"
 - `rpcClient` — the RPCClient instance
 - `progress` — the ProgressAccumulator instance
 - `params` — original DelegateStartParams (for diagnostics)
 - `startedAt` — timestamp
 
-**Concurrency:** Hard cap at 2 concurrent workers. `start()` returns an error with details of active workers if the cap is reached.
+**Concurrency:** Default cap at 2 concurrent workers, overridable via `DELEGATE_MAX_WORKERS` env var. `start()` returns an error with details of active workers if the cap is reached.
 
 **Lifecycle:** Terminal states (completed/failed/aborted) dispose the RPC client but keep the worker entry in the map so `delegate_result` can still read it. Entries are cleared when the extension unloads.
 
@@ -203,9 +212,11 @@ Consumes RPC events and builds a queryable view.
 - `toolCalls: ToolCallRecord[]` — name, args, result, timestamps
 - `lastActivityAt: number` — most recent event timestamp
 
+**Token usage:** On demand, the progress module calls RPC `get_session_stats` to retrieve running token counts (`input`, `output`, `cacheRead`, `cacheWrite`) and `contextUsage` percentage. These are included in the `delegate_check` summary response for cost-aware supervision.
+
 **Query interface:**
 
-- `getSummary()` — status, elapsed, tool count, last activity, recent 5 tool calls
+- `getSummary()` — status, elapsed, tool count, last activity, recent 5 tool calls, token usage, context usage percent
 - `getFullTranscript()` — everything above plus full transcript text
 
 Stuck detection is the orchestrator's responsibility. This module only reports `last_activity_seconds_ago`.
@@ -221,13 +232,9 @@ Side-channel output for human observability.
 - Format: tool calls as `[TOOL: bash] ls src/`, text deltas appended inline
 - Human-readable when tailed: `tail -f` works
 
-**Tmux mode (`"tmux"`):**
+Tmux visibility mode is deferred to a future version (see Future Enhancements). For v1, users can observe workers via `tail -f` on the progress log file.
 
-- Spawns the Pi RPC worker inside a named tmux pane: `delegate-{taskId}`
-- Extension still reads stdout for progress tracking (piped through the tmux pane)
-- Falls back to `"log"` if tmux is unavailable
-
-The orchestrator's session ID is obtained from Pi's context (`ctx.sessionManager`) at extension init. The date is the day the worker was spawned.
+The orchestrator's session ID is resolved dynamically at each `delegate_start` call from Pi's context (`ctx.sessionManager`). If the session ID is unavailable (e.g. ephemeral `--no-session` orchestrator), a random run-id is generated as fallback. The date is the day the worker was spawned.
 
 ## Default Working Directory
 
@@ -243,22 +250,22 @@ No config files. The orchestrator LLM decides model, provider, thinking level, t
 
 This replaces the rigid TOML routing table with LLM judgment, allowing the orchestrator to adapt strategy mid-session based on results.
 
+The recommended pattern for role-specific instructions is to reference separate files from AGENTS.md (e.g. `@orchestrator.md` and `@worker.md`). Both orchestrator and workers load the same AGENTS.md, but each agent follows the instructions addressed to its role. Workers and custom providers using `~/.pi/agent/models.json` work without additional configuration since workers run as the same user.
+
 ## Error Handling
 
 The extension is a dumb pipe. All error handling and recovery decisions are made by the orchestrator LLM:
 
 - Worker crashes: `delegate_check` returns `status: "failed"` with stderr diagnostics. Orchestrator decides whether to retry (same model, different model, different prompt) or escalate to the user.
-- Worker times out: `delegate_check` returns high `last_activity_seconds_ago`. Orchestrator decides whether to steer, abort, or wait longer.
+- Worker times out: the extension auto-aborts at the `timeout` limit using clean RPC abort (status becomes `"aborted"`). The orchestrator decides whether to retry, escalate, or move on.
 - Worker produces bad output: `delegate_result` returns the output. Orchestrator evaluates quality and decides next steps.
 
 Recovery strategy is shaped by the user's standing instructions in AGENTS.md — anything from "stop and ask me" to "work it out yourself."
 
 ## Future Enhancements (out of v1 scope)
 
-1. **Worker reconnect / follow-up** — Keep RPC client alive after completion, allow the orchestrator to send follow-up messages in the same worker session. Enables the review-then-fix pattern without re-reading files. Significant token savings when a review uses half its context and the fix is a few line changes.
+1. **Worker reconnect / follow-up** — Keep RPC client alive after completion, allow the orchestrator to send follow-up messages in the same worker session via a `delegate_continue` tool. Enables the review-then-fix pattern without re-reading files. Significant token savings when a review uses half its context and the fix is a few line changes.
 
-2. **Tmux JSONL renderer** — Standalone pipe script (~100-150 lines) that formats RPC JSONL into human-readable colored terminal output. Quality-of-life for tmux users so they see formatted output instead of raw JSON.
+2. **Tmux visibility mode** — Add `visibility: "tmux"` to `delegate_start`. Spawn the Pi RPC worker inside a named tmux pane (`delegate-{taskId}`) for live user observation. Requires a companion JSONL renderer (~100-150 lines) that formats RPC JSONL into human-readable colored terminal output, since raw `--mode rpc` output is JSONL, not a TUI.
 
-3. **Configurable concurrency cap** — Expose the worker cap as a setting rather than hardcoded at 2.
-
-4. **Orphan detection** — On extension reload, detect Pi processes from a previous session that are still running. Clean up or offer to reconnect.
+3. **Orphan detection** — On extension reload, detect Pi processes from a previous session that are still running. Clean up or offer to reconnect.
