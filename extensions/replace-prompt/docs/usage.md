@@ -210,6 +210,69 @@ So these behave the same:
 { target: /abc/, mode: "all", ... }
 ```
 
+## Conditional rules
+
+Enabled literal and regex rules may include a synchronous `condition` callback:
+
+```ts
+type ConditionContext = {
+  model?: string;
+  cwd: string;
+  systemPrompt: string;
+  originalSystemPrompt: string;
+  env: NodeJS.ProcessEnv;
+};
+```
+
+A rule runs only when `condition(ctx)` returns exactly `true`.
+
+- `systemPrompt` is the current prompt state when the rule is evaluated
+- `originalSystemPrompt` is the unmodified prompt from the start of `before_agent_start`
+- `env` is provided for convenience; it does not expand the trust boundary because `rules.ts` already runs as full Node.js code
+
+### Model-specific example
+
+```ts
+{
+  id: "claude-only-opening",
+  type: "literal",
+  target: "Hello",
+  replacement: "Hello Claude",
+  condition: (ctx) => ctx.model?.includes("claude") ?? false,
+}
+```
+
+The `?? false` matters because `ctx.model?.includes("claude")` evaluates to `boolean | undefined`, and conditions must return an explicit boolean.
+
+### Current vs original prompt example
+
+```ts
+{
+  id: "expand-claude-guidance",
+  type: "literal",
+  target: "Hello",
+  replacement: "Hello with Claude-specific guidance",
+  condition: (ctx) => ctx.systemPrompt.includes("[CLAUDE]"),
+}
+
+{
+  id: "note-original-greeting",
+  type: "literal",
+  target: "[CLAUDE]",
+  replacement: "[CLAUDE-ORIGINAL-HELLO]",
+  condition: (ctx) => ctx.originalSystemPrompt.startsWith("Hello"),
+}
+```
+
+### Condition result handling
+
+- `true` → rule continues normally
+- `false` → rule is skipped and logs `rule skipped by condition`
+- non-boolean → rule is skipped and logs `condition returned non-boolean`
+- throw → rule is skipped and logs `condition threw`
+
+Conditions are intentionally synchronous and should stay limited to fast environment checks.
+
 ## Line ending normalization
 
 The extension normalizes line endings to `\n` before matching and replacement.
@@ -437,6 +500,7 @@ Before using a config, check:
 - literal `target` strings are non-empty
 - regex `target` values are real regex literals
 - `mode` is only `"first"` or `"all"`
+- `condition` callbacks, if used, must return an explicit boolean
 
 ## Good default pattern
 
