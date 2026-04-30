@@ -420,6 +420,8 @@ export class RPCClient {
       const allowed = this.options.allToolNames.filter((t) => !denied.has(t));
       if (allowed.length > 0) {
         args.push("--tools", allowed.join(","));
+      } else {
+        args.push("--no-tools");
       }
     }
     // Workers auto-load AGENTS.md and CLAUDE.md for project context.
@@ -1116,8 +1118,8 @@ export default function delegate(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     try {
-      const file = ctx.sessionManager.getSessionFile?.();
-      if (file) sessionId = file;
+      const id = ctx.sessionManager.getSessionId?.();
+      if (id) sessionId = id;
     } catch {}
   });
 
@@ -1444,12 +1446,18 @@ Add after `delegate_check`:
         };
       }
 
-      // Note: steer requires active streaming. During compaction (compaction_start → compaction_end)
-      // the RPC layer may return an error. The orchestrator can retry after a brief delay.
-      entry.rpcClient.send({ type: "steer", message: params.message });
+      // steer requires active streaming. During compaction the RPC layer may reject it.
+      const resp = await entry.rpcClient.sendAndWait({ type: "steer", message: params.message });
+      if (resp && (resp as any).success === false) {
+        return {
+          content: [{ type: "text" as const, text: `Steer rejected by ${params.task_id}: ${(resp as any).error ?? "worker not actively streaming (possibly mid-compaction)"}. Retry shortly.` }],
+          details: { success: false },
+          isError: true,
+        };
+      }
 
       return {
-        content: [{ type: "text" as const, text: `Steering message sent to ${params.task_id}. Note: if the worker is mid-compaction, the steer may not be delivered — retry shortly.` }],
+        content: [{ type: "text" as const, text: `Steering message sent to ${params.task_id}.` }],
         details: { success: true },
       };
     },

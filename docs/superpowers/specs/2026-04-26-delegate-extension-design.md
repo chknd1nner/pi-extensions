@@ -236,7 +236,7 @@ Side-channel output for human observability.
 
 Tmux visibility mode is deferred to a future version (see Future Enhancements). For v1, users can observe workers via `tail -f` on the progress log file.
 
-The orchestrator's session ID is resolved dynamically at each `delegate_start` call from Pi's context (`ctx.sessionManager`). If the session ID is unavailable (e.g. ephemeral `--no-session` orchestrator), a random run-id is generated as fallback. The date is the day the worker was spawned.
+The orchestrator's session ID is resolved from `ctx.sessionManager.getSessionId()` in the `session_start` event handler and cached. If the session ID is unavailable (e.g. ephemeral `--no-session` orchestrator), a random run-id is generated as fallback. The date is the day the worker was spawned (local time).
 
 ## Default Working Directory
 
