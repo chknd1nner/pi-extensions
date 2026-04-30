@@ -4,11 +4,19 @@
 
 **Goal:** Build a Telegram-first FamilyOS server that embeds the Pi SDK in-process, enforces the spec’s default-deny tool boundaries, and exposes `/new`, `/resume`, `/tree`, `/compact`, `/model`, `/agent`, `/cancel`, and `/whoami` through native Telegram UX.
 
-**Architecture:** Put the runnable service in `services/familyos/`, but keep runtime assets in the repo root (`config/`, `agents/`, `users/`, `logs/`) so the on-disk layout matches the approved spec. A channel-agnostic `FamilyOSService` owns users, agents, state, runtimes, and session operations; a `grammY` adapter translates Telegram updates into those operations. Pi integration uses `createAgentSessionRuntime()` plus a FamilyOS-only extension factory for guarded same-name tools, one-shot handoff injection, and audit/event hooks.
+**Architecture:** Put the runnable service in `services/familyos/`, but keep runtime assets in the repo root (`config/`, `agents/`, `users/`, `logs/`) so the on-disk layout matches the approved spec. A channel-agnostic `FamilyOSService` owns users, agents, state, runtimes, and session operations; a `grammY` adapter translates Telegram updates into those operations. Pi integration uses `createAgentSessionRuntime()` plus FamilyOS-owned same-name `customTools` overrides for `read`/`write`/`edit`/`grep`/`find`/`ls`, while a slim FamilyOS extension handles one-shot handoff injection and audit/event hooks.
 
 **Tech Stack:** TypeScript, Node.js, `grammY`, `@mariozechner/pi-coding-agent`, TypeBox, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-04-30-familyos-telegram-design.md`
+
+**SDK verification notes:**
+- The installed SDK source is the source of truth for this plan. `@mariozechner/pi-coding-agent` exports both the `createReadTool()` family and the `createReadToolDefinition()` family; FamilyOS keeps the `*Definition` helpers because `pi.registerTool()` / `customTools` require `ToolDefinition` objects.
+- `noTools` is a real `createAgentSession*` option, but `noTools: "all"` without a `tools` allowlist suppresses every tool name, including same-name custom overrides. FamilyOS therefore uses `tools: agent.capabilities.tools` plus same-name `customTools` overrides instead of relying on `setActiveTools()` after startup.
+- `AgentSessionRuntime.setRebindSession()` is a real public API and matches Pi's own interactive mode. `getDefaultSessionDir()` is not re-exported from the package top level, so FamilyOS owns a small `session-paths.ts` helper whose encoding is copied from the installed SDK source.
+- The installed SDK's `ModelRegistry.getAvailable()` is synchronous. FamilyOS may still wrap it in `Promise.resolve(...)` at the service edge to tolerate doc/source drift, but the current synchronous call shape is valid for the shipped SDK.
+
+**Explicit MVP deferrals:** The handoff prompt stays in code (`services/familyos/src/pi/handoff.ts`) rather than `agents/_system/handoff.md`, and FamilyOS does not expose per-session `thinkingLevel` controls in MVP.
 
 ---
 
@@ -54,6 +62,8 @@ services/
     │   │   ├── path-policy.ts
     │   │   ├── guarded-tools.ts
     │   │   ├── handoff.ts
+    │   │   ├── prompt-composer.ts
+    │   │   ├── session-paths.ts
     │   │   ├── familyos-extension.ts
     │   │   ├── runtime-factory.ts
     │   │   ├── prompt-runner.ts
@@ -75,6 +85,8 @@ services/
         ├── path-policy.test.ts
         ├── guarded-tools.test.ts
         ├── handoff.test.ts
+        ├── runtime-factory.test.ts
+        ├── runtime-registry.test.ts
         ├── session-view.test.ts
         ├── flow-store.test.ts
         ├── reply-format.test.ts
@@ -191,7 +203,7 @@ Create `services/familyos/src/types.ts`:
 import type { ImageContent } from "@mariozechner/pi-ai";
 
 export type ToolName = "read" | "write" | "edit" | "grep" | "find" | "ls";
-export type TreeFilter = "all" | "no-tools" | "user-only" | "labeled";
+export type TreeFilter = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 export type ModelSwitchChoice = "switch_anyway" | "branch_compact_then_switch" | "new_session";
 export type AgentSwitchChoice = "continue_session" | "start_fresh" | "branch_then_switch";
 
@@ -1465,7 +1477,7 @@ describe("buildGuardedToolDefinitions", () => {
     await temp.cleanup();
   });
 
-  it("returns a safe denial result for blocked reads", async () => {
+  it("returns a safe denial result for hidden user settings", async () => {
     const temp = await createTempRoot();
     const paths = buildFamilyOSPaths(temp.rootDir, {
       defaultAgentId: "default",
@@ -1494,22 +1506,49 @@ describe("buildGuardedToolDefinitions", () => {
     );
 
     const readTool = tools[0]!;
-    const result = await readTool.execute("call-1", { path: ".pi/secret.txt" }, undefined, undefined, {
-      cwd: user.homeDir,
-      ui: {} as any,
-      hasUI: false,
-      sessionManager: {} as any,
-      modelRegistry: {} as any,
-      model: undefined,
-      isIdle: () => true,
-      signal: undefined,
-      abort: () => undefined,
-      hasPendingMessages: () => false,
-      shutdown: () => undefined,
-      getContextUsage: () => undefined,
-      compact: () => undefined,
-      getSystemPrompt: () => "",
+    const result = await readTool.execute("call-1", { path: ".pi/secret.txt" }, undefined, undefined, undefined as any);
+
+    expect(result.content[0]?.type).toBe("text");
+    expect((result.content[0] as any).text).toContain("Access denied");
+    await temp.cleanup();
+  });
+
+  it("denies control-plane reads outside the user workspace roots", async () => {
+    const temp = await createTempRoot();
+    const paths = buildFamilyOSPaths(temp.rootDir, {
+      defaultAgentId: "default",
+      sharedPiAgentDir: ".familyos-pi",
+      telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
     });
+    const user = resolveUserPaths(paths, { id: "martin", displayName: "Martin" });
+
+    await fs.mkdir(paths.configDir, { recursive: true });
+    await fs.writeFile(path.join(paths.configDir, "familyos.json"), JSON.stringify({ secret: "bot-token" }, null, 2));
+
+    const tools = buildGuardedToolDefinitions(
+      user,
+      {
+        id: "default",
+        displayName: "FamilyOS Assistant",
+        soul: "You are FamilyOS.",
+        sourceDir: path.join(temp.rootDir, "agents", "default"),
+        capabilities: {
+          tools: ["read"],
+          readRoots: ["Inbox", "Workspace", "Exports"],
+          writeRoots: ["Workspace", "Exports"],
+        },
+      },
+      vi.fn(),
+    );
+
+    const readTool = tools[0]!;
+    const result = await readTool.execute(
+      "call-2",
+      { path: path.relative(user.homeDir, path.join(paths.configDir, "familyos.json")) },
+      undefined,
+      undefined,
+      undefined as any,
+    );
 
     expect(result.content[0]?.type).toBe("text");
     expect((result.content[0] as any).text).toContain("Access denied");
@@ -1609,6 +1648,11 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { ResolvedAgent, ResolvedUser, ToolName } from "../types.js";
 import { PathPolicy } from "./path-policy.js";
+
+// Keep the *Definition family here. The package top level exports both
+// createReadTool() and createReadToolDefinition(), but FamilyOS needs
+// ToolDefinition objects because customTools / pi.registerTool() consume
+// definitions, not wrapped AgentTool instances.
 
 const TOOL_PROMPTS: Record<ToolName, { promptSnippet: string; promptGuidelines: string[] }> = {
   read: {
@@ -1779,9 +1823,8 @@ export function buildGuardedToolDefinitions(
     },
   });
 
-  return definitions.filter((definition) =>
-    agent.capabilities.tools.includes(definition.name as ToolName),
-  );
+  const definitionsByName = new Map(definitions.map((definition) => [definition.name as ToolName, definition]));
+  return agent.capabilities.tools.map((toolName) => definitionsByName.get(toolName)!).filter(Boolean);
 }
 ```
 
@@ -1799,21 +1842,24 @@ git commit -m "feat(familyos): add guarded tool security boundary"
 
 ---
 
-### Task 6: Implement one-shot handoff state, the FamilyOS extension factory, and the runtime factory
+### Task 6: Implement deterministic prompt composition, one-shot handoff state, and the runtime factory
 
 **Files:**
 - Create: `services/familyos/src/pi/handoff.ts`
+- Create: `services/familyos/src/pi/prompt-composer.ts`
+- Create: `services/familyos/src/pi/session-paths.ts`
 - Create: `services/familyos/src/pi/familyos-extension.ts`
 - Create: `services/familyos/src/pi/runtime-factory.ts`
 - Create: `services/familyos/tests/handoff.test.ts`
+- Create: `services/familyos/tests/runtime-factory.test.ts`
 
-- [ ] **Step 1: Write the failing handoff tests**
+- [ ] **Step 1: Write the failing handoff and runtime-factory tests**
 
 Create `services/familyos/tests/handoff.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "vitest";
-import { HANDOFF_PROMPT, OneShotHandoff, injectHandoffIntoPayload } from "../src/pi/handoff";
+import { HANDOFF_PROMPT, OneShotHandoff, injectHandoffIntoProviderPayload } from "../src/pi/handoff";
 
 describe("OneShotHandoff", () => {
   it("arms once and clears after consume", () => {
@@ -1826,30 +1872,193 @@ describe("OneShotHandoff", () => {
   });
 });
 
-describe("injectHandoffIntoPayload", () => {
-  it("appends to a string system field", () => {
-    const payload = injectHandoffIntoPayload({ system: "base", messages: [] }, "handoff");
-    expect((payload as any).system).toContain("handoff");
+describe("injectHandoffIntoProviderPayload", () => {
+  it("appends one uncached text item and preserves the cached prefix bytes", () => {
+    const payload = {
+      system: [
+        { type: "text", text: "persona", cache_control: { type: "ephemeral" } },
+        { type: "text", text: "tool-guidelines" },
+      ],
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    };
+
+    const beforePrefix = JSON.stringify(payload.system);
+    const result = injectHandoffIntoProviderPayload(payload, "handoff");
+
+    expect(result.injected).toBe(true);
+    expect(JSON.stringify((result.payload as any).system.slice(0, -1))).toBe(beforePrefix);
+    expect((result.payload as any).system.at(-1)).toEqual({ type: "text", text: "handoff" });
+    expect((result.payload as any).messages).toEqual(payload.messages);
   });
 
-  it("appends a text item to an array system field", () => {
-    const payload = injectHandoffIntoPayload({ system: [{ type: "text", text: "base" }], messages: [] }, "handoff");
-    expect((payload as any).system.at(-1)).toEqual({ type: "text", text: "handoff" });
+  it("leaves unsupported payload shapes untouched instead of mutating messages", () => {
+    const payload = { system: "plain string", messages: [{ role: "user", content: "hello" }] };
+    const result = injectHandoffIntoProviderPayload(payload, "handoff");
+
+    expect(result.injected).toBe(false);
+    expect(result.payload).toEqual(payload);
+  });
+});
+```
+
+Create `services/familyos/tests/runtime-factory.test.ts`:
+
+```typescript
+import fs from "node:fs/promises";
+import path from "node:path";
+import {
+  AuthStorage,
+  ModelRegistry,
+  createAgentSessionRuntime,
+} from "@mariozechner/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import { createAuditLog } from "../src/audit-log";
+import { AgentLoader } from "../src/config/agent-loader";
+import { buildFamilyOSPaths, resolveUserPaths } from "../src/paths";
+import { HANDOFF_PROMPT, OneShotHandoff } from "../src/pi/handoff";
+import { createInitialSessionManager, createUserRuntimeFactory } from "../src/pi/runtime-factory";
+import { getSharedSessionDir } from "../src/pi/session-paths";
+import { createTempRoot } from "./helpers/temp-root";
+
+async function createRuntimeFixture() {
+  const temp = await createTempRoot();
+  const rootConfig = {
+    defaultAgentId: "default",
+    sharedPiAgentDir: ".familyos-pi",
+    telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
+  };
+  const paths = buildFamilyOSPaths(temp.rootDir, rootConfig);
+
+  await fs.mkdir(path.join(paths.agentsDir, "default"), { recursive: true });
+  await fs.writeFile(path.join(paths.agentsDir, "default", "SOUL.md"), "You are FamilyOS.");
+  await fs.writeFile(
+    path.join(paths.agentsDir, "default", "agent.json"),
+    JSON.stringify(
+      {
+        id: "default",
+        displayName: "FamilyOS Assistant",
+        capabilities: {
+          tools: ["read", "ls"],
+          readRoots: ["Inbox", "Workspace", "Exports"],
+          writeRoots: ["Workspace", "Exports"],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const user = resolveUserPaths(paths, { id: "martin", displayName: "Martin" });
+  await fs.mkdir(path.dirname(user.manifestPath), { recursive: true });
+  await fs.writeFile(
+    user.manifestPath,
+    JSON.stringify(
+      {
+        id: "martin",
+        displayName: "Martin",
+        channels: { telegram: { userIds: ["123"] } },
+      },
+      null,
+      2,
+    ),
+  );
+  await fs.mkdir(user.homeDir, { recursive: true });
+
+  const authStorage = AuthStorage.create(path.join(paths.sharedPiAgentDir, "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage, path.join(paths.sharedPiAgentDir, "models.json"));
+  const agentLoader = new AgentLoader(paths, rootConfig);
+  const audit = createAuditLog(paths.auditLogPath);
+  const handoff = new OneShotHandoff();
+  const onEvent = vi.fn();
+
+  const runtime = await createAgentSessionRuntime(
+    createUserRuntimeFactory({
+      paths,
+      rootConfig,
+      user,
+      agentLoader,
+      authStorage,
+      modelRegistry,
+      handoff,
+      audit,
+      getActiveAgentId: () => "default",
+      onEvent,
+    }),
+    {
+      cwd: user.homeDir,
+      agentDir: paths.sharedPiAgentDir,
+      sessionManager: await createInitialSessionManager(paths, user, undefined),
+    },
+  );
+
+  await runtime.session.bindExtensions({});
+
+  return { temp, paths, user, audit, handoff, runtime, onEvent };
+}
+
+describe("createUserRuntimeFactory", () => {
+  it("loads only approved same-name custom tools and builds a deterministic system prompt", async () => {
+    const fixture = await createRuntimeFixture();
+
+    try {
+      const toolNames = fixture.runtime.session.getAllTools().map((tool) => tool.name);
+      expect(toolNames).toEqual(["read", "ls"]);
+      expect(toolNames).not.toContain("bash");
+
+      const systemPrompt = fixture.runtime.session.extensionRunner.createContext().getSystemPrompt();
+      expect(systemPrompt).toContain("You are FamilyOS.");
+      expect(systemPrompt).toContain("Read files inside Inbox, Workspace, or Exports.");
+      expect(systemPrompt).toContain("Use ls only inside readable workspace roots.");
+
+      expect(fixture.runtime.session.sessionFile?.startsWith(getSharedSessionDir(fixture.user.homeDir, fixture.paths.sharedPiAgentDir))).toBe(true);
+    } finally {
+      await fixture.audit.close();
+      await fixture.temp.cleanup();
+    }
   });
 
-  it("prepends a synthetic system message when the payload only has messages", () => {
-    const payload = injectHandoffIntoPayload({ messages: [{ role: "user", content: "hello" }] }, "handoff");
-    expect((payload as any).messages[0]).toEqual({ role: "system", content: "handoff" });
+  it("rebinds extensions after newSession so handoff and audit hooks still execute", async () => {
+    const fixture = await createRuntimeFixture();
+
+    try {
+      fixture.runtime.setRebindSession(async (session) => {
+        await session.bindExtensions({});
+      });
+
+      const payload = {
+        system: [{ type: "text", text: "persona", cache_control: { type: "ephemeral" } }],
+        messages: [],
+      };
+
+      fixture.handoff.arm(HANDOFF_PROMPT);
+      const firstPayload = await fixture.runtime.session.extensionRunner.emitBeforeProviderRequest(payload);
+      expect((firstPayload as any).system.at(-1)).toEqual({ type: "text", text: HANDOFF_PROMPT });
+      await fixture.runtime.session.extensionRunner.emit({ type: "agent_start" });
+      expect(fixture.onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "agent_start", userSlug: "martin" }));
+
+      const firstSessionFile = fixture.runtime.session.sessionFile;
+      await fixture.runtime.newSession();
+      expect(fixture.runtime.session.sessionFile).not.toBe(firstSessionFile);
+
+      fixture.handoff.arm(HANDOFF_PROMPT);
+      const secondPayload = await fixture.runtime.session.extensionRunner.emitBeforeProviderRequest(payload);
+      expect((secondPayload as any).system.at(-1)).toEqual({ type: "text", text: HANDOFF_PROMPT });
+      await fixture.runtime.session.extensionRunner.emit({ type: "agent_start" });
+      expect(fixture.onEvent).toHaveBeenCalledTimes(2);
+    } finally {
+      await fixture.audit.close();
+      await fixture.temp.cleanup();
+    }
   });
 });
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd services/familyos && npx vitest run tests/handoff.test.ts`
-Expected: FAIL because `handoff.ts` does not exist yet
+Run: `cd services/familyos && npx vitest run tests/handoff.test.ts tests/runtime-factory.test.ts`
+Expected: FAIL because `handoff.ts`, `prompt-composer.ts`, `session-paths.ts`, `familyos-extension.ts`, and `runtime-factory.ts` do not exist yet
 
-- [ ] **Step 3: Implement one-shot handoff storage and payload rewriting**
+- [ ] **Step 3: Implement one-shot handoff storage and provider-payload rewriting**
 
 Create `services/familyos/src/pi/handoff.ts`:
 
@@ -1886,49 +2095,98 @@ export class OneShotHandoff {
   }
 }
 
-export function injectHandoffIntoPayload(payload: unknown, handoff: string): unknown {
-  if (!payload || typeof payload !== "object") return payload;
-  const value = structuredClone(payload as Record<string, unknown>);
-
-  if (typeof value.system === "string") {
-    return {
-      ...value,
-      system: `${value.system}\n\n${handoff}`,
-    };
+export function injectHandoffIntoProviderPayload(payload: unknown, handoff: string) {
+  if (!payload || typeof payload !== "object") {
+    return { payload, injected: false };
   }
 
-  if (Array.isArray(value.system)) {
-    return {
+  const value = structuredClone(payload as Record<string, unknown>);
+  if (!Array.isArray(value.system)) {
+    return { payload: value, injected: false };
+  }
+
+  return {
+    injected: true,
+    payload: {
       ...value,
       system: [...value.system, { type: "text", text: handoff }],
-    };
-  }
-
-  if (Array.isArray(value.messages)) {
-    return {
-      ...value,
-      messages: [{ role: "system", content: handoff }, ...value.messages],
-    };
-  }
-
-  return value;
+    },
+  };
 }
 ```
 
-- [ ] **Step 4: Implement the FamilyOS extension factory and runtime factory**
+- [ ] **Step 4: Implement deterministic prompt composition and shared session-dir helpers**
+
+Create `services/familyos/src/pi/prompt-composer.ts`:
+
+```typescript
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+
+function dedupe(lines: string[]) {
+  const seen = new Set<string>();
+  return lines.filter((line) => {
+    const normalized = line.trim();
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
+
+export function composeGuidelines(activeTools: Array<Pick<ToolDefinition, "name" | "promptSnippet" | "promptGuidelines">>) {
+  const snippetLines = activeTools
+    .filter((tool) => typeof tool.promptSnippet === "string" && tool.promptSnippet.trim().length > 0)
+    .map((tool) => `- ${tool.name}: ${tool.promptSnippet!.trim()}`);
+
+  const guidelineLines = dedupe(
+    activeTools.flatMap((tool) => (tool.promptGuidelines ?? []).map((line) => line.trim())),
+  );
+
+  const sections: string[] = [];
+  if (snippetLines.length > 0) {
+    sections.push(["## Available tools", ...snippetLines].join("\n"));
+  }
+  if (guidelineLines.length > 0) {
+    sections.push(["## Guidelines", ...guidelineLines.map((line) => `- ${line}`)].join("\n"));
+  }
+
+  return sections.join("\n\n");
+}
+
+export function composeSystemPrompt(
+  soul: string,
+  activeTools: Array<Pick<ToolDefinition, "name" | "promptSnippet" | "promptGuidelines">>,
+) {
+  const guidelineBlock = composeGuidelines(activeTools);
+  return guidelineBlock ? `${soul.trim()}\n\n${guidelineBlock}` : soul.trim();
+}
+```
+
+Create `services/familyos/src/pi/session-paths.ts`:
+
+```typescript
+import path from "node:path";
+
+export function encodeSessionCwd(cwd: string) {
+  return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
+
+export function getSharedSessionDir(cwd: string, agentDir: string) {
+  return path.join(agentDir, "sessions", encodeSessionCwd(cwd));
+}
+```
+
+- [ ] **Step 5: Implement the FamilyOS extension factory**
 
 Create `services/familyos/src/pi/familyos-extension.ts`:
 
 ```typescript
 import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { AuditLog } from "../audit-log.js";
-import type { ResolvedAgent, ResolvedUser } from "../types.js";
-import { buildGuardedToolDefinitions } from "./guarded-tools.js";
-import { injectHandoffIntoPayload, OneShotHandoff } from "./handoff.js";
+import type { ResolvedUser } from "../types.js";
+import { injectHandoffIntoProviderPayload, OneShotHandoff } from "./handoff.js";
 
 export interface FamilyOSExtensionOptions {
   user: ResolvedUser;
-  agent: ResolvedAgent;
   handoff: OneShotHandoff;
   audit: AuditLog;
   onEvent?: (event: { type: string; userSlug: string; data?: Record<string, unknown> }) => void;
@@ -1936,26 +2194,24 @@ export interface FamilyOSExtensionOptions {
 
 export function createFamilyOSExtension(options: FamilyOSExtensionOptions): ExtensionFactory {
   return (pi: ExtensionAPI) => {
-    let toolsRegistered = false;
+    // Source-verified against the installed SDK: BeforeProviderRequestEvent carries
+    // the provider payload on event.payload.
+    pi.on("before_provider_request", (event) => {
+      const handoff = options.handoff.peek();
+      if (!handoff) return undefined;
 
-    pi.on("session_start", async () => {
-      if (!toolsRegistered) {
-        const definitions = buildGuardedToolDefinitions(options.user, options.agent, (event) => {
-          options.audit.append(event);
+      const result = injectHandoffIntoProviderPayload(event.payload, handoff);
+      if (!result.injected) {
+        options.audit.append({
+          type: "handoff_payload_unsupported",
+          userSlug: options.user.slug,
+          data: { hasSystemArray: Array.isArray((event.payload as any)?.system) },
         });
-        for (const definition of definitions) {
-          pi.registerTool(definition);
-        }
-        toolsRegistered = true;
+        return undefined;
       }
 
-      pi.setActiveTools(options.agent.capabilities.tools);
-    });
-
-    pi.on("before_provider_request", (event) => {
-      const handoff = options.handoff.consume();
-      if (!handoff) return undefined;
-      return injectHandoffIntoPayload(event.payload, handoff);
+      options.handoff.consume();
+      return result.payload;
     });
 
     pi.on("agent_start", () => {
@@ -1973,6 +2229,8 @@ export function createFamilyOSExtension(options: FamilyOSExtensionOptions): Exte
 }
 ```
 
+- [ ] **Step 6: Implement the runtime factory with selective same-name custom tools**
+
 Create `services/familyos/src/pi/runtime-factory.ts`:
 
 ```typescript
@@ -1982,7 +2240,6 @@ import {
   type CreateAgentSessionRuntimeFactory,
   createAgentSessionFromServices,
   createAgentSessionServices,
-  getDefaultSessionDir,
   type ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -1991,14 +2248,17 @@ import type { AuditLog } from "../audit-log.js";
 import { AgentLoader } from "../config/agent-loader.js";
 import type { FamilyOSPaths, FamilyOSRootConfig, ResolvedUser } from "../types.js";
 import { createFamilyOSExtension } from "./familyos-extension.js";
+import { buildGuardedToolDefinitions } from "./guarded-tools.js";
 import { OneShotHandoff } from "./handoff.js";
+import { composeSystemPrompt } from "./prompt-composer.js";
+import { getSharedSessionDir } from "./session-paths.js";
 
 export async function createInitialSessionManager(
   paths: FamilyOSPaths,
   user: ResolvedUser,
   activeSessionPath: string | undefined,
 ) {
-  const sessionDir = getDefaultSessionDir(user.homeDir, paths.sharedPiAgentDir);
+  const sessionDir = getSharedSessionDir(user.homeDir, paths.sharedPiAgentDir);
   if (activeSessionPath) {
     try {
       await fs.access(activeSessionPath);
@@ -2024,6 +2284,9 @@ export function createUserRuntimeFactory(options: {
 }): CreateAgentSessionRuntimeFactory {
   return async ({ cwd, sessionManager, sessionStartEvent }) => {
     const agent = await options.agentLoader.loadAgent(options.getActiveAgentId(), options.user);
+    const guardedTools = buildGuardedToolDefinitions(options.user, agent, (event) => {
+      options.audit.append(event);
+    });
 
     const services = await createAgentSessionServices({
       cwd,
@@ -2040,14 +2303,12 @@ export function createUserRuntimeFactory(options: {
         extensionFactories: [
           createFamilyOSExtension({
             user: options.user,
-            agent,
             handoff: options.handoff,
             audit: options.audit,
             onEvent: options.onEvent,
           }),
         ],
-        systemPromptOverride: () => agent.soul,
-        appendSystemPromptOverride: () => [],
+        systemPromptOverride: () => composeSystemPrompt(agent.soul, guardedTools),
       },
     });
 
@@ -2056,7 +2317,8 @@ export function createUserRuntimeFactory(options: {
         services,
         sessionManager,
         sessionStartEvent,
-        noTools: "all",
+        tools: agent.capabilities.tools,
+        customTools: guardedTools,
       })),
       services,
       diagnostics: services.diagnostics,
@@ -2065,21 +2327,27 @@ export function createUserRuntimeFactory(options: {
 }
 ```
 
-- [ ] **Step 5: Run tests and typecheck**
+Keep two source-verified notes with this step:
+- Do **not** use `noTools: "all"` here. On the installed SDK that would also zero out the allowlist for same-name custom tools. FamilyOS instead passes `tools: agent.capabilities.tools` and overlays those names with `customTools`.
+- Do **not** manually merge shared Pi settings with `home/.pi/settings.json`. `SettingsManager.create(cwd, agentDir)` already performs the global + project merge that the spec requires.
 
-Run: `cd services/familyos && npx vitest run tests/handoff.test.ts && npm run typecheck`
+- [ ] **Step 7: Run tests and typecheck**
+
+Run: `cd services/familyos && npx vitest run tests/handoff.test.ts tests/runtime-factory.test.ts && npm run typecheck`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add services/familyos/src/pi/handoff.ts services/familyos/src/pi/familyos-extension.ts services/familyos/src/pi/runtime-factory.ts services/familyos/tests/handoff.test.ts
-git commit -m "feat(familyos): add runtime factory and handoff extension"
+git add services/familyos/src/pi/handoff.ts services/familyos/src/pi/prompt-composer.ts services/familyos/src/pi/session-paths.ts services/familyos/src/pi/familyos-extension.ts services/familyos/src/pi/runtime-factory.ts services/familyos/tests/handoff.test.ts services/familyos/tests/runtime-factory.test.ts
+git commit -m "feat(familyos): add runtime factory and deterministic handoff flow"
 ```
 
 ---
 
-### Task 7: Build the session-list and ASCII tree view helpers for `/resume` and `/tree`
+### Task 7: Build the session-list and real ASCII tree view helpers for `/resume` and `/tree`
+
+Use Pi's documented filter names verbatim in this task: `default`, `no-tools`, `user-only`, `labeled-only`, `all`.
 
 **Files:**
 - Create: `services/familyos/src/core/session-view.ts`
@@ -2120,7 +2388,7 @@ describe("formatSessionList", () => {
 });
 
 describe("buildTreePage", () => {
-  it("renders user-only entries by default with numeric indices", () => {
+  it("renders documented ASCII tree glyphs with numeric indices", () => {
     const page = buildTreePage(
       [
         {
@@ -2144,20 +2412,27 @@ describe("buildTreePage", () => {
           timestamp: "2026-04-30T10:02:00.000Z",
           message: { role: "user", content: "Try plan B" },
         },
+        {
+          type: "message",
+          id: "u3",
+          parentId: "u1",
+          timestamp: "2026-04-30T10:03:00.000Z",
+          message: { role: "user", content: "Try plan C" },
+        },
       ] as any,
-      "u2",
-      "user-only",
+      "u3",
+      "default",
       0,
       10,
       () => undefined,
     );
 
-    expect(page.entries.map((entry) => entry.entryId)).toEqual(["u1", "u2"]);
-    expect(page.text).toContain("[1]");
-    expect(page.text).toContain("[2]");
+    expect(page.text).toContain("├──[2]");
+    expect(page.text).toContain("│  └──[3]");
+    expect(page.text).toContain("└──[4]");
   });
 
-  it("includes only labeled entries in labeled mode", () => {
+  it("uses Pi's documented labeled-only filter name", () => {
     const page = buildTreePage(
       [
         {
@@ -2176,7 +2451,7 @@ describe("buildTreePage", () => {
         },
       ] as any,
       "u2",
-      "labeled",
+      "labeled-only",
       0,
       10,
       (entryId) => (entryId === "u2" ? "checkpoint" : undefined),
@@ -2184,6 +2459,34 @@ describe("buildTreePage", () => {
 
     expect(page.entries.map((entry) => entry.entryId)).toEqual(["u2"]);
     expect(page.text).toContain("checkpoint");
+  });
+
+  it("treats default as Pi's documented non-settings tree mode", () => {
+    const page = buildTreePage(
+      [
+        {
+          type: "message",
+          id: "u1",
+          parentId: null,
+          timestamp: "2026-04-30T10:00:00.000Z",
+          message: { role: "user", content: "Start here" },
+        },
+        {
+          type: "label",
+          id: "l1",
+          parentId: "u1",
+          timestamp: "2026-04-30T10:01:00.000Z",
+          label: "checkpoint",
+        },
+      ] as any,
+      "u1",
+      "default",
+      0,
+      10,
+      () => undefined,
+    );
+
+    expect(page.entries.map((entry) => entry.entryId)).toEqual(["u1"]);
   });
 });
 ```
@@ -2243,17 +2546,45 @@ function entryPreview(entry: SessionEntry, label: string | undefined, activeLeaf
   return `${activePrefix}${entry.type}`;
 }
 
+function isSettingsEntry(entry: SessionEntry) {
+  return ["label", "custom", "model_change", "thinking_level_change"].includes(entry.type);
+}
+
 function isVisible(entry: SessionEntry, filter: TreeFilter, label: string | undefined): boolean {
   switch (filter) {
     case "all":
       return true;
     case "no-tools":
-      return entry.type !== "custom" && entry.type !== "custom_message";
+      return !isSettingsEntry(entry) && !(entry.type === "message" && entry.message.role === "toolResult");
     case "user-only":
       return entry.type === "message" && entry.message.role === "user";
-    case "labeled":
+    case "labeled-only":
       return Boolean(label);
+    case "default":
+    default:
+      return !isSettingsEntry(entry);
   }
+}
+
+function buildTreePrefix(
+  pageItems: Array<{ entry: SessionEntry; parentId: string | null; ancestorIds: string[]; depth: number }>,
+  index: number,
+) {
+  const item = pageItems[index]!;
+  if (item.depth === 0) return "";
+
+  const parts: string[] = [];
+  for (let level = 0; level < item.depth - 1; level += 1) {
+    const ancestorId = item.ancestorIds[level]!;
+    const hasVisibleContinuation = pageItems
+      .slice(index + 1)
+      .some((candidate) => candidate.ancestorIds[level] === ancestorId);
+    parts.push(hasVisibleContinuation ? "│  " : "   ");
+  }
+
+  const hasLaterSibling = pageItems.slice(index + 1).some((candidate) => candidate.parentId === item.parentId);
+  parts.push(hasLaterSibling ? "├──" : "└──");
+  return parts.join("");
 }
 
 export function formatSessionList(sessions: SessionInfo[]): SessionListItem[] {
@@ -2273,30 +2604,35 @@ export function buildTreePage(
   pageSize: number,
   getLabel: (entryId: string) => string | undefined,
 ): TreePage {
-  const depthById = new Map<string, number>();
+  const ancestorsById = new Map<string, string[]>();
+
   const visible = entries
     .map((entry) => {
-      const depth = entry.parentId ? (depthById.get(entry.parentId) ?? 0) + 1 : 0;
-      depthById.set(entry.id, depth);
+      const parentAncestors = entry.parentId ? (ancestorsById.get(entry.parentId) ?? []) : [];
+      const ancestorIds = entry.parentId ? [...parentAncestors, entry.parentId] : [];
+      ancestorsById.set(entry.id, ancestorIds);
       const label = getLabel(entry.id);
       return {
         entry,
-        depth,
+        parentId: entry.parentId,
+        ancestorIds,
+        depth: ancestorIds.length,
         label,
       };
     })
     .filter(({ entry, label }) => isVisible(entry, filter, label));
 
   const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
-  const safePage = Math.min(page, totalPages - 1);
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
   const pageItems = visible.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   const numbered = pageItems.map((item, index) => {
     const humanIndex = index + 1;
+    const prefix = buildTreePrefix(pageItems, index);
     return {
       index: humanIndex,
       entryId: item.entry.id,
-      line: `${"  ".repeat(item.depth)}[${humanIndex}] ${entryPreview(item.entry, item.label, activeLeafId)}`,
+      line: `${prefix}[${humanIndex}] ${entryPreview(item.entry, item.label, activeLeafId)}`,
     };
   });
 
@@ -2335,9 +2671,38 @@ git commit -m "feat(familyos): add resume and tree view helpers"
 - Create: `services/familyos/src/pi/prompt-runner.ts`
 - Create: `services/familyos/src/pi/runtime-registry.ts`
 - Create: `services/familyos/src/core/familyos-service.ts`
+- Create: `services/familyos/tests/runtime-registry.test.ts`
 - Create: `services/familyos/tests/integration/runtime-isolation.test.ts`
 
-- [ ] **Step 1: Write the failing runtime/service integration test**
+- [ ] **Step 1: Write the failing runtime-registry and service integration tests**
+
+Create `services/familyos/tests/runtime-registry.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { extractCarryForwardSummary, isRuntimeHandleIdle } from "../src/pi/runtime-registry";
+
+describe("isRuntimeHandleIdle", () => {
+  it("requires both an empty queue and a non-streaming session", () => {
+    expect(isRuntimeHandleIdle(undefined as any)).toBe(true);
+    expect(isRuntimeHandleIdle({ pendingOperations: 1, runtime: { session: { isStreaming: false } } } as any)).toBe(false);
+    expect(isRuntimeHandleIdle({ pendingOperations: 0, runtime: { session: { isStreaming: true } } } as any)).toBe(false);
+    expect(isRuntimeHandleIdle({ pendingOperations: 0, runtime: { session: { isStreaming: false } } } as any)).toBe(true);
+  });
+});
+
+describe("extractCarryForwardSummary", () => {
+  it("throws the summarizer error when Pi cannot produce a branch summary", () => {
+    expect(() => extractCarryForwardSummary({ error: "summary failed" } as any)).toThrow("summary failed");
+  });
+
+  it("throws when Pi returns no summary text", () => {
+    expect(() => extractCarryForwardSummary({ summary: "" } as any)).toThrow(
+      "Could not generate a carry-forward summary.",
+    );
+  });
+});
+```
 
 Create `services/familyos/tests/integration/runtime-isolation.test.ts`:
 
@@ -2353,16 +2718,37 @@ import { StateStore } from "../../src/identity/state-store";
 import { UserStore } from "../../src/identity/user-store";
 import { buildFamilyOSPaths } from "../../src/paths";
 import { UserRuntimeRegistry } from "../../src/pi/runtime-registry";
+import { getSharedSessionDir } from "../../src/pi/session-paths";
 import { createTempRoot } from "../helpers/temp-root";
 
 describe("FamilyOS runtime isolation", () => {
-  it("creates separate runtimes per user with user-scoped cwd and state", async () => {
+  it("creates separate runtimes per user with user-scoped cwd, state, and shared-agent-dir session storage", async () => {
     const temp = await createTempRoot();
-    const paths = buildFamilyOSPaths(temp.rootDir, {
+    const rootConfig = {
       defaultAgentId: "default",
       sharedPiAgentDir: ".familyos-pi",
       telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
-    });
+    };
+    const paths = buildFamilyOSPaths(temp.rootDir, rootConfig);
+
+    await fs.mkdir(path.join(paths.agentsDir, "default"), { recursive: true });
+    await fs.writeFile(path.join(paths.agentsDir, "default", "SOUL.md"), "You are FamilyOS.");
+    await fs.writeFile(
+      path.join(paths.agentsDir, "default", "agent.json"),
+      JSON.stringify(
+        {
+          id: "default",
+          displayName: "FamilyOS Assistant",
+          capabilities: {
+            tools: ["read"],
+            readRoots: ["Inbox", "Workspace", "Exports"],
+            writeRoots: ["Workspace", "Exports"],
+          },
+        },
+        null,
+        2,
+      ),
+    );
 
     for (const [slug, telegramId] of [
       ["martin", "101"],
@@ -2385,22 +2771,14 @@ describe("FamilyOS runtime isolation", () => {
 
     const userStore = new UserStore(paths);
     const stateStore = new StateStore();
-    const agentLoader = new AgentLoader(paths, {
-      defaultAgentId: "default",
-      sharedPiAgentDir: ".familyos-pi",
-      telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
-    });
+    const agentLoader = new AgentLoader(paths, rootConfig);
     const authStorage = AuthStorage.create(path.join(paths.sharedPiAgentDir, "auth.json"));
     const modelRegistry = ModelRegistry.create(authStorage, path.join(paths.sharedPiAgentDir, "models.json"));
     const audit = createAuditLog(paths.auditLogPath);
 
     const runtimeRegistry = new UserRuntimeRegistry({
       paths,
-      rootConfig: {
-        defaultAgentId: "default",
-        sharedPiAgentDir: ".familyos-pi",
-        telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
-      },
+      rootConfig,
       userStore,
       stateStore,
       agentLoader,
@@ -2411,11 +2789,7 @@ describe("FamilyOS runtime isolation", () => {
 
     const service = new FamilyOSService({
       paths,
-      rootConfig: {
-        defaultAgentId: "default",
-        sharedPiAgentDir: ".familyos-pi",
-        telegram: { flowTtlSeconds: 900, typingIntervalMs: 4000, pageSize: 8 },
-      },
+      rootConfig,
       userStore,
       stateStore,
       agentLoader,
@@ -2424,28 +2798,32 @@ describe("FamilyOS runtime isolation", () => {
       audit,
     });
 
-    const martin = await service.resolveRegisteredUser({ channel: "telegram", externalUserId: "101", chatId: "101" });
-    const alice = await service.resolveRegisteredUser({ channel: "telegram", externalUserId: "202", chatId: "202" });
+    try {
+      const martin = await service.resolveRegisteredUser({ channel: "telegram", externalUserId: "101", chatId: "101" });
+      const alice = await service.resolveRegisteredUser({ channel: "telegram", externalUserId: "202", chatId: "202" });
 
-    if (!martin || !alice) throw new Error("Expected both users to resolve");
+      if (!martin || !alice) throw new Error("Expected both users to resolve");
 
-    const martinRuntime = await runtimeRegistry.ensureRuntime(martin);
-    const aliceRuntime = await runtimeRegistry.ensureRuntime(alice);
+      const martinRuntime = await runtimeRegistry.ensureRuntime(martin);
+      const aliceRuntime = await runtimeRegistry.ensureRuntime(alice);
 
-    expect(martinRuntime.cwd).toBe(martin.homeDir);
-    expect(aliceRuntime.cwd).toBe(alice.homeDir);
-    expect(martinRuntime.cwd).not.toBe(aliceRuntime.cwd);
-    expect(martinRuntime.session.sessionFile).not.toBe(aliceRuntime.session.sessionFile);
-
-    await audit.close();
-    await temp.cleanup();
+      expect(martinRuntime.cwd).toBe(martin.homeDir);
+      expect(aliceRuntime.cwd).toBe(alice.homeDir);
+      expect(martinRuntime.cwd).not.toBe(aliceRuntime.cwd);
+      expect(martinRuntime.session.sessionFile).not.toBe(aliceRuntime.session.sessionFile);
+      expect(martinRuntime.session.sessionFile?.startsWith(getSharedSessionDir(martin.homeDir, paths.sharedPiAgentDir))).toBe(true);
+      expect(aliceRuntime.session.sessionFile?.startsWith(getSharedSessionDir(alice.homeDir, paths.sharedPiAgentDir))).toBe(true);
+    } finally {
+      await audit.close();
+      await temp.cleanup();
+    }
   });
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd services/familyos && npx vitest run tests/integration/runtime-isolation.test.ts`
+Run: `cd services/familyos && npx vitest run tests/runtime-registry.test.ts tests/integration/runtime-isolation.test.ts`
 Expected: FAIL because `prompt-runner.ts`, `runtime-registry.ts`, and `familyos-service.ts` do not exist yet
 
 - [ ] **Step 3: Implement prompt execution and assistant-text collection**
@@ -2522,6 +2900,18 @@ interface UserRuntimeHandle {
   activeSessionPath?: string;
   handoff: OneShotHandoff;
   queue: Promise<unknown>;
+  pendingOperations: number;
+}
+
+export function isRuntimeHandleIdle(handle?: Pick<UserRuntimeHandle, "pendingOperations" | "runtime">) {
+  return !handle || (handle.pendingOperations === 0 && !handle.runtime.session.isStreaming);
+}
+
+export function extractCarryForwardSummary(result: { summary?: string; error?: string }) {
+  if (result.error || !result.summary?.trim()) {
+    throw new Error(result.error ?? "Could not generate a carry-forward summary.");
+  }
+  return result.summary;
 }
 
 export class UserRuntimeRegistry {
@@ -2587,6 +2977,7 @@ export class UserRuntimeRegistry {
       activeSessionPath: runtime.session.sessionFile,
       handoff,
       queue: Promise.resolve(),
+      pendingOperations: 0,
     };
 
     this.handles.set(user.slug, handle);
@@ -2599,9 +2990,15 @@ export class UserRuntimeRegistry {
     const handle = this.handles.get(user.slug);
     if (!handle) throw new Error(`Missing runtime handle for ${user.slug}`);
 
+    handle.pendingOperations += 1;
     const next = handle.queue.catch(() => undefined).then(() => operation(handle));
     handle.queue = next.then(() => undefined, () => undefined);
-    return next;
+
+    try {
+      return await next;
+    } finally {
+      handle.pendingOperations -= 1;
+    }
   }
 
   async sendTurn(user: ResolvedUser, input: TurnInput) {
@@ -2688,11 +3085,7 @@ export class UserRuntimeRegistry {
         "Summarize the user's work so a different assistant persona can continue without copying the prior assistant's voice.",
     });
 
-    if (result.error || !result.summary) {
-      throw new Error(result.error ?? "Could not generate a carry-forward summary.");
-    }
-
-    return result.summary;
+    return extractCarryForwardSummary(result);
   }
 
   async switchAgent(user: ResolvedUser, targetAgentId: string, choice: AgentSwitchChoice) {
@@ -2755,8 +3148,7 @@ export class UserRuntimeRegistry {
   }
 
   isIdle(user: ResolvedUser) {
-    const handle = this.handles.get(user.slug);
-    return !handle || !handle.runtime.session.isStreaming;
+    return isRuntimeHandleIdle(this.handles.get(user.slug));
   }
 
   async cancel(user: ResolvedUser) {
@@ -2768,12 +3160,17 @@ export class UserRuntimeRegistry {
 }
 ```
 
+Source-verified with the installed SDK before writing this step:
+- `generateBranchSummary(entries, { model, apiKey, headers, signal, customInstructions })`
+- `ctx.sendMessage({ customType, content, display, details }, { deliverAs: "nextTurn" })`
+
 - [ ] **Step 5: Implement the channel-agnostic FamilyOS service**
 
 Create `services/familyos/src/core/familyos-service.ts`:
 
 ```typescript
-import { SessionManager, getDefaultSessionDir } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
+import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { AuditLog } from "../audit-log.js";
 import { AgentLoader } from "../config/agent-loader.js";
 import type {
@@ -2788,9 +3185,9 @@ import type {
 } from "../types.js";
 import { StateStore } from "../identity/state-store.js";
 import { UserStore } from "../identity/user-store.js";
+import { getSharedSessionDir } from "../pi/session-paths.js";
 import { UserRuntimeRegistry } from "../pi/runtime-registry.js";
-import { formatSessionList, buildTreePage } from "./session-view.js";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { buildTreePage, formatSessionList } from "./session-view.js";
 
 export class FamilyOSService {
   constructor(private readonly deps: {
@@ -2847,7 +3244,7 @@ export class FamilyOSService {
   }
 
   async listSessions(user: ResolvedUser) {
-    const sessionDir = getDefaultSessionDir(user.homeDir, this.deps.paths.sharedPiAgentDir);
+    const sessionDir = getSharedSessionDir(user.homeDir, this.deps.paths.sharedPiAgentDir);
     const sessions = await SessionManager.list(user.homeDir, sessionDir);
     return formatSessionList(sessions);
   }
@@ -2884,8 +3281,9 @@ export class FamilyOSService {
     return this.deps.runtimeRegistry.compact(user, customInstructions);
   }
 
-  listAvailableModels() {
-    return this.deps.modelRegistry.getAvailable().map((model) => ({
+  async listAvailableModels() {
+    const models = await Promise.resolve(this.deps.modelRegistry.getAvailable());
+    return models.map((model) => ({
       provider: model.provider,
       id: model.id,
       label: `${model.provider}/${model.id}`,
@@ -2929,15 +3327,15 @@ export class FamilyOSService {
 }
 ```
 
-- [ ] **Step 6: Run the integration test and typecheck**
+- [ ] **Step 6: Run the tests and typecheck**
 
-Run: `cd services/familyos && npx vitest run tests/integration/runtime-isolation.test.ts && npm run typecheck`
+Run: `cd services/familyos && npx vitest run tests/runtime-registry.test.ts tests/integration/runtime-isolation.test.ts && npm run typecheck`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add services/familyos/src/pi/prompt-runner.ts services/familyos/src/pi/runtime-registry.ts services/familyos/src/core/familyos-service.ts services/familyos/tests/integration/runtime-isolation.test.ts
+git add services/familyos/src/pi/prompt-runner.ts services/familyos/src/pi/runtime-registry.ts services/familyos/src/core/familyos-service.ts services/familyos/tests/runtime-registry.test.ts services/familyos/tests/integration/runtime-isolation.test.ts
 git commit -m "feat(familyos): add runtime registry and core service"
 ```
 
@@ -3354,17 +3752,17 @@ Create `services/familyos/tests/helpers/fake-telegram.ts`:
 
 ```typescript
 export class FakeTelegramResponder {
-  sent: Array<{ text: string; parseMode?: string; keyboard?: unknown }> = [];
-  edited: Array<{ messageId: number; text: string; parseMode?: string; keyboard?: unknown }> = [];
+  sent: Array<{ text: string; parseMode?: string; keyboard?: any }> = [];
+  edited: Array<{ messageId: number; text: string; parseMode?: string; keyboard?: any }> = [];
   callbackAnswers: string[] = [];
   typingCount = 0;
 
-  async reply(text: string, options?: { parseMode?: string; keyboard?: unknown }) {
+  async reply(text: string, options?: { parseMode?: string; keyboard?: any }) {
     this.sent.push({ text, parseMode: options?.parseMode, keyboard: options?.keyboard });
     return { messageId: this.sent.length };
   }
 
-  async edit(messageId: number, text: string, options?: { parseMode?: string; keyboard?: unknown }) {
+  async edit(messageId: number, text: string, options?: { parseMode?: string; keyboard?: any }) {
     this.edited.push({ messageId, text, parseMode: options?.parseMode, keyboard: options?.keyboard });
   }
 
@@ -3429,6 +3827,36 @@ describe("Telegram onboarding", () => {
     expect(normal.sent[0]?.text).toContain("not registered");
   });
 
+  it("does not download attachments for unregistered users", async () => {
+    const downloader = { download: vi.fn() };
+    const router = new TelegramRouter({
+      service: {
+        getOnboardingMessage: () => "You're not registered with FamilyOS yet. Use `/whoami` to get your Telegram ID, then send it to the admin.",
+        describeCaller: vi.fn(),
+        resolveRegisteredUser: vi.fn(async () => null),
+      } as any,
+      flowStore: new FlowStore(60_000),
+      typingLoop: new TypingIndicatorLoop(4000),
+      pageSize: 8,
+      downloader: downloader as any,
+    });
+
+    const responder = new FakeTelegramResponder();
+    await router.handleMessage(
+      {
+        isPrivateChat: true,
+        chatId: "123",
+        telegramUserId: "123",
+        text: "hello",
+        attachments: [{ kind: "document", fileId: "file-1", fileName: "big.pdf" }],
+      },
+      responder,
+    );
+
+    expect(downloader.download).not.toHaveBeenCalled();
+    expect(responder.sent[0]?.text).toContain("not registered");
+  });
+
   it("ignores non-private chats", async () => {
     const router = new TelegramRouter({
       service: {
@@ -3467,6 +3895,10 @@ import { TypingIndicatorLoop } from "../../src/typing-indicator";
 import { TelegramRouter } from "../../src/telegram/router";
 import { FakeTelegramResponder } from "../helpers/fake-telegram";
 
+function getCallbackData(responder: FakeTelegramResponder, row: number, column: number) {
+  return responder.sent.at(-1)?.keyboard?.inline_keyboard?.[row]?.[column]?.callback_data;
+}
+
 describe("TelegramRouter flows", () => {
   it("renders /new confirmation and executes confirm callback", async () => {
     const service = {
@@ -3477,10 +3909,9 @@ describe("TelegramRouter flows", () => {
       startNewSession: vi.fn(async () => undefined),
     } as any;
 
-    const flowStore = new FlowStore<any>(60_000);
     const router = new TelegramRouter({
       service,
-      flowStore,
+      flowStore: new FlowStore<any>(60_000),
       typingLoop: new TypingIndicatorLoop(4000),
       pageSize: 8,
     });
@@ -3497,15 +3928,12 @@ describe("TelegramRouter flows", () => {
       responder,
     );
 
-    const token = [...(flowStore as any).values.keys()][0];
-    expect(token).toBeTruthy();
-
     await router.handleCallback(
       {
         isPrivateChat: true,
         chatId: "1",
         telegramUserId: "1",
-        data: `new:${token}:confirm`,
+        data: getCallbackData(responder, 0, 0),
         messageId: 1,
       },
       responder,
@@ -3513,6 +3941,115 @@ describe("TelegramRouter flows", () => {
 
     expect(service.startNewSession).toHaveBeenCalled();
     expect(responder.edited.at(-1)?.text).toContain("Started a new session");
+  });
+
+  it("stores tree index mappings server-side and does not rebuild the page on pick", async () => {
+    const service = {
+      getOnboardingMessage: () => "onboarding",
+      describeCaller: vi.fn(),
+      resolveRegisteredUser: vi.fn(async () => ({ slug: "martin" })),
+      isIdle: vi.fn(() => true),
+      buildTreePage: vi.fn(async () => ({
+        filter: "user-only",
+        page: 0,
+        totalPages: 1,
+        text: "Tree filter: user-only\n\n[1] → user: keep this",
+        entries: [{ index: 1, entryId: "entry-a", line: "[1] → user: keep this" }],
+      })),
+      restoreTreeEntry: vi.fn(async () => undefined),
+      branchTreeEntry: vi.fn(async () => undefined),
+    } as any;
+
+    const router = new TelegramRouter({
+      service,
+      flowStore: new FlowStore<any>(60_000),
+      typingLoop: new TypingIndicatorLoop(4000),
+      pageSize: 8,
+    });
+
+    const responder = new FakeTelegramResponder();
+    await router.handleMessage(
+      {
+        isPrivateChat: true,
+        chatId: "1",
+        telegramUserId: "1",
+        text: "/tree",
+        attachments: [],
+      },
+      responder,
+    );
+
+    const pickCallback = getCallbackData(responder, 0, 0);
+    await router.handleCallback(
+      {
+        isPrivateChat: true,
+        chatId: "1",
+        telegramUserId: "1",
+        data: pickCallback,
+        messageId: 1,
+      },
+      responder,
+    );
+
+    expect(service.buildTreePage).toHaveBeenCalledTimes(1);
+
+    const actionCallback = responder.edited.at(-1)?.keyboard?.inline_keyboard?.[0]?.[0]?.callback_data;
+    await router.handleCallback(
+      {
+        isPrivateChat: true,
+        chatId: "1",
+        telegramUserId: "1",
+        data: actionCallback,
+        messageId: 1,
+      },
+      responder,
+    );
+
+    expect(service.restoreTreeEntry).toHaveBeenCalledWith({ slug: "martin" }, "entry-a");
+  });
+
+  it("surfaces compact failures by editing the status message", async () => {
+    const service = {
+      getOnboardingMessage: () => "onboarding",
+      describeCaller: vi.fn(),
+      resolveRegisteredUser: vi.fn(async () => ({ slug: "martin" })),
+      isIdle: vi.fn(() => true),
+      compact: vi.fn(async () => {
+        throw new Error("summary failed");
+      }),
+    } as any;
+
+    const router = new TelegramRouter({
+      service,
+      flowStore: new FlowStore<any>(60_000),
+      typingLoop: new TypingIndicatorLoop(4000),
+      pageSize: 8,
+    });
+
+    const responder = new FakeTelegramResponder();
+    await router.handleMessage(
+      {
+        isPrivateChat: true,
+        chatId: "1",
+        telegramUserId: "1",
+        text: "/compact",
+        attachments: [],
+      },
+      responder,
+    );
+
+    await router.handleCallback(
+      {
+        isPrivateChat: true,
+        chatId: "1",
+        telegramUserId: "1",
+        data: getCallbackData(responder, 0, 0),
+        messageId: 1,
+      },
+      responder,
+    );
+
+    expect(responder.edited.at(-1)?.text).toContain("Compaction failed: summary failed");
   });
 
   it("blocks state-changing commands while a turn is running", async () => {
@@ -3624,10 +4161,13 @@ export function treeKeyboard(token: string, count: number): InlineKeyboard {
     inline_keyboard: [
       buttons,
       [
-        { text: "All", callback_data: `tree:${token}:filter:all` },
+        { text: "Default", callback_data: `tree:${token}:filter:default` },
         { text: "No-tools", callback_data: `tree:${token}:filter:no-tools` },
         { text: "User-only", callback_data: `tree:${token}:filter:user-only` },
-        { text: "Labeled", callback_data: `tree:${token}:filter:labeled` },
+      ],
+      [
+        { text: "Labeled-only", callback_data: `tree:${token}:filter:labeled-only` },
+        { text: "All", callback_data: `tree:${token}:filter:all` },
       ],
       [
         { text: "Prev", callback_data: `tree:${token}:prev` },
@@ -3795,7 +4335,7 @@ import type { FamilyOSService } from "../core/familyos-service.js";
 import { FlowStore } from "../flow-store.js";
 import { formatReplyForTelegram } from "../reply-format.js";
 import { TypingIndicatorLoop } from "../typing-indicator.js";
-import type { AgentSwitchChoice, ModelSwitchChoice, TreeFilter } from "../types.js";
+import type { AgentSwitchChoice, ModelSwitchChoice, ResolvedUser, TreeFilter } from "../types.js";
 import {
   agentActionKeyboard,
   compactKeyboard,
@@ -3806,13 +4346,12 @@ import {
   treeActionKeyboard,
   treeKeyboard,
 } from "./keyboards.js";
-import type { InlineKeyboard } from "./keyboards.js";
 import type { TelegramCallbackRequest, TelegramMessageRequest, TelegramResponder } from "./updates.js";
 
 type RouterFlow =
   | { kind: "new_confirm" }
   | { kind: "resume"; items: Array<{ path: string; title: string; subtitle: string }>; page: number }
-  | { kind: "tree"; filter: TreeFilter; page: number }
+  | { kind: "tree"; filter: TreeFilter; page: number; text: string; indexToEntryId: Record<string, string> }
   | { kind: "tree_action"; entryId: string }
   | { kind: "compact" }
   | { kind: "model_select"; models: Array<{ provider: string; id: string; label: string }> }
@@ -3820,8 +4359,16 @@ type RouterFlow =
   | { kind: "agent_select"; agents: Array<{ id: string; label: string }> }
   | { kind: "agent_action"; agentId: string };
 
-function escapePre(text: string) {
+function escapeHtml(text: string) {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function treeIndexMap(page: { entries: Array<{ index: number; entryId: string }> }) {
+  return Object.fromEntries(page.entries.map((entry) => [String(entry.index), entry.entryId]));
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export class TelegramRouter {
@@ -3869,8 +4416,8 @@ export class TelegramRouter {
     return user;
   }
 
-  private async ensureIdle(user: { slug: string }, responder: TelegramResponder) {
-    if (this.deps.service.isIdle(user as any)) {
+  private async ensureIdle(user: ResolvedUser, responder: TelegramResponder) {
+    if (this.deps.service.isIdle(user)) {
       return true;
     }
 
@@ -3903,6 +4450,11 @@ export class TelegramRouter {
     const user = await this.requireRegisteredUser(request, responder);
     if (!user) return;
 
+    if (request.unsupportedMessage) {
+      await responder.reply(request.unsupportedMessage, { parseMode: "HTML" });
+      return;
+    }
+
     const pendingCompactExpiry = this.pendingCompactInstructions.get(user.slug);
     if (pendingCompactExpiry && pendingCompactExpiry <= Date.now()) {
       this.pendingCompactInstructions.delete(user.slug);
@@ -3915,14 +4467,13 @@ export class TelegramRouter {
       try {
         await this.deps.service.compact(user, request.text);
         await responder.edit(status.messageId, "Compacted.", { parseMode: "HTML" });
+      } catch (error) {
+        await responder.edit(status.messageId, `Compaction failed: ${escapeHtml(getErrorMessage(error))}`, {
+          parseMode: "HTML",
+        });
       } finally {
         this.deps.typingLoop.stop(user.slug);
       }
-      return;
-    }
-
-    if (request.unsupportedMessage) {
-      await responder.reply(request.unsupportedMessage, { parseMode: "HTML" });
       return;
     }
 
@@ -3951,8 +4502,14 @@ export class TelegramRouter {
     if (request.text === "/tree") {
       if (!(await this.ensureIdle(user, responder))) return;
       const page = await this.deps.service.buildTreePage(user, "user-only", 0);
-      const token = this.deps.flowStore.create({ kind: "tree", filter: "user-only", page: 0 });
-      await responder.reply(`<pre>${escapePre(page.text)}</pre>`, {
+      const token = this.deps.flowStore.create({
+        kind: "tree",
+        filter: "user-only",
+        page: page.page,
+        text: page.text,
+        indexToEntryId: treeIndexMap(page),
+      });
+      await responder.reply(`<pre>${escapeHtml(page.text)}</pre>`, {
         parseMode: "HTML",
         keyboard: treeKeyboard(token, page.entries.length),
       });
@@ -3971,7 +4528,7 @@ export class TelegramRouter {
 
     if (request.text === "/model") {
       if (!(await this.ensureIdle(user, responder))) return;
-      const models = this.deps.service.listAvailableModels();
+      const models = await this.deps.service.listAvailableModels();
       const token = this.deps.flowStore.create({ kind: "model_select", models });
       await responder.reply("Choose a model.", {
         parseMode: "HTML",
@@ -4031,7 +4588,7 @@ export class TelegramRouter {
       return;
     }
 
-    if (action !== "cancel" && !this.deps.service.isIdle(user as any)) {
+    if (action !== "cancel" && !this.deps.service.isIdle(user)) {
       await responder.answerCallback("Please wait until the current turn finishes, or use /cancel.");
       return;
     }
@@ -4075,23 +4632,31 @@ export class TelegramRouter {
         return;
       }
 
-      const nextFilter = action === "filter" ? (value as TreeFilter) : flow.filter;
-      const nextPage = action === "next" ? flow.page + 1 : action === "prev" ? flow.page - 1 : flow.page;
-      const page = await this.deps.service.buildTreePage(user, nextFilter, nextPage);
-
       if (action === "pick") {
-        const entry = page.entries[Number(value) - 1];
-        if (!entry) return;
-        const nextToken = this.deps.flowStore.create({ kind: "tree_action", entryId: entry.entryId });
-        await responder.edit(request.messageId, `<pre>${escapePre(page.text)}</pre>`, {
+        const entryId = flow.indexToEntryId[String(value)];
+        if (!entryId) {
+          await responder.answerCallback("That menu has expired. Please run the command again.");
+          return;
+        }
+        const nextToken = this.deps.flowStore.create({ kind: "tree_action", entryId });
+        await responder.edit(request.messageId, `<pre>${escapeHtml(flow.text)}</pre>`, {
           parseMode: "HTML",
           keyboard: treeActionKeyboard(nextToken),
         });
         return;
       }
 
-      this.deps.flowStore.update(token, { ...flow, filter: nextFilter, page: page.page });
-      await responder.edit(request.messageId, `<pre>${escapePre(page.text)}</pre>`, {
+      const nextFilter = action === "filter" ? (value as TreeFilter) : flow.filter;
+      const nextPage = action === "next" ? flow.page + 1 : action === "prev" ? flow.page - 1 : flow.page;
+      const page = await this.deps.service.buildTreePage(user, nextFilter, nextPage);
+      this.deps.flowStore.update(token, {
+        kind: "tree",
+        filter: page.filter,
+        page: page.page,
+        text: page.text,
+        indexToEntryId: treeIndexMap(page),
+      });
+      await responder.edit(request.messageId, `<pre>${escapeHtml(page.text)}</pre>`, {
         parseMode: "HTML",
         keyboard: treeKeyboard(token, page.entries.length),
       });
@@ -4128,6 +4693,10 @@ export class TelegramRouter {
       try {
         await this.deps.service.compact(user);
         await responder.edit(request.messageId, "Compacted.", { parseMode: "HTML" });
+      } catch (error) {
+        await responder.edit(request.messageId, `Compaction failed: ${escapeHtml(getErrorMessage(error))}`, {
+          parseMode: "HTML",
+        });
       } finally {
         this.deps.typingLoop.stop(user.slug);
       }
@@ -4280,6 +4849,22 @@ export async function main() {
     typingIntervalMs: rootConfig.telegram.typingIntervalMs,
   });
 
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    bot.stop();
+    await audit.close();
+    process.exit(0);
+  };
+
+  process.once("SIGINT", () => {
+    void shutdown();
+  });
+  process.once("SIGTERM", () => {
+    void shutdown();
+  });
+
   await bot.start();
 }
 
@@ -4342,6 +4927,11 @@ FamilyOS uses the repository root for runtime assets and data:
 - `logs/audit.jsonl` — append-only audit log
 - `.familyos-pi/` — shared Pi auth, models, settings, and session store
 
+## MVP decisions to remember
+
+- The one-shot handoff text lives in `services/familyos/src/pi/handoff.ts` for MVP. FamilyOS does not use `agents/_system/handoff.md` yet.
+- FamilyOS intentionally defers per-session `thinkingLevel` controls in MVP.
+
 ## Manual registration
 
 Create `users/<slug>/user.json` before the person can use the bot:
@@ -4385,13 +4975,15 @@ git commit -m "docs(familyos): add operator runbook"
 
 ## Spec Coverage Check
 
-- Identity and onboarding: Tasks 3, 8, 10, 11
-- Filesystem layout and scaffolding: Tasks 1, 2, 3, 11
+- Identity and onboarding: Tasks 3 and 10
+- Filesystem layout and scaffolding: Tasks 1, 2, 3, 6, and 11
 - Config layering and agent replacement rules: Task 4
-- Security boundary and no-bash enforcement: Tasks 5 and 6
-- Session lifecycle, runtime replacement, and user isolation: Tasks 6, 7, and 8
-- Telegram command UX and flow expiry: Tasks 7, 9, and 10
-- Attachments and typing indicator behavior: Tasks 8, 9, and 10
-- Audit logging and bootstrap requirements: Tasks 2, 6, 8, and 11
+- Security boundary, control-plane isolation, and no-bash enforcement: Tasks 5 and 6
+- Session lifecycle, shared-agent-dir session storage, runtime replacement, and user isolation: Tasks 6, 8, and 10
+- `/tree` ASCII rendering, documented filter names, and pinned callback mappings: Tasks 7 and 10
+- Telegram command UX, callback expiry, onboarding gating, and unregistered no-download behavior: Task 10
+- Attachments, reply formatting, and typing indicator behavior: Tasks 9 and 10
+- Audit logging, graceful shutdown, and bootstrap requirements: Tasks 2, 6, 8, 10, and 11
+- Explicit MVP deferrals (`thinkingLevel`, `agents/_system/handoff.md`): plan header + Task 11 README
 
 This plan stays within the single cohesive subsystem described by the spec, so one implementation plan is appropriate.
