@@ -1,0 +1,9 @@
+{
+  "defaultAgentId": "default",
+  "sharedPiAgentDir": ".familyos-pi",
+  "telegram": {
+    "flowTtlSeconds": 900,
+    "typingIntervalMs": 4000,
+    "pageSize": 8
+  }
+}

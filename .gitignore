@@ -76,3 +76,8 @@ build/
 # Launcher
 launcher/
 .claude-launcher-state.json
+
+# FamilyOS runtime state
+logs/
+users/
+.familyos-pi/
