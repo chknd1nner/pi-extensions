@@ -4,7 +4,7 @@ This document describes a deterministic system for sharding Superpowers implemen
 
 ## Overview
 
-The ticket system converts an implementation plan into individual ticket files, each representing a single task. Tickets move through workflow lanes as they progress from ready → active → review → done.
+The ticket system converts an implementation plan into individual ticket files, each representing a single task. Tickets move through workflow statuses like a Kanban board, with each status having a corresponding folder: ready → active → review → done.
 
 ## Components
 
@@ -14,6 +14,8 @@ The ticket system converts an implementation plan into individual ticket files, 
 - **`scripts/ticket.sh`** — Manage ticket workflow operations
 
 ### Directory Structure
+
+Tickets physically move between folders as their status changes (like Kanban lanes):
 
 ```
 in-progress/
@@ -57,8 +59,7 @@ For each task section, the sharding script:
 ---
 task_number: 1
 title: "Task title from heading"
-status: Ready
-lane: ready
+status: ready
 plan_path: path/to/plan.md
 spec_path: path/to/spec.md  # optional
 next_prompt: |-
@@ -80,53 +81,44 @@ review_prompt_template: |-
 <!-- Verification results, issues, and runtime notes go here -->
 ```
 
+The `status` field matches the folder the ticket resides in.
+
 ## Ticket Workflow
 
-### Lanes and Statuses
+### Statuses
 
-| Lane | Status | Description |
-|------|--------|-------------|
-| ready | Ready | Awaiting work |
-| active | Active | Currently being implemented |
-| review | In Review | Awaiting code review |
-| needs-fix | Needs Fix | Requires corrections |
-| blocked | Blocked | Blocked on external |
-| done | Done | Completed |
+| Status | Folder | Description |
+|--------|--------|-------------|
+| ready | `ready/` | Awaiting work |
+| active | `active/` | Currently being implemented |
+| review | `review/` | Awaiting code review |
+| needs-fix | `needs-fix/` | Requires corrections |
+| blocked | `blocked/` | Blocked on external |
+| done | `done/` | Completed |
 
-### Workflow Commands
+### Tools (via π extension)
 
-```bash
-# List all tickets
-./scripts/ticket.sh list
-
-# List tickets in a specific lane
-./scripts/ticket.sh list active
-
-# Show ticket details
-./scripts/ticket.sh show task-01
-
-# Move ticket to a lane (updates status, lane, and file location)
-./scripts/ticket.sh move task-01 active
-
-# Set a frontmatter field
-./scripts/ticket.sh set task-01 next_prompt "New prompt..."
-
-# Show the next_prompt for a ticket
-./scripts/ticket.sh next task-01
+```
+ticket_list              # List all tickets by status
+ticket_list active       # List tickets with specific status
+ticket_show task-01      # Show ticket details
+ticket_move task-01 active   # Move ticket (updates status + folder)
+ticket_set task-01 field value   # Set frontmatter field
+ticket_next task-01      # Get next_prompt for handoff
 ```
 
 ### Typical Workflow
 
 1. **Start work** — Move ticket to active:
-   ```bash
-   ./scripts/ticket.sh move task-01 active
+   ```
+   ticket_move task-01 active
    ```
 
 2. **Execute steps** — Follow the plan excerpt, checking off steps
 
 3. **Request review** — Move ticket to review:
-   ```bash
-   ./scripts/ticket.sh move task-01 review
+   ```
+   ticket_move task-01 review
    ```
 
 4. **Two-stage review process:**
@@ -136,8 +128,8 @@ review_prompt_template: |-
    The reviewer uses `superpowers:requesting-code-review` skill approach.
 
 5. **Handle outcome:**
-   - **Approved** → Move to done with `approval_note`
-   - **Needs changes** → Move to needs-fix with updated `next_prompt`
+   - **Approved** → `ticket_move task-01 done` with `approval_note`
+   - **Needs changes** → `ticket_move task-01 needs-fix` with updated `next_prompt`
 
 ## The `next_prompt` Field
 
@@ -152,35 +144,29 @@ next_prompt: |-
   Implement Task 1: Title
   
   Read the Plan excerpt section below and execute each step in order.
-  Check off steps as you complete them.
+  Check off steps as you complete them (- [x]).
   Run verification commands and confirm they pass.
   Commit when all steps are complete.
   
   When done:
-  - move this ticket to in-progress/review/
-  - set status to In Review
-  - set lane to review
-  - update next_prompt to trigger the review process
+  - Move ticket to review status (ticket_move task-01 review)
+  - Update next_prompt to the review_prompt_template value
+  - The reviewer will perform spec + code review
 ```
 
 ### After Implementation
 
 The implementing agent updates `next_prompt` to trigger review:
 
-```bash
-./scripts/ticket.sh set task-01 next_prompt "$(cat <<'EOF'
-Review Task 1 implementation.
+```
+ticket_set task-01 next_prompt "Review Task 1 implementation.
 
 Git diff shows the changes.
 Run: cd services/foo && npm test
 Expected: All tests pass
 
-If approved, move to done.
-If changes needed, move to needs-fix with feedback.
-EOF
-)"
-```
-
+If approved: ticket_move task-01 done
+If changes needed: ticket_move task-01 needs-fix"
 ### After Review (Needs Fix)
 
 If review finds issues, `next_prompt` contains fix instructions:
@@ -193,31 +179,19 @@ next_prompt: |-
   - Missing error handling in parseConfig()
   - Test coverage incomplete for edge case X
   
-  Fix these issues and re-submit for review.
+  Fix these issues, then: ticket_move task-01 review
 ```
 
-## Using mdedit
+## Under the Hood
 
-The ticket system leverages `mdedit` for structured markdown operations:
+The extension uses `mdedit` internally for structured markdown operations. You can also use mdedit directly if needed:
 
 ```bash
-# Show ticket structure
-mdedit outline in-progress/ready/task-01.md
-
-# Show frontmatter
-mdedit frontmatter show in-progress/ready/task-01.md
-
-# Get specific field
-mdedit frontmatter get in-progress/ready/task-01.md next_prompt
-
-# Set field
-mdedit frontmatter set in-progress/ready/task-01.md status "Active"
-
-# Extract plan content
-mdedit extract in-progress/ready/task-01.md "Plan excerpt"
-
-# Append to notes section
-mdedit append in-progress/ready/task-01.md "Notes" --content "Verified: tests pass"
+mdedit outline in-progress/ready/task-01.md      # Show structure
+mdedit frontmatter show in-progress/ready/task-01.md   # Show frontmatter
+mdedit frontmatter get in-progress/ready/task-01.md next_prompt   # Get field
+mdedit frontmatter set in-progress/ready/task-01.md status review  # Set field
+mdedit append in-progress/ready/task-01.md "Notes" --content "Verified"  # Append
 ```
 
 ## Two-Stage Review Process

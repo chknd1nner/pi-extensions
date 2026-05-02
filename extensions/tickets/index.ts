@@ -12,17 +12,8 @@ import { Type } from "@sinclair/typebox";
 
 // --- Configuration ---
 const TICKETS_DIR = "in-progress";
-const LANES = ["ready", "active", "review", "needs-fix", "blocked", "done"] as const;
-type Lane = (typeof LANES)[number];
-
-const LANE_STATUS: Record<Lane, string> = {
-  ready: "Ready",
-  active: "Active",
-  review: "In Review",
-  "needs-fix": "Needs Fix",
-  blocked: "Blocked",
-  done: "Done",
-};
+const STATUSES = ["ready", "active", "review", "needs-fix", "blocked", "done"] as const;
+type Status = (typeof STATUSES)[number];
 
 // --- Helper Functions ---
 
@@ -36,13 +27,13 @@ function findTicket(pattern: string, cwd: string): string | null {
   const ticketsDir = join(cwd, TICKETS_DIR);
   const matches: string[] = [];
 
-  for (const lane of LANES) {
-    const laneDir = join(ticketsDir, lane);
-    if (!existsSync(laneDir)) continue;
+  for (const status of STATUSES) {
+    const statusDir = join(ticketsDir, status);
+    if (!existsSync(statusDir)) continue;
 
-    const files = readdirSync(laneDir).filter((f) => f.endsWith(".md") && f.includes(pattern));
+    const files = readdirSync(statusDir).filter((f) => f.endsWith(".md") && f.includes(pattern));
     for (const file of files) {
-      matches.push(join(laneDir, file));
+      matches.push(join(statusDir, file));
     }
   }
 
@@ -53,29 +44,29 @@ function findTicket(pattern: string, cwd: string): string | null {
   return matches[0];
 }
 
-function getLaneFromPath(filepath: string): Lane | null {
-  for (const lane of LANES) {
-    if (filepath.includes(`/${lane}/`)) return lane;
+function getStatusFromPath(filepath: string): Status | null {
+  for (const status of STATUSES) {
+    if (filepath.includes(`/${status}/`)) return status;
   }
   return null;
 }
 
-function ensureLaneDir(lane: Lane, cwd: string): string {
-  const dir = join(cwd, TICKETS_DIR, lane);
+function ensureStatusDir(status: Status, cwd: string): string {
+  const dir = join(cwd, TICKETS_DIR, status);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function listTicketsInLane(lane: Lane, cwd: string): Array<{ file: string; title: string }> {
-  const laneDir = join(cwd, TICKETS_DIR, lane);
-  if (!existsSync(laneDir)) return [];
+function listTicketsInStatus(status: Status, cwd: string): Array<{ file: string; title: string }> {
+  const statusDir = join(cwd, TICKETS_DIR, status);
+  if (!existsSync(statusDir)) return [];
 
-  const files = readdirSync(laneDir)
+  const files = readdirSync(statusDir)
     .filter((f) => f.endsWith(".md"))
     .sort();
 
   return files.map((file) => {
-    const filepath = join(laneDir, file);
+    const filepath = join(statusDir, file);
     let title = "(no title)";
     try {
       const output = mdedit(["frontmatter", "get", filepath, "title"], cwd);
@@ -110,7 +101,7 @@ function shardPlan(planPath: string, specPath: string | undefined, cwd: string):
     throw new Error("No '### Task N:' sections found in plan");
   }
 
-  const readyDir = ensureLaneDir("ready", cwd);
+  const readyDir = ensureStatusDir("ready", cwd);
   const tickets: ShardResult["tickets"] = [];
 
   for (const taskLine of taskLines) {
@@ -172,8 +163,7 @@ Run verification commands and confirm they pass.
 Commit when all steps are complete.
 
 When done:
-- Move ticket to in-progress/review/
-- Set status to In Review, lane to review
+- Move ticket to review status (ticket_move task-${taskNumPadded} review)
 - Update next_prompt to the review_prompt_template value
 - The reviewer will perform spec + code review`;
 
@@ -208,13 +198,11 @@ Use the superpowers:requesting-code-review skill approach.
 
 ### Verdict
 If task passes BOTH stages:
-- Move ticket to in-progress/done/
-- Set status to Done, lane to done
-- Add approval_note with verification evidence
+- Move ticket to done status (ticket_move task-${taskNumPadded} done)
+- Add approval_note field with verification evidence
 
 If task needs changes:
-- Move ticket to in-progress/needs-fix/
-- Set status to Needs Fix, lane to needs-fix
+- Move ticket to needs-fix status (ticket_move task-${taskNumPadded} needs-fix)
 - Update next_prompt with specific fix instructions
 - Record findings in ## Notes section`;
 
@@ -232,8 +220,7 @@ If task needs changes:
     const content = `---
 task_number: ${taskNum}
 title: "${title}"
-status: Ready
-lane: ready
+status: ready
 plan_path: ${planPath}
 ${specField}next_prompt: |-
 ${implPromptIndented}
@@ -266,21 +253,21 @@ ${taskContent}
 }
 
 interface ListResult {
-  lanes: Array<{
-    lane: Lane;
+  statuses: Array<{
+    status: Status;
     count: number;
     tickets: Array<{ file: string; title: string }>;
   }>;
 }
 
-function listTickets(filterLane: Lane | undefined, cwd: string): ListResult {
-  const lanes = filterLane ? [filterLane] : LANES;
-  const result: ListResult = { lanes: [] };
+function listTickets(filterStatus: Status | undefined, cwd: string): ListResult {
+  const statuses = filterStatus ? [filterStatus] : STATUSES;
+  const result: ListResult = { statuses: [] };
 
-  for (const lane of lanes) {
-    const tickets = listTicketsInLane(lane as Lane, cwd);
-    result.lanes.push({
-      lane: lane as Lane,
+  for (const status of statuses) {
+    const tickets = listTicketsInStatus(status as Status, cwd);
+    result.statuses.push({
+      status: status as Status,
       count: tickets.length,
       tickets,
     });
@@ -336,30 +323,27 @@ function showTicket(pattern: string, cwd: string): ShowResult {
 
 interface MoveResult {
   file: string;
-  fromLane: Lane;
-  toLane: Lane;
+  fromStatus: Status;
+  toStatus: Status;
   newPath: string;
 }
 
-function moveTicket(pattern: string, targetLane: Lane, cwd: string): MoveResult {
-  if (!LANES.includes(targetLane)) {
-    throw new Error(`Invalid lane '${targetLane}'. Valid lanes: ${LANES.join(", ")}`);
+function moveTicket(pattern: string, targetStatus: Status, cwd: string): MoveResult {
+  if (!STATUSES.includes(targetStatus)) {
+    throw new Error(`Invalid status '${targetStatus}'. Valid statuses: ${STATUSES.join(", ")}`);
   }
 
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
 
-  const fromLane = getLaneFromPath(filepath);
-  if (!fromLane) throw new Error(`Could not determine current lane for ${filepath}`);
-
-  const status = LANE_STATUS[targetLane];
+  const fromStatus = getStatusFromPath(filepath);
+  if (!fromStatus) throw new Error(`Could not determine current status for ${filepath}`);
 
   // Update frontmatter
-  mdedit(["frontmatter", "set", filepath, "status", status], cwd);
-  mdedit(["frontmatter", "set", filepath, "lane", targetLane], cwd);
+  mdedit(["frontmatter", "set", filepath, "status", targetStatus], cwd);
 
-  // Move file
-  const targetDir = ensureLaneDir(targetLane, cwd);
+  // Move file to matching folder
+  const targetDir = ensureStatusDir(targetStatus, cwd);
   const filename = basename(filepath);
   const newPath = join(targetDir, filename);
 
@@ -369,9 +353,9 @@ function moveTicket(pattern: string, targetLane: Lane, cwd: string): MoveResult 
 
   return {
     file: filename,
-    fromLane,
-    toLane: targetLane,
-    newPath: join(TICKETS_DIR, targetLane, filename),
+    fromStatus,
+    toStatus: targetStatus,
+    newPath: join(TICKETS_DIR, targetStatus, filename),
   };
 }
 
@@ -464,12 +448,12 @@ export default function ticketsExtension(pi: ExtensionAPI) {
     name: "ticket_list",
     label: "List Tickets",
     description:
-      "List tickets by workflow lane. Shows ticket counts and titles for each lane (ready, active, review, needs-fix, blocked, done).",
-    promptSnippet: "Use to see current ticket status across all workflow lanes.",
+      "List tickets by status. Shows ticket counts and titles for each status (ready, active, review, needs-fix, blocked, done).",
+    promptSnippet: "Use to see current ticket status across the workflow.",
     parameters: Type.Object({
-      lane: Type.Optional(
-        Type.Union(LANES.map((l) => Type.Literal(l)), {
-          description: "Filter to specific lane (default: show all)",
+      status: Type.Optional(
+        Type.Union(STATUSES.map((s) => Type.Literal(s)), {
+          description: "Filter to specific status (default: show all)",
         })
       ),
     }),
@@ -477,19 +461,19 @@ export default function ticketsExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx?.cwd ?? process.cwd();
       try {
-        const result = listTickets(params.lane as Lane | undefined, cwd);
+        const result = listTickets(params.status as Status | undefined, cwd);
 
-        const output = result.lanes
-          .map((l) => {
-            const header = `═══ ${l.lane} (${l.count}) ═══`;
-            if (l.count === 0) return header;
-            const tickets = l.tickets.map((t) => `  ${t.file}: ${t.title}`).join("\n");
+        const output = result.statuses
+          .map((s) => {
+            const header = `═══ ${s.status} (${s.count}) ═══`;
+            if (s.count === 0) return header;
+            const tickets = s.tickets.map((t) => `  ${t.file}: ${t.title}`).join("\n");
             return `${header}\n${tickets}`;
           })
           .join("\n\n");
 
         return {
-          content: [{ type: "text", text: `📋 Tickets by lane\n\n${output}` }],
+          content: [{ type: "text", text: `📋 Tickets by status\n\n${output}` }],
           details: result,
         };
       } catch (err) {
@@ -551,28 +535,28 @@ export default function ticketsExtension(pi: ExtensionAPI) {
     name: "ticket_move",
     label: "Move Ticket",
     description:
-      "Move a ticket to a different workflow lane. Automatically updates status and lane frontmatter fields and moves the file to the corresponding directory.",
+      "Move a ticket to a different status. Updates the status frontmatter field and moves the file to the corresponding folder.",
     promptSnippet:
       "Use to progress tickets through workflow: ready → active → review → done (or needs-fix/blocked).",
     parameters: Type.Object({
       ticket: Type.String({
         description: "Ticket identifier (filename or partial match)",
       }),
-      lane: Type.Union(LANES.map((l) => Type.Literal(l)), {
-        description: "Target lane to move ticket to",
+      status: Type.Union(STATUSES.map((s) => Type.Literal(s)), {
+        description: "Target status to move ticket to",
       }),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const cwd = ctx?.cwd ?? process.cwd();
       try {
-        const result = moveTicket(params.ticket, params.lane as Lane, cwd);
+        const result = moveTicket(params.ticket, params.status as Status, cwd);
 
         return {
           content: [
             {
               type: "text",
-              text: `✓ Moved ${result.file}\n  ${result.fromLane} → ${result.toLane}\n  → ${result.newPath}`,
+              text: `✓ Moved ${result.file}\n  ${result.fromStatus} → ${result.toStatus}\n  → ${result.newPath}`,
             },
           ],
           details: result,
