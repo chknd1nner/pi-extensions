@@ -1,0 +1,300 @@
+# Ticket System for Plan Execution
+
+This document describes a deterministic system for sharding Superpowers implementation plans into individual task "tickets" that can be tracked through a workflow.
+
+## Overview
+
+The ticket system converts an implementation plan into individual ticket files, each representing a single task. Tickets move through workflow lanes as they progress from ready → active → review → done.
+
+## Components
+
+### Scripts
+
+- **`scripts/shard-plan.sh`** — Shard a plan into tickets
+- **`scripts/ticket.sh`** — Manage ticket workflow operations
+
+### Directory Structure
+
+```
+in-progress/
+├── ready/       # Sharded tickets awaiting work
+├── active/      # Currently being implemented  
+├── review/      # Awaiting code review
+├── needs-fix/   # Requires corrections
+├── blocked/     # Blocked on external dependency
+├── done/        # Completed
+└── archive/     # Historical reference
+```
+
+## Sharding a Plan
+
+```bash
+# Shard a plan into tickets
+./scripts/shard-plan.sh docs/superpowers/plans/YYYY-MM-DD-feature.md [spec.md] [--dry-run]
+
+# Example
+./scripts/shard-plan.sh \
+  docs/superpowers/plans/2026-04-30-familyos-telegram.md \
+  docs/superpowers/specs/2026-04-30-familyos-telegram-design.md
+```
+
+This creates one ticket file per `### Task N:` section in the plan, placed in `in-progress/ready/`.
+
+### What Gets Extracted
+
+For each task section, the sharding script:
+
+1. **Parses the task heading** — `### Task N: Title`
+2. **Extracts content** — Everything between this heading and the next
+3. **Generates filename** — `task-NN-slugified-title.md`
+4. **Creates frontmatter** — Standard fields for workflow tracking
+5. **Wraps content** — In `## Plan excerpt` section
+6. **Adds notes section** — Empty `## Notes` for runtime notes
+
+### Ticket Format
+
+```yaml
+---
+task_number: 1
+title: "Task title from heading"
+status: Ready
+lane: ready
+plan_path: path/to/plan.md
+spec_path: path/to/spec.md  # optional
+next_prompt: |-
+  Instructions for the next agent working on this ticket
+review_prompt_template: |-
+  Template for code review prompts
+---
+
+# Task 01 — Title
+
+## Plan excerpt
+
+[Original task content from plan]
+
+---
+
+## Notes
+
+<!-- Verification results, issues, and runtime notes go here -->
+```
+
+## Ticket Workflow
+
+### Lanes and Statuses
+
+| Lane | Status | Description |
+|------|--------|-------------|
+| ready | Ready | Awaiting work |
+| active | Active | Currently being implemented |
+| review | In Review | Awaiting code review |
+| needs-fix | Needs Fix | Requires corrections |
+| blocked | Blocked | Blocked on external |
+| done | Done | Completed |
+
+### Workflow Commands
+
+```bash
+# List all tickets
+./scripts/ticket.sh list
+
+# List tickets in a specific lane
+./scripts/ticket.sh list active
+
+# Show ticket details
+./scripts/ticket.sh show task-01
+
+# Move ticket to a lane (updates status, lane, and file location)
+./scripts/ticket.sh move task-01 active
+
+# Set a frontmatter field
+./scripts/ticket.sh set task-01 next_prompt "New prompt..."
+
+# Show the next_prompt for a ticket
+./scripts/ticket.sh next task-01
+```
+
+### Typical Workflow
+
+1. **Start work** — Move ticket to active:
+   ```bash
+   ./scripts/ticket.sh move task-01 active
+   ```
+
+2. **Execute steps** — Follow the plan excerpt, checking off steps
+
+3. **Request review** — Move ticket to review:
+   ```bash
+   ./scripts/ticket.sh move task-01 review
+   ```
+
+4. **Two-stage review process:**
+   - **Stage 1: Spec Review** — Does implementation match the design spec?
+   - **Stage 2: Code Review** — Is the code quality good?
+   
+   The reviewer uses `superpowers:requesting-code-review` skill approach.
+
+5. **Handle outcome:**
+   - **Approved** → Move to done with `approval_note`
+   - **Needs changes** → Move to needs-fix with updated `next_prompt`
+
+## The `next_prompt` Field
+
+The `next_prompt` frontmatter field contains instructions for the next agent working on the ticket. This enables asynchronous handoffs between agents.
+
+### Initial Implementation Prompt
+
+When a ticket is created, `next_prompt` contains implementation instructions:
+
+```yaml
+next_prompt: |-
+  Implement Task 1: Title
+  
+  Read the Plan excerpt section below and execute each step in order.
+  Check off steps as you complete them.
+  Run verification commands and confirm they pass.
+  Commit when all steps are complete.
+  
+  When done:
+  - move this ticket to in-progress/review/
+  - set status to In Review
+  - set lane to review
+  - update next_prompt to trigger the review process
+```
+
+### After Implementation
+
+The implementing agent updates `next_prompt` to trigger review:
+
+```bash
+./scripts/ticket.sh set task-01 next_prompt "$(cat <<'EOF'
+Review Task 1 implementation.
+
+Git diff shows the changes.
+Run: cd services/foo && npm test
+Expected: All tests pass
+
+If approved, move to done.
+If changes needed, move to needs-fix with feedback.
+EOF
+)"
+```
+
+### After Review (Needs Fix)
+
+If review finds issues, `next_prompt` contains fix instructions:
+
+```yaml
+next_prompt: |-
+  Fix Task 1: Address review feedback
+  
+  Issues found:
+  - Missing error handling in parseConfig()
+  - Test coverage incomplete for edge case X
+  
+  Fix these issues and re-submit for review.
+```
+
+## Using mdedit
+
+The ticket system leverages `mdedit` for structured markdown operations:
+
+```bash
+# Show ticket structure
+mdedit outline in-progress/ready/task-01.md
+
+# Show frontmatter
+mdedit frontmatter show in-progress/ready/task-01.md
+
+# Get specific field
+mdedit frontmatter get in-progress/ready/task-01.md next_prompt
+
+# Set field
+mdedit frontmatter set in-progress/ready/task-01.md status "Active"
+
+# Extract plan content
+mdedit extract in-progress/ready/task-01.md "Plan excerpt"
+
+# Append to notes section
+mdedit append in-progress/ready/task-01.md "Notes" --content "Verified: tests pass"
+```
+
+## Two-Stage Review Process
+
+Every ticket review includes both spec and code review to catch divergences early:
+
+### Stage 1: Spec Review
+
+Compare implementation against the design spec document:
+- Does implementation match spec intent?
+- Any divergences from spec requirements?
+- Missing spec requirements?
+
+If **major spec issues** are found, the reviewer may terminate early.
+If **minor divergences**, note them and continue to Stage 2.
+
+### Stage 2: Code Review
+
+Use the `superpowers:requesting-code-review` skill approach:
+- Get git diff for task changes
+- Check code quality, architecture, testing
+- Categorize issues: Critical / Important / Minor
+
+### Review Output Format
+
+```markdown
+### Spec Compliance
+[Matches spec / Minor divergences / Major divergences]
+- Divergence 1: [spec section] vs [implementation]
+- Divergence 2: ...
+
+### Code Quality
+#### Strengths
+- ...
+
+#### Issues
+**Critical:** ...
+**Important:** ...
+**Minor:** ...
+
+### Verdict
+[Ready to merge / With fixes / Major rework needed]
+```
+
+### Why Two Stages?
+
+Code review alone isn't sufficient. Implementation can be:
+- ✅ Perfect code quality
+- ✅ Adheres to implementation plan
+- ✅ Tests pass
+- ❌ Diverges from design spec
+
+The spec review catches this early, per-task, rather than discovering divergences only at final integration.
+
+## Integration with Superpowers
+
+This ticket system integrates with the Superpowers workflow:
+
+1. **brainstorming** skill produces a spec
+2. **writing-plans** skill produces a plan
+3. **shard-plan.sh** converts plan to tickets
+4. **subagent-driven-development** or **executing-plans** work through tickets
+5. **requesting-code-review** triggers review workflow
+6. **verification-before-completion** ensures work is verified before done
+
+### Starting Execution
+
+After sharding, you can:
+
+1. **Manual execution** — Work through tickets sequentially
+2. **Subagent dispatch** — Dispatch agents per ticket with `next_prompt`
+3. **Batch execution** — Use executing-plans skill with ticket tracking
+
+## Best Practices
+
+1. **One ticket at a time** — Keep at most one ticket in `active/`
+2. **Update next_prompt** — Always set clear instructions for handoffs
+3. **Use Notes section** — Document verification results, issues, decisions
+4. **Frequent commits** — Commit after each logical step
+5. **Verify before done** — Run all verification commands before marking done
