@@ -44,24 +44,22 @@ describe("delegate tools registration", () => {
     expect(tool?.name).toBe("delegate_start");
   });
 
-  it("rejects tools and denied_tools used together", async () => {
+  it("throws when tools and denied_tools are used together", async () => {
     const fake = createFakePi();
     delegate(fake.pi);
 
     const tool = fake.getTool("delegate_start");
     expect(tool).toBeDefined();
 
-    const result = await tool!.execute("call-1", {
-      task: "Do something",
-      model: "claude-sonnet-4-6",
-      provider: "anthropic",
-      tools: ["read"],
-      denied_tools: ["bash"],
-    });
-
-    expect(result.isError).toBe(true);
-    expect(result.details?.error).toBe("invalid_params");
-    expect(result.content[0]?.text).toContain("Cannot specify both");
+    await expect(
+      tool!.execute("call-1", {
+        task: "Do something",
+        model: "claude-sonnet-4-6",
+        provider: "anthropic",
+        tools: ["read"],
+        denied_tools: ["bash"],
+      }),
+    ).rejects.toThrow("Cannot specify both");
   });
 
   it("registers delegate_check", () => {

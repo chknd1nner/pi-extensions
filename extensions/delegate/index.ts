@@ -84,21 +84,17 @@ export default function delegate(pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       if (params.tools && params.denied_tools) {
-        return {
-          content: [{ type: "text" as const, text: "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one." }],
-          details: { error: "invalid_params" },
-          isError: true,
-        };
+        throw new Error(
+          "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one.",
+        );
       }
 
       if (!manager.canStart()) {
         const active = manager.activeWorkerDescriptions();
         const desc = active.map((w) => `  ${w.taskId}: ${w.task.slice(0, 80)}`).join("\n");
-        return {
-          content: [{ type: "text" as const, text: `Cannot start: ${active.length} workers already running.\n\nActive workers:\n${desc}\n\nAbort one with delegate_abort before starting a new task.` }],
-          details: { error: "concurrency_limit" },
-          isError: true,
-        };
+        throw new Error(
+          `Cannot start: ${active.length} workers already running.\n\nActive workers:\n${desc}\n\nAbort one with delegate_abort before starting a new task.`,
+        );
       }
 
       const taskId = manager.nextTaskId();
@@ -209,11 +205,8 @@ export default function delegate(pi: ExtensionAPI) {
       } catch (err) {
         manager.setStatus(taskId, "failed", err instanceof Error ? err.message : String(err));
         tryCloseLogWriter();
-        return {
-          content: [{ type: "text" as const, text: `Failed to start worker ${taskId}.` }],
-          details: { error: "start_failed" },
-          isError: true,
-        };
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to start worker ${taskId}: ${message}`);
       }
 
       entry.timeoutTimer = setTimeout(async () => {
