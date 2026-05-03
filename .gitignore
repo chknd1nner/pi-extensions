@@ -13,6 +13,7 @@ Icon?
 .opencode/
 .agent/
 .codex/
+.worktrees/
 
 # Editor / IDE
 .vscode/
