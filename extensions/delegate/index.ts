@@ -369,5 +369,66 @@ export default function delegate(pi: ExtensionAPI) {
     },
   });
 
-  // Remaining tool (delegate_result) is registered in a subsequent task.
+  pi.registerTool({
+    name: "delegate_result",
+    label: "Delegate Result",
+    description: "Read the final output of a completed worker.",
+    parameters: Type.Object({
+      task_id: Type.String({ description: "Worker task ID" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const entry = manager.get(params.task_id);
+      if (!entry) {
+        throw new Error(`Unknown task ID: ${params.task_id}`);
+      }
+
+      if (entry.status === "running") {
+        throw new Error(
+          `Worker ${params.task_id} is still running. Use delegate_check to monitor progress, or delegate_abort to stop it.`,
+        );
+      }
+
+      const transcript = entry.progress?.getFullTranscript() ?? "";
+      const finalMessages = entry.progress?.getFinalMessages() ?? [];
+
+      // AssistantMessage.content is (TextContent | ThinkingContent | ToolCall)[], not a string.
+      let resultText = "";
+      for (const msg of finalMessages) {
+        const m = msg as { role?: string; content?: unknown[] };
+        if (m.role === "assistant" && Array.isArray(m.content)) {
+          for (const block of m.content) {
+            if ((block as { type: string }).type === "text") {
+              resultText += (block as { text: string }).text;
+            }
+          }
+        }
+      }
+
+      if (!resultText) {
+        resultText = transcript;
+      }
+
+      const result: Record<string, unknown> = {
+        status: entry.status,
+        result: resultText.trim(),
+      };
+
+      if (entry.error) {
+        result.error = entry.error;
+        if (entry.rpcClient) {
+          result.stderr = entry.rpcClient.getStderr().slice(-2000);
+        }
+      }
+
+      return {
+        content: [{ type: "text" as const, text: resultText.trim() || `Worker ${params.task_id} ${entry.status} with no output.${entry.error ? ` Error: ${entry.error}` : ""}` }],
+        details: result,
+      };
+    },
+  });
+
+  pi.on("session_shutdown", async () => {
+    await manager.disposeAll();
+  });
 }
