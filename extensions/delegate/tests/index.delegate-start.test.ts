@@ -73,15 +73,15 @@ describe("delegate tools registration", () => {
     expect(tool?.name).toBe("delegate_check");
   });
 
-  it("returns an error for unknown task IDs in delegate_check", async () => {
+  it("throws for unknown task IDs in delegate_check", async () => {
     const fake = createFakePi();
     delegate(fake.pi);
 
     const tool = fake.getTool("delegate_check");
     expect(tool).toBeDefined();
 
-    const result = await tool!.execute("call-2", { task_id: "w999" });
-    expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toContain("Unknown task ID: w999");
+    await expect(tool!.execute("call-2", { task_id: "w999" })).rejects.toThrow(
+      "Unknown task ID: w999",
+    );
   });
 });

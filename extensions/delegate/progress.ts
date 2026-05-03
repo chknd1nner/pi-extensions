@@ -1,4 +1,4 @@
-import type { RPCEvent, ToolCallRecord } from "./types";
+import type { RPCEvent, ToolCallRecord, WorkerUsage } from "./types";
 
 type TextContent = { type?: unknown; text?: unknown };
 
@@ -37,11 +37,18 @@ export class ProgressAccumulator {
   private toolCalls: ToolCallRecord[] = [];
   private pendingTools = new Map<string, ToolCallRecord>();
   private lastActivityAt = Date.now();
+  private cumulativeInput = 0;
+  private cumulativeOutput = 0;
+  private cumulativeCacheRead = 0;
+  private cumulativeCacheWrite = 0;
+  private lastAssistantInput: number | null = null;
   private finished = false;
   private finalMessages: unknown[] = [];
 
   handleEvent(event: RPCEvent): void {
-    this.lastActivityAt = Date.now();
+    if (event.type !== "agent_end") {
+      this.lastActivityAt = Date.now();
+    }
 
     switch (event.type) {
       case "message_update": {
@@ -84,6 +91,23 @@ export class ProgressAccumulator {
         }
         break;
       }
+      case "turn_end": {
+        const message = (event.message as {
+          role?: string;
+          usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+        } | undefined);
+        if (message?.role === "assistant" && message.usage) {
+          const u = message.usage;
+          const input = u.input ?? 0;
+          const output = u.output ?? 0;
+          this.cumulativeInput += input;
+          this.cumulativeOutput += output;
+          this.cumulativeCacheRead += u.cacheRead ?? 0;
+          this.cumulativeCacheWrite += u.cacheWrite ?? 0;
+          this.lastAssistantInput = input;
+        }
+        break;
+      }
       case "agent_end": {
         this.finished = true;
         this.finalMessages = (event.messages as unknown[]) ?? [];
@@ -113,6 +137,16 @@ export class ProgressAccumulator {
 
   getFullTranscript(): string {
     return this.transcript;
+  }
+
+  getUsage(): WorkerUsage {
+    return {
+      input: this.cumulativeInput,
+      output: this.cumulativeOutput,
+      cacheRead: this.cumulativeCacheRead,
+      cacheWrite: this.cumulativeCacheWrite,
+      lastAssistantInput: this.lastAssistantInput,
+    };
   }
 
   getFinalMessages(): unknown[] {

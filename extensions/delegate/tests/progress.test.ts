@@ -155,4 +155,66 @@ describe("ProgressAccumulator", () => {
     });
     expect(progress.isFinished()).toBe(true);
   });
+
+  it("accumulates assistant usage across turn_end events", () => {
+    progress.handleEvent({
+      type: "turn_end",
+      message: {
+        role: "assistant",
+        usage: { input: 100, output: 25, cacheRead: 10, cacheWrite: 5 },
+      },
+    });
+
+    progress.handleEvent({
+      type: "turn_end",
+      message: {
+        role: "assistant",
+        usage: { input: 250, output: 40, cacheRead: 20, cacheWrite: 0 },
+      },
+    });
+
+    expect(progress.getUsage()).toEqual({
+      input: 350,
+      output: 65,
+      cacheRead: 30,
+      cacheWrite: 5,
+      lastAssistantInput: 250,
+    });
+  });
+
+  it("returns zero usage with null lastAssistantInput before any turn_end", () => {
+    expect(progress.getUsage()).toEqual({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      lastAssistantInput: null,
+    });
+  });
+
+  it("ignores turn_end events whose message is not an assistant message", () => {
+    progress.handleEvent({
+      type: "turn_end",
+      message: { role: "user", usage: { input: 999, output: 999 } },
+    });
+
+    expect(progress.getUsage().input).toBe(0);
+    expect(progress.getUsage().lastAssistantInput).toBeNull();
+  });
+
+  it("does not advance lastActivityAt on agent_end so terminal workers report a real idle interval", () => {
+    progress.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls" },
+    });
+
+    vi.advanceTimersByTime(20_000);
+    progress.handleEvent({ type: "agent_end", messages: [] });
+    vi.advanceTimersByTime(10_000);
+
+    const summary = progress.getSummary();
+    expect(summary.last_activity_seconds_ago).toBe(30);
+  });
 });

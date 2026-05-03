@@ -243,31 +243,22 @@ export default function delegate(pi: ExtensionAPI) {
       ),
     }),
 
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const entry = manager.get(params.task_id);
       if (!entry) {
-        return {
-          content: [{ type: "text" as const, text: `Unknown task ID: ${params.task_id}` }],
-          details: {},
-          isError: true,
-        };
+        throw new Error(`Unknown task ID: ${params.task_id}`);
       }
 
       const progressSummary = entry.progress!.getSummary();
+      const usage = entry.progress!.getUsage();
       const elapsed = Math.round((Date.now() - entry.startedAt) / 1000);
 
-      let tokenInfo = { input: 0, output: 0, contextPercent: 0 };
-      if (entry.rpcClient && entry.status === "running") {
-        const resp = await entry.rpcClient.sendAndWait({ type: "get_session_stats" });
-        if (resp && (resp as { success?: boolean }).success && (resp as { data?: unknown }).data) {
-          const data = (resp as { data?: { tokens?: { input?: number; output?: number }; contextUsage?: { percent?: number } } }).data;
-          const tokens = data?.tokens ?? {};
-          const ctxUsage = data?.contextUsage ?? {};
-          tokenInfo = {
-            input: tokens.input ?? 0,
-            output: tokens.output ?? 0,
-            contextPercent: ctxUsage.percent ?? 0,
-          };
+      let contextPercent: number | null = null;
+      if (usage.lastAssistantInput !== null) {
+        const model = ctx.modelRegistry?.find(entry.params.provider, entry.params.model);
+        const window = model?.contextWindow;
+        if (typeof window === "number" && window > 0) {
+          contextPercent = Math.round((100 * usage.lastAssistantInput) / window);
         }
       }
 
@@ -277,9 +268,9 @@ export default function delegate(pi: ExtensionAPI) {
         tool_calls: progressSummary.tool_calls,
         last_activity_seconds_ago: progressSummary.last_activity_seconds_ago,
         recent_activity: progressSummary.recent_activity,
-        input_tokens: tokenInfo.input,
-        output_tokens: tokenInfo.output,
-        context_usage_percent: tokenInfo.contextPercent,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        context_usage_percent: contextPercent,
       };
 
       if (entry.error) {
