@@ -37,19 +37,60 @@ describe("ProgressAccumulator", () => {
     expect(progress.getFullTranscript()).toBe("");
   });
 
-  it("records tool calls from tool_execution_start/end events", () => {
+  it("accumulates partial tool output from tool_execution_update events", () => {
     progress.handleEvent({
       type: "tool_execution_start",
       toolCallId: "t1",
       toolName: "bash",
       args: { command: "ls src/" },
     });
+
+    progress.handleEvent({
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls src/" },
+      partialResult: { content: [{ type: "text", text: "file1" }] },
+    });
+
+    progress.handleEvent({
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls src/" },
+      partialResult: { content: [{ type: "text", text: ".ts" }] },
+    });
+
+    const pending = (progress as unknown as { pendingTools: Map<string, { result?: string }> }).pendingTools;
+    expect(pending.get("t1")?.result).toBe("file1.ts");
+  });
+
+  it("captures final tool result text on tool_execution_end", () => {
+    progress.handleEvent({
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls src/" },
+    });
+
+    progress.handleEvent({
+      type: "tool_execution_update",
+      toolCallId: "t1",
+      toolName: "bash",
+      args: { command: "ls src/" },
+      partialResult: { content: [{ type: "text", text: "file1" }] },
+    });
+
     progress.handleEvent({
       type: "tool_execution_end",
       toolCallId: "t1",
       result: { content: [{ type: "text", text: "file1.ts" }] },
       isError: false,
     });
+
+    const toolCalls = (progress as unknown as { toolCalls: Array<{ result?: string }> }).toolCalls;
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0].result).toBe("file1.ts");
 
     const summary = progress.getSummary();
     expect(summary.tool_calls).toBe(1);

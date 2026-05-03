@@ -1,9 +1,35 @@
 import type { RPCEvent, ToolCallRecord } from "./types";
 
+type TextContent = { type?: unknown; text?: unknown };
+
 function truncateArgs(args: unknown): string {
   const str = JSON.stringify(args);
   if (str.length <= 80) return str;
   return str.slice(0, 77) + "...";
+}
+
+function extractTextFromToolContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((item) => {
+      const block = item as TextContent;
+      if (block?.type === "text" && typeof block.text === "string") {
+        return block.text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+function mergeToolOutput(previous: string | undefined, incoming: string): string {
+  if (!incoming) return previous ?? "";
+  if (!previous) return incoming;
+
+  if (incoming.startsWith(previous)) return incoming;
+  if (previous.startsWith(incoming)) return previous;
+  return previous + incoming;
 }
 
 export class ProgressAccumulator {
@@ -34,10 +60,24 @@ export class ProgressAccumulator {
         this.pendingTools.set(event.toolCallId as string, record);
         break;
       }
+      case "tool_execution_update": {
+        const id = event.toolCallId as string;
+        const pending = this.pendingTools.get(id);
+        if (pending) {
+          const partialResult = (event.partialResult as { content?: unknown } | undefined)
+            ?.content;
+          const partialText = extractTextFromToolContent(partialResult);
+          pending.result = mergeToolOutput(pending.result, partialText);
+        }
+        break;
+      }
       case "tool_execution_end": {
         const id = event.toolCallId as string;
         const pending = this.pendingTools.get(id);
         if (pending) {
+          const finalResult = (event.result as { content?: unknown } | undefined)?.content;
+          const finalText = extractTextFromToolContent(finalResult);
+          pending.result = mergeToolOutput(pending.result, finalText);
           pending.endedAt = Date.now();
           this.toolCalls.push(pending);
           this.pendingTools.delete(id);
