@@ -391,6 +391,13 @@ export default function delegate(pi: ExtensionAPI) {
 
       const transcript = entry.progress?.getFullTranscript() ?? "";
       const finalMessages = entry.progress?.getFinalMessages() ?? [];
+      const usage = entry.progress?.getUsage?.() ?? {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        lastAssistantInput: null,
+      };
 
       // AssistantMessage.content is (TextContent | ThinkingContent | ToolCall)[], not a string.
       let resultText = "";
@@ -412,6 +419,12 @@ export default function delegate(pi: ExtensionAPI) {
       const result: Record<string, unknown> = {
         status: entry.status,
         result: resultText.trim(),
+        usage: {
+          input: usage.input,
+          output: usage.output,
+          cacheRead: usage.cacheRead,
+          cacheWrite: usage.cacheWrite,
+        },
       };
 
       if (entry.error) {

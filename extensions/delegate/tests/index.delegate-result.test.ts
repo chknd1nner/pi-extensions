@@ -131,6 +131,7 @@ describe("delegate_result", () => {
             ],
           },
         ],
+        getUsage: () => ({ input: 1500, output: 320, cacheRead: 45, cacheWrite: 10 }),
       },
     });
 
@@ -146,6 +147,7 @@ describe("delegate_result", () => {
     expect(result.details).toEqual({
       status: "completed",
       result: "final answer",
+      usage: { input: 1500, output: 320, cacheRead: 45, cacheWrite: 10 },
     });
   });
 
@@ -156,6 +158,7 @@ describe("delegate_result", () => {
       progress: {
         getFullTranscript: () => "partial transcript",
         getFinalMessages: () => [],
+        getUsage: () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
       },
     });
 
@@ -171,6 +174,7 @@ describe("delegate_result", () => {
     expect(result.details).toEqual({
       status: "aborted",
       result: "partial transcript",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     });
   });
 
@@ -182,6 +186,7 @@ describe("delegate_result", () => {
       progress: {
         getFullTranscript: () => "",
         getFinalMessages: () => [],
+        getUsage: () => ({ input: 800, output: 120, cacheRead: 5, cacheWrite: 2 }),
       },
       rpcClient: {
         getStderr: () => "worker stderr output",
@@ -201,8 +206,34 @@ describe("delegate_result", () => {
     expect(result.details).toEqual({
       status: "failed",
       result: "",
+      usage: { input: 800, output: 120, cacheRead: 5, cacheWrite: 2 },
       error: "Process exited unexpectedly (code 1)",
       stderr: "worker stderr output",
+    });
+  });
+
+  it("defaults usage counts to zero when no assistant turn was observed", async () => {
+    managerMocks.get.mockReturnValue({
+      taskId: "w1",
+      status: "completed",
+      progress: {
+        getFullTranscript: () => "",
+        getFinalMessages: () => [],
+      },
+    });
+
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_result");
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute("call-1", { task_id: "w1" });
+
+    expect(result.details).toEqual({
+      status: "completed",
+      result: "",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     });
   });
 });

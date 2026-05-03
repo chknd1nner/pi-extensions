@@ -34,12 +34,11 @@ export type WorkerUsage = {
 export type WorkerResult = {
   status: WorkerStatus;
   result: string;
-  usage?: {
+  usage: {
     input: number;
     output: number;
     cacheRead: number;
     cacheWrite: number;
-    cost?: number;
   };
 };
 
