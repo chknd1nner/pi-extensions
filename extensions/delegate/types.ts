@@ -10,7 +10,7 @@ export type DelegateStartParams = {
   tools?: string[];
   denied_tools?: string[];
   timeout?: number;
-  visibility?: string;
+  visibility?: "log";
   system_prompt?: string;
   cwd?: string;
 };

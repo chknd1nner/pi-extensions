@@ -4,6 +4,9 @@ import delegate from "../index";
 
 type RegisteredTool = {
   name: string;
+  parameters?: {
+    properties?: Record<string, unknown>;
+  };
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
@@ -42,6 +45,18 @@ describe("delegate tools registration", () => {
     const tool = fake.getTool("delegate_start");
     expect(tool).toBeDefined();
     expect(tool?.name).toBe("delegate_start");
+  });
+
+  it("exposes a log-only visibility parameter on delegate_start", () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_start");
+    expect(tool).toBeDefined();
+    expect(tool?.parameters?.properties?.visibility).toMatchObject({
+      description: expect.stringContaining("log"),
+      enum: ["log"],
+    });
   });
 
   it("throws when tools and denied_tools are used together", async () => {

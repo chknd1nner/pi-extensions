@@ -74,6 +74,9 @@ export default function delegate(pi: ExtensionAPI) {
       timeout: Type.Optional(
         Type.Number({ description: "Timeout in seconds (default 1800)", default: 1800 }),
       ),
+      visibility: Type.Optional(
+        StringEnum(["log"] as const, { description: 'Visibility mode (currently only "log")' }),
+      ),
       system_prompt: Type.Optional(
         Type.String({ description: "Additional system prompt appended to worker" }),
       ),
