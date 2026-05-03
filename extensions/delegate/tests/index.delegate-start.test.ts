@@ -6,13 +6,7 @@ type RegisteredTool = {
   name: string;
   execute: (
     toolCallId: string,
-    params: {
-      task: string;
-      model: string;
-      provider: string;
-      tools?: string[];
-      denied_tools?: string[];
-    },
+    params: Record<string, unknown>,
     signal?: AbortSignal,
     onUpdate?: unknown,
     ctx?: unknown,
@@ -24,28 +18,28 @@ type RegisteredTool = {
 };
 
 function createFakePi() {
-  let registeredTool: RegisteredTool | undefined;
+  const registeredTools: RegisteredTool[] = [];
 
   const pi = {
     on: () => {},
     registerTool: (tool: RegisteredTool) => {
-      registeredTool = tool;
+      registeredTools.push(tool);
     },
     getAllTools: () => [{ name: "read" }, { name: "bash" }],
   } as unknown as ExtensionAPI;
 
   return {
     pi,
-    getRegisteredTool: () => registeredTool,
+    getTool: (name: string) => registeredTools.find((tool) => tool.name === name),
   };
 }
 
-describe("delegate_start tool registration", () => {
+describe("delegate tools registration", () => {
   it("registers delegate_start", () => {
     const fake = createFakePi();
     delegate(fake.pi);
 
-    const tool = fake.getRegisteredTool();
+    const tool = fake.getTool("delegate_start");
     expect(tool).toBeDefined();
     expect(tool?.name).toBe("delegate_start");
   });
@@ -54,7 +48,7 @@ describe("delegate_start tool registration", () => {
     const fake = createFakePi();
     delegate(fake.pi);
 
-    const tool = fake.getRegisteredTool();
+    const tool = fake.getTool("delegate_start");
     expect(tool).toBeDefined();
 
     const result = await tool!.execute("call-1", {
@@ -68,5 +62,26 @@ describe("delegate_start tool registration", () => {
     expect(result.isError).toBe(true);
     expect(result.details?.error).toBe("invalid_params");
     expect(result.content[0]?.text).toContain("Cannot specify both");
+  });
+
+  it("registers delegate_check", () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_check");
+    expect(tool).toBeDefined();
+    expect(tool?.name).toBe("delegate_check");
+  });
+
+  it("returns an error for unknown task IDs in delegate_check", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_check");
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute("call-2", { task_id: "w999" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("Unknown task ID: w999");
   });
 });

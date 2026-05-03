@@ -232,6 +232,78 @@ export default function delegate(pi: ExtensionAPI) {
     },
   });
 
-  // Remaining tools (delegate_check, delegate_steer, delegate_abort, delegate_result)
+  pi.registerTool({
+    name: "delegate_check",
+    label: "Delegate Check",
+    description: "Query the progress of a running or completed worker.",
+    parameters: Type.Object({
+      task_id: Type.String({ description: "Worker task ID" }),
+      detail: Type.Optional(
+        StringEnum(["summary", "full"] as const, { description: "Level of detail (default: summary)" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const entry = manager.get(params.task_id);
+      if (!entry) {
+        return {
+          content: [{ type: "text" as const, text: `Unknown task ID: ${params.task_id}` }],
+          details: {},
+          isError: true,
+        };
+      }
+
+      const progressSummary = entry.progress!.getSummary();
+      const elapsed = Math.round((Date.now() - entry.startedAt) / 1000);
+
+      let tokenInfo = { input: 0, output: 0, contextPercent: 0 };
+      if (entry.rpcClient && entry.status === "running") {
+        const resp = await entry.rpcClient.sendAndWait({ type: "get_session_stats" });
+        if (resp && (resp as { success?: boolean }).success && (resp as { data?: unknown }).data) {
+          const data = (resp as { data?: { tokens?: { input?: number; output?: number }; contextUsage?: { percent?: number } } }).data;
+          const tokens = data?.tokens ?? {};
+          const ctxUsage = data?.contextUsage ?? {};
+          tokenInfo = {
+            input: tokens.input ?? 0,
+            output: tokens.output ?? 0,
+            contextPercent: ctxUsage.percent ?? 0,
+          };
+        }
+      }
+
+      const summary: Record<string, unknown> = {
+        status: entry.status,
+        elapsed_seconds: elapsed,
+        tool_calls: progressSummary.tool_calls,
+        last_activity_seconds_ago: progressSummary.last_activity_seconds_ago,
+        recent_activity: progressSummary.recent_activity,
+        input_tokens: tokenInfo.input,
+        output_tokens: tokenInfo.output,
+        context_usage_percent: tokenInfo.contextPercent,
+      };
+
+      if (entry.error) {
+        summary.error = entry.error;
+      }
+
+      let text = Object.entries(summary)
+        .map(([k, v]) => {
+          if (Array.isArray(v)) return `${k}:\n${v.map((item) => `  - ${item}`).join("\n")}`;
+          return `${k}: ${v}`;
+        })
+        .join("\n");
+
+      if (params.detail === "full") {
+        text += `\n\ntranscript:\n${progressSummary.transcript}`;
+      }
+
+      return {
+        content: [{ type: "text" as const, text }],
+        details: summary,
+      };
+    },
+  });
+
+  // Remaining tools (delegate_steer, delegate_abort, delegate_result)
   // are registered in subsequent tasks.
 }
