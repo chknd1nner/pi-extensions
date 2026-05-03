@@ -288,6 +288,86 @@ export default function delegate(pi: ExtensionAPI) {
     },
   });
 
-  // Remaining tools (delegate_steer, delegate_abort, delegate_result)
-  // are registered in subsequent tasks.
+  pi.registerTool({
+    name: "delegate_steer",
+    label: "Delegate Steer",
+    description: "Send a steering message to a running worker. Delivered between turns.",
+    parameters: Type.Object({
+      task_id: Type.String({ description: "Worker task ID" }),
+      message: Type.String({ description: "Steering instruction" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const entry = manager.get(params.task_id);
+      if (!entry) {
+        throw new Error(`Unknown task ID: ${params.task_id}`);
+      }
+
+      if (entry.status !== "running") {
+        throw new Error(
+          `Cannot steer ${params.task_id}: worker is ${entry.status}, not running.`,
+        );
+      }
+
+      if (!entry.rpcClient?.isAlive()) {
+        throw new Error(
+          `Cannot steer ${params.task_id}: worker process is not alive.`,
+        );
+      }
+
+      // steer requires active streaming. During compaction the RPC layer may reject it.
+      const resp = await entry.rpcClient.sendAndWait({ type: "steer", message: params.message });
+      const respObj = resp as { success?: boolean; error?: string } | null | undefined;
+      if (respObj && respObj.success === false) {
+        const reason = respObj.error ?? "worker not actively streaming (possibly mid-compaction)";
+        throw new Error(
+          `Steer rejected by ${params.task_id}: ${reason}. Retry shortly.`,
+        );
+      }
+
+      return {
+        content: [{ type: "text" as const, text: `Steering message sent to ${params.task_id}.` }],
+        details: { success: true },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_abort",
+    label: "Delegate Abort",
+    description: "Terminate a running worker. Sends RPC abort for clean shutdown, falls back to SIGTERM/SIGKILL.",
+    parameters: Type.Object({
+      task_id: Type.String({ description: "Worker task ID" }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const entry = manager.get(params.task_id);
+      if (!entry) {
+        throw new Error(`Unknown task ID: ${params.task_id}`);
+      }
+
+      if (entry.status !== "running") {
+        // Already terminal — not an error, just a no-op the orchestrator can branch on.
+        return {
+          content: [{ type: "text" as const, text: `Worker ${params.task_id} is already ${entry.status}.` }],
+          details: { success: false },
+        };
+      }
+
+      manager.setStatus(params.task_id, "aborted", "Aborted by orchestrator");
+      if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+
+      if (entry.rpcClient) {
+        await entry.rpcClient.kill();
+      }
+      entry.logWriter?.close();
+
+      return {
+        content: [{ type: "text" as const, text: `Worker ${params.task_id} aborted.` }],
+        details: { success: true },
+      };
+    },
+  });
+
+  // Remaining tool (delegate_result) is registered in a subsequent task.
 }
