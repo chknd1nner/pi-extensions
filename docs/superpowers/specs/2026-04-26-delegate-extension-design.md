@@ -94,10 +94,12 @@ Summary response:
 | tool_calls | number | Total tool calls made |
 | last_activity_seconds_ago | number | Seconds since last RPC event |
 | recent_activity | string[] | Last 5 tool calls: name + truncated args (~80 chars) |
-| input_tokens | number | Total input tokens consumed so far |
-| output_tokens | number | Total output tokens consumed so far |
-| context_usage_percent | number | Percentage of context window used (from RPC `get_session_stats`) |
+| input_tokens | number | Cumulative `usage.input` summed across all assistant turns observed so far |
+| output_tokens | number | Cumulative `usage.output` summed across all assistant turns observed so far |
+| context_usage_percent | number \| null | Approximate percent of the worker model's context window used by the most recent assistant turn's prompt. `null` when no assistant turn has been observed yet, or when the worker model's context window cannot be resolved from the orchestrator's `ModelRegistry`. |
 | error | string | Stderr/diagnostic output (only present when status is "failed") |
+
+All three usage fields (`input_tokens`, `output_tokens`, `context_usage_percent`) are derived from the streamed RPC event accumulator (see [progress.ts](#progressts)). They are valid for every worker state — `running`, `completed`, `failed`, `aborted` — and remain valid after the worker process has exited, including unexpected exits. `delegate_check` MUST NOT issue a live RPC call (e.g. `get_session_stats`) to obtain these fields, because the worker process may already be gone by the time the orchestrator queries.
 
 Full response adds:
 
@@ -140,7 +142,7 @@ Returns:
 |-------|------|-------------|
 | status | string | "completed", "failed", or "aborted" |
 | result | string | Final assistant text output |
-| usage | object | Token counts (input, output, cache hits) if available |
+| usage | object | Cumulative token counts (`input`, `output`, `cacheRead`, `cacheWrite`) accumulated from streamed assistant message `usage` data. Always populated for any terminal state, including `failed` workers whose process exited unexpectedly, because the data is captured passively from RPC events while the worker is alive. Fields default to `0` when no assistant turn was ever observed. |
 
 ## Module Details
 
@@ -206,20 +208,43 @@ Consumes RPC events and builds a queryable view.
 | `tool_execution_start` | Record tool name, args, timestamp |
 | `tool_execution_update` | Append partial result |
 | `tool_execution_end` | Record final result, mark complete |
+| `turn_end` | Extract assistant `message.usage` and accumulate token totals; record `usage.input` of the latest assistant turn for context-percent estimation |
 | `agent_end` | Mark worker finished, capture final messages |
 
 **Internal state:**
 
 - `transcript: string` — full running text
 - `toolCalls: ToolCallRecord[]` — name, args, result, timestamps
-- `lastActivityAt: number` — most recent event timestamp
+- `lastActivityAt: number` — most recent event timestamp (NOT updated by `agent_end`, so terminal workers report a meaningful idle interval)
+- `cumulativeInput: number` — sum of `usage.input` across all observed assistant turns
+- `cumulativeOutput: number` — sum of `usage.output`
+- `cumulativeCacheRead: number` — sum of `usage.cacheRead`
+- `cumulativeCacheWrite: number` — sum of `usage.cacheWrite`
+- `lastAssistantInput: number | null` — `usage.input` from the most recent assistant turn (proxy for current prompt size); `null` until the first turn completes
 
-**Token usage:** On demand, the progress module calls RPC `get_session_stats` to retrieve running token counts (`input`, `output`, `cacheRead`, `cacheWrite`) and `contextUsage` percentage. These are included in the `delegate_check` summary response for cost-aware supervision.
+**Token & context usage (passive accumulation, no live RPC):**
+
+Token and context-window usage are captured passively from the streamed RPC event protocol. Every `turn_end` event carries the assistant `AgentMessage`, which includes a `usage: { input, output, cacheRead, cacheWrite, cost }` block (see Pi `rpc.md`, `AssistantMessage` type). The progress accumulator extracts that `usage` block on each `turn_end` and updates the cumulative counters and `lastAssistantInput`.
+
+This design is deliberate: usage data is delivered to the extension before the worker process can crash, so it survives any terminal state — completed, aborted, or unexpected `failed` exit. The extension MUST NOT rely on live RPC calls (such as `get_session_stats`) to obtain post-mortem stats, because the child process may already be unreachable.
+
+`context_usage_percent` is derived at query time, not stored, since it depends on the worker's model context window:
+
+```
+context_usage_percent = round(100 * lastAssistantInput / model.contextWindow)
+```
+
+Where `model.contextWindow` is resolved from the orchestrator's `ModelRegistry` using the `provider` and `model` parameters originally passed to `delegate_start`. If `lastAssistantInput` is `null` (no assistant turn observed yet) or the model cannot be resolved, `context_usage_percent` is `null`.
+
+The estimate is approximate. It models the prompt size of the most recent turn, which is the same quantity Pi internally uses for compaction and footer display. It does not include cache-hit tokens that were charged separately, but it is sufficient for orchestrator cost-aware supervision and matches the semantic intent of the original `get_session_stats.contextUsage.percent` field.
 
 **Query interface:**
 
-- `getSummary()` — status, elapsed, tool count, last activity, recent 5 tool calls, token usage, context usage percent
+- `getSummary()` — status, elapsed, tool count, last activity, recent 5 tool calls
+- `getUsage()` — `{ input, output, cacheRead, cacheWrite, lastAssistantInput }` cumulative totals plus latest assistant input
 - `getFullTranscript()` — everything above plus full transcript text
+
+`delegate_check` and `delegate_result` compose `getSummary()` + `getUsage()` + (for `delegate_check`) the orchestrator-side `ModelRegistry` lookup to produce their response payloads.
 
 Stuck detection is the orchestrator's responsibility. This module only reports `last_activity_seconds_ago`.
 
