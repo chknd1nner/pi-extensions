@@ -327,7 +327,13 @@ function buildPreview(entry: SessionEntry): string {
       const toolCall = content.find((b) => (b as { type: string }).type === "toolCall") as
         | { name?: string }
         | undefined;
-      if (toolCall?.name) return `[tool: ${toolCall.name}]`;
+      if (Array.isArray(content)) {
+        const toolCalls = content.filter((b) => (b as { type: string }).type === "toolCall") as
+          Array<{ name?: string }>;
+        if (toolCalls.length > 0) {
+          return `[tool: ${toolCalls.map((t) => t.name ?? "unknown").join(", ")}]`;
+        }
+      }
     }
     return "";
   }
@@ -345,6 +351,12 @@ function buildPreview(entry: SessionEntry): string {
   if (type === "custom_message") {
     const content = entry.content;
     if (typeof content === "string") return content.slice(0, 120);
+    if (Array.isArray(content)) {
+      const textBlock = content.find((b) => (b as { type: string }).type === "text") as
+        | { text?: string }
+        | undefined;
+      if (textBlock?.text) return textBlock.text.slice(0, 120);
+    }
   }
   return "";
 }
@@ -389,7 +401,7 @@ export default function session(pi: ExtensionAPI) {
 cd extensions/session && npm test
 ```
 
-Expected: all 7 tests PASS.
+Expected: all 8 tests PASS.
 
 - [ ] **Step 2.5: Typecheck**
 
@@ -684,7 +696,7 @@ export function buildSessionSnapshot(
 cd extensions/delegate && npm test -- snapshot
 ```
 
-Expected: all 6 tests PASS.
+Expected: all 6 tests PASS. (Task 4 has 6 test cases.)
 
 - [ ] **Step 4.5: Typecheck**
 
@@ -778,25 +790,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import delegate from "../index";
 
+const capturedRpcOptions = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
+
 vi.mock("../worker-manager", () => ({
   WorkerManager: vi.fn().mockImplementation(() => ({
     canStart: vi.fn(() => true),
     activeWorkerDescriptions: vi.fn(() => []),
     nextTaskId: vi.fn(() => "w1"),
-    register: vi.fn(),
+    register: vi.fn(() => ({ taskId: "w1", status: "running", params: {}, startedAt: Date.now() })),
     setStatus: vi.fn(),
     get: vi.fn(),
   })),
 }));
 
 vi.mock("../rpc-client", () => ({
-  RPCClient: vi.fn().mockImplementation(() => ({
-    start: vi.fn(),
-    send: vi.fn(),
-    kill: vi.fn(async () => {}),
-    closeStdin: vi.fn(),
-    isAlive: vi.fn(() => true),
-  })),
+  RPCClient: vi.fn().mockImplementation((options: Record<string, unknown>) => {
+    capturedRpcOptions.value = options;
+    return {
+      start: vi.fn(),
+      send: vi.fn(),
+      kill: vi.fn(async () => {}),
+      closeStdin: vi.fn(),
+      isAlive: vi.fn(() => true),
+    };
+  }),
 }));
 
 type RegisteredTool = {
@@ -836,7 +853,10 @@ function makeCtx({
 }
 
 describe("delegate_anchor", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedRpcOptions.value = null;
+  });
 
   it("registers delegate_anchor", () => {
     const { pi, getTool } = createFakePi();
@@ -906,12 +926,25 @@ describe("delegate_anchor", () => {
     expect(result.details?.entryCount).toBe(3);
   });
 
-  it("delegate_anchor is in DELEGATE_TOOLS denylist (not reachable by name in allowlist filter)", () => {
+  it("filters delegate_anchor from worker tool allowlists", async () => {
     const { pi, getTool } = createFakePi();
+    // Include delegate_anchor in getAllTools so the denylist filter has something to act on
+    (pi as Record<string, unknown>).getAllTools = () => [
+      { name: "read" },
+      { name: "bash" },
+      { name: "delegate_anchor" },
+    ];
     delegate(pi);
-    // The denylist is applied inside delegate_start. Verify delegate_anchor is registered
-    // (presence guarantees it is listed in DELEGATE_TOOLS and filtered from worker allowlists).
-    expect(getTool("delegate_anchor")).toBeDefined();
+
+    await getTool("delegate_start")!.execute(
+      "c1",
+      { task: "do stuff", model: "m", provider: "p", tools: ["read", "bash", "delegate_anchor"] },
+      undefined, undefined, makeCtx(),
+    );
+
+    const tools = capturedRpcOptions.value?.tools as string[] | undefined;
+    expect(tools).toContain("read");
+    expect(tools).not.toContain("delegate_anchor");
   });
 });
 ```
@@ -1036,7 +1069,7 @@ const anchorMap = new Map<string, string | null>();
 cd extensions/delegate && npm test -- delegate-anchor
 ```
 
-Expected: all 7 tests PASS.
+Expected: all 8 tests PASS.
 
 - [ ] **Step 6.5: Run full test suite**
 
@@ -1275,6 +1308,87 @@ describe("delegate_start with inherit_context", () => {
     );
     expect(rpcMocks.start).not.toHaveBeenCalled();
   });
+
+  it("cleans up partial temp file when writeFileSync fails", async () => {
+    fsMock.writeFileSync.mockImplementationOnce(() => { throw new Error("disk full"); });
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+    await expect(
+      getTool("delegate_start")!.execute(
+        "c1", { task: "do stuff", model: "m", provider: "p", inherit_context: true },
+        undefined, undefined, makeCtx(),
+      ),
+    ).rejects.toThrow();
+    // rmSync should be called with force: true to clean up partial file
+    expect(fsMock.rmSync).toHaveBeenCalledWith(expect.stringContaining("pi-worker-"), { force: true });
+  });
+
+  it("throws and marks worker failed when sessionManager is unavailable", async () => {
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+    // ctx with no sessionManager — simulates sessionManager unavailable
+    const badCtx = {};
+    await expect(
+      getTool("delegate_start")!.execute(
+        "c1", { task: "do stuff", model: "m", provider: "p", inherit_context: true },
+        undefined, undefined, badCtx,
+      ),
+    ).rejects.toThrow();
+    expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "failed", expect.any(String));
+    expect(rpcMocks.start).not.toHaveBeenCalled();
+  });
+
+  it("resolves null anchor correctly (header-only snapshot, no branch entries)", async () => {
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    // Set a null anchor (session start)
+    const anchorCtx = makeCtx({ leafId: null, branch: [] });
+    await getTool("delegate_anchor")!.execute("c0", { name: "start" }, undefined, undefined, anchorCtx);
+
+    // Spawn using null anchor
+    const ctx = makeCtx();
+    await getTool("delegate_start")!.execute(
+      "c1", { task: "do stuff", model: "m", provider: "p", inherit_context: "start" },
+      undefined, undefined, ctx,
+    );
+    // buildSessionSnapshot should be called with null anchorEntryId
+    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(
+      ctx.sessionManager, expect.any(String), null,
+    );
+  });
+
+  it("calls rmSync in onExit even when worker status is already completed", async () => {
+    let capturedOnExit: ((code: number | null, signal: string | null) => void) | undefined;
+    const { RPCClient } = await import("../rpc-client");
+    (RPCClient as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      (options: Record<string, unknown>, callbacks: { onExit: typeof capturedOnExit }) => {
+        capturedRpcOptions.value = options;
+        capturedOnExit = callbacks.onExit;
+        return {
+          start: rpcMocks.start,
+          send: rpcMocks.send,
+          kill: rpcMocks.kill,
+          closeStdin: rpcMocks.closeStdin,
+          isAlive: rpcMocks.isAlive,
+        };
+      },
+    );
+
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+    await getTool("delegate_start")!.execute(
+      "c1", { task: "do stuff", model: "m", provider: "p", inherit_context: true },
+      undefined, undefined, makeCtx(),
+    );
+
+    // Simulate agent_end having already set status to completed
+    managerMocks.get.mockReturnValue({ taskId: "w1", status: "completed" });
+
+    // Fire onExit — cleanup must happen unconditionally despite completed status
+    capturedOnExit?.(0, null);
+    expect(fsMock.rmSync).toHaveBeenCalled();
+  });
 });
 ```
 
@@ -1320,48 +1434,56 @@ Make all of the following changes:
       };
 ```
 
-**7.3d — Add snapshot-building block** after the `tryCleanupTempFile` definition and before the `const rpcClient = new RPCClient(...)` call:
+**7.3d — Add snapshot-building block** after the `tryCleanupTempFile` definition and before the `const rpcClient = new RPCClient(...)` call.
+
+Key design points:
+- Use `=== true` / `typeof === "string"` explicit checks — not a truthy guard — so `false` and `undefined` are correctly excluded
+- `tmpPath` is declared **before** `writeFileSync` so the catch can clean up a partially-created file even if `entry.tempFilePath` was never set
+- The single outer `try/catch` covers `sessionManager` access, `getLeafId()`, anchor lookup, snapshot build, and file write — any failure marks the worker failed and closes the log writer
 
 ```typescript
       let sessionPath: string | undefined;
 
-      if (params.inherit_context) {
-        const sessionManager = (
-          ctx as {
-            sessionManager: {
-              getLeafId(): string | null;
-              getBranch(fromId?: string): object[];
-            };
-          }
-        ).sessionManager;
-
-        let anchorEntryId: string | null;
-
-        if (params.inherit_context === true) {
-          anchorEntryId = sessionManager.getLeafId();
-        } else {
-          const anchorName = params.inherit_context as string;
-          if (!anchorMap.has(anchorName)) {
-            manager.setStatus(taskId, "failed", `No anchor named '${anchorName}'.`);
-            tryCloseLogWriter();
-            throw new Error(
-              `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
-            );
-          }
-          anchorEntryId = anchorMap.get(anchorName)!;
-        }
+      if (params.inherit_context === true || typeof params.inherit_context === "string") {
+        let tmpPath: string | undefined;
 
         try {
+          const sessionManager = (
+            ctx as {
+              sessionManager: {
+                getLeafId(): string | null;
+                getBranch(fromId?: string): object[];
+              };
+            }
+          ).sessionManager;
+
+          let anchorEntryId: string | null;
+
+          if (params.inherit_context === true) {
+            anchorEntryId = sessionManager.getLeafId();
+          } else {
+            const anchorName = params.inherit_context as string;
+            if (!anchorMap.has(anchorName)) {
+              throw new Error(
+                `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
+              );
+            }
+            anchorEntryId = anchorMap.get(anchorName)!;
+          }
+
+          tmpPath = `${tmpdir()}/pi-worker-${taskId}-${Date.now()}.jsonl`;
           const snapshot = buildSessionSnapshot(sessionManager, workerCwd, anchorEntryId);
-          const tmpPath = `${tmpdir()}/pi-worker-${taskId}-${Date.now()}.jsonl`;
           writeFileSync(tmpPath, snapshot, "utf8");
           entry.tempFilePath = tmpPath;
           sessionPath = tmpPath;
         } catch (err) {
+          if (tmpPath) {
+            try { rmSync(tmpPath, { force: true }); } catch { /* ignore */ }
+          }
           const msg = err instanceof Error ? err.message : String(err);
           manager.setStatus(taskId, "failed", msg);
           tryCloseLogWriter();
-          throw new Error(`Failed to write session snapshot for ${taskId}: ${msg}`);
+          throw new Error(msg);
         }
       }
 ```
@@ -1373,7 +1495,23 @@ Make all of the following changes:
           sessionPath,
 ```
 
-**7.3f — Add `tryCleanupTempFile()` at the top of `onExit` and `onError`** (before any status check in each callback):
+**7.3f — Add `tryCleanupTempFile()` at the top of `onExit` and `onError`** (before any status check in each callback), and also to the **outer startup `try/catch`** that wraps `rpcClient.start()` + `rpcClient.send()`. That catch currently calls `tryCloseLogWriter()` but not `tryCleanupTempFile()` — without it, a synchronous start failure after snapshot creation leaks the temp file:
+
+```typescript
+      // Outer startup catch (already exists — add tryCleanupTempFile() call):
+      try {
+        rpcClient.start();
+        rpcClient.send({ type: "prompt", message: params.task });
+      } catch (err) {
+        tryCleanupTempFile();                                    // ← add this
+        manager.setStatus(taskId, "failed", err instanceof Error ? err.message : String(err));
+        tryCloseLogWriter();
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to start worker ${taskId}: ${message}`);
+      }
+```
+
+Callbacks:
 
 ```typescript
           onExit(code, _signal) {
@@ -1402,7 +1540,7 @@ Make all of the following changes:
 cd extensions/delegate && npm test -- inherit-context
 ```
 
-Expected: all 6 tests PASS.
+Expected: all 11 tests PASS (6 original + 5 added: partial-write cleanup, sessionManager unavailable, null anchor, onExit-after-completion).
 
 - [ ] **Step 7.5: Run the full test suite**
 
@@ -1432,19 +1570,21 @@ git commit -m "feat(delegate): wire inherit_context into delegate_start with sna
 ## Self-Review
 
 **Spec coverage:**
-- `session_entries()` return shape with `entry_type`, `message_role`, `preview` — Task 2 ✓
+- `session_entries()` return shape with `entry_type`, `message_role`, `preview` (incl. multi-tool and block-array custom_message) — Task 2 ✓
 - `extensions/session/` as standalone extension — Task 1 ✓
 - `delegate_anchor` with `name`, `entry_id`, null-leaf support, branch-membership validation — Task 6 ✓
 - `anchorMap: Map<string, string | null>` inside factory — Task 6 ✓
-- `delegate_anchor` in `DELEGATE_TOOLS` denylist — Task 6 ✓
+- `delegate_anchor` in `DELEGATE_TOOLS` denylist, verified by behavioural test — Task 6 ✓
 - `inherit_context?: boolean | string` with `minLength: 1` — Task 7 ✓
-- Explicit type-check branching (`=== true` / `typeof === "string"`) — Task 7 ✓
+- Explicit type-check branching (`=== true` / `typeof === "string"`, not truthy guard) — Task 7 ✓
 - `sessionPath` in `RPCClientOptions` — Task 3 ✓
-- `buildSessionSnapshot()` with fresh header, null anchor = empty branch — Task 4 ✓
+- `buildSessionSnapshot()` with fresh header, null anchor = header only, `tmpPath` pre-computed before write — Task 4 ✓
 - `tempFilePath` on `WorkerEntry` — Task 5 ✓
-- `tryCleanupTempFile` at top of `onExit` unconditionally — Task 7 ✓
+- `tryCleanupTempFile` at top of `onExit` unconditionally (covers completed + failed + aborted workers) — Task 7 ✓
 - `tryCleanupTempFile` in `onError` unconditionally — Task 7 ✓
-- Pre-start failure: `setStatus("failed")` + `tryCloseLogWriter()` before throw — Task 7 ✓
+- `tryCleanupTempFile` in outer startup catch (covers `rpcClient.start()` / `send()` failures) — Task 7 ✓
+- Pre-start failure: broad try/catch covers `sessionManager` access, `getLeafId()`, anchor lookup, snapshot, file write — Task 7 ✓
+- Pre-start failure: partial temp file cleaned up via pre-computed `tmpPath` in catch — Task 7 ✓
 - Pre-start failure: worker never starts (`rpcClient.start()` not called) — Task 7 ✓
 
 **Placeholder scan:** None found.
@@ -1455,3 +1595,7 @@ git commit -m "feat(delegate): wire inherit_context into delegate_start with sna
 - `RPCClientOptions.sessionPath?: string` passed through to `buildArgs()` ✓
 - `WorkerEntry.tempFilePath?: string` set in delegate_start and read in `tryCleanupTempFile` ✓
 - `DelegateStartParams.inherit_context?: boolean | string` matches TypeBox schema ✓
+
+**TDD exceptions acknowledged:**
+- Task 1 (scaffold): type-only file creation, no logic to test — typecheck serves as verification
+- Task 5 (types): type-only changes, no runtime behaviour — existing tests catch regressions; new fields are exercised by Tasks 6 and 7 tests
