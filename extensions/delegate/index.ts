@@ -20,7 +20,7 @@ function todayDate(): string {
   return new Date().toLocaleDateString("en-CA");
 }
 
-const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result"];
+const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result", "delegate_anchor"];
 
 export default function delegate(pi: ExtensionAPI) {
   const initialCwd = process.cwd();
@@ -44,6 +44,7 @@ export default function delegate(pi: ExtensionAPI) {
     projectRoot,
     maxWorkersEnv: process.env.DELEGATE_MAX_WORKERS,
   });
+  const anchorMap = new Map<string, string | null>();
 
   pi.registerTool({
     name: "delegate_start",
@@ -224,6 +225,50 @@ export default function delegate(pi: ExtensionAPI) {
       return {
         content: [{ type: "text" as const, text: `Worker ${taskId} started. Use delegate_check("${taskId}") to monitor progress.` }],
         details: { task_id: taskId, status: "running" },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_anchor",
+    label: "Delegate Anchor",
+    description: "Save a named session anchor for later context inheritance.",
+    parameters: Type.Object({
+      name: Type.Optional(Type.String({ description: 'Anchor name (default: "default")' })),
+      entry_id: Type.Optional(Type.String({ description: "Optional entry ID on the current branch" })),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const name = params.name ?? "default";
+      const sessionManager = ctx.sessionManager as {
+        getLeafId(): string | null;
+        getBranch(entryId?: string): Array<{ id: string }>;
+      };
+
+      let entryId: string | null;
+      if (params.entry_id !== undefined) {
+        const currentBranch = sessionManager.getBranch();
+        const inCurrentBranch = currentBranch.some((entry) => entry.id === params.entry_id);
+        if (!inCurrentBranch) {
+          throw new Error(`Entry '${params.entry_id}' not found on current branch`);
+        }
+        entryId = params.entry_id;
+      } else {
+        entryId = sessionManager.getLeafId();
+      }
+
+      anchorMap.set(name, entryId);
+
+      const entryCount = entryId === null ? 0 : sessionManager.getBranch(entryId).length;
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Anchor '${name}' saved (${entryCount} entries).`,
+          },
+        ],
+        details: { name, entryId, entryCount },
       };
     },
   });
