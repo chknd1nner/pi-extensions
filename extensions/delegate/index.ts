@@ -1,9 +1,12 @@
 import { execSync } from "node:child_process";
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { Type } from "typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
+import { buildSessionSnapshot } from "./snapshot";
 import { ProgressLogWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
 import type { DelegateStartParams } from "./types";
@@ -84,9 +87,15 @@ export default function delegate(pi: ExtensionAPI) {
       cwd: Type.Optional(
         Type.String({ description: "Working directory for the worker (default: project root)" }),
       ),
+      inherit_context: Type.Optional(
+        Type.Union([Type.Boolean(), Type.String({ minLength: 1 })], {
+          description:
+            'false/absent = ephemeral (--no-session). true = inherit current session context. "name" = inherit from named anchor set by delegate_anchor.',
+        }),
+      ),
     }),
 
-    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (params.tools && params.denied_tools) {
         throw new Error(
           "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one.",
@@ -150,6 +159,64 @@ export default function delegate(pi: ExtensionAPI) {
         }
       };
 
+      const tryCleanupTempFile = () => {
+        if (!entry.tempFilePath) return;
+        try {
+          rmSync(entry.tempFilePath, { force: true });
+        } catch {
+          // ignore
+        }
+      };
+
+      let sessionPath: string | undefined;
+
+      if (params.inherit_context === true || typeof params.inherit_context === "string") {
+        let tmpPath: string | undefined;
+
+        try {
+          const sessionManager = (
+            ctx as {
+              sessionManager: {
+                getLeafId(): string | null;
+                getBranch(fromId?: string): object[];
+              };
+            }
+          ).sessionManager;
+
+          let anchorEntryId: string | null;
+
+          if (params.inherit_context === true) {
+            anchorEntryId = sessionManager.getLeafId();
+          } else {
+            const anchorName = params.inherit_context as string;
+            if (!anchorMap.has(anchorName)) {
+              throw new Error(
+                `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
+              );
+            }
+            anchorEntryId = anchorMap.get(anchorName)!;
+          }
+
+          tmpPath = `${tmpdir()}/pi-worker-${taskId}-${Date.now()}.jsonl`;
+          const snapshot = buildSessionSnapshot(sessionManager, workerCwd, anchorEntryId);
+          writeFileSync(tmpPath, snapshot, "utf8");
+          entry.tempFilePath = tmpPath;
+          sessionPath = tmpPath;
+        } catch (err) {
+          if (tmpPath) {
+            try {
+              rmSync(tmpPath, { force: true });
+            } catch {
+              // ignore
+            }
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          manager.setStatus(taskId, "failed", msg);
+          tryCloseLogWriter();
+          throw new Error(msg);
+        }
+      }
+
       const rpcClient = new RPCClient(
         {
           model: params.model,
@@ -160,6 +227,7 @@ export default function delegate(pi: ExtensionAPI) {
           allToolNames: toolsAllowlist ? undefined : allToolNames,
           systemPrompt: params.system_prompt,
           cwd: workerCwd,
+          sessionPath,
         },
         {
           onEvent(event) {
@@ -183,6 +251,7 @@ export default function delegate(pi: ExtensionAPI) {
             }
           },
           onExit(code, _signal) {
+            tryCleanupTempFile();
             const current = manager.get(taskId);
             if (current && current.status === "running") {
               manager.setStatus(taskId, "failed", `Process exited unexpectedly (code ${code})`);
@@ -191,6 +260,7 @@ export default function delegate(pi: ExtensionAPI) {
             }
           },
           onError(err) {
+            tryCleanupTempFile();
             const current = manager.get(taskId);
             if (current && current.status === "running") {
               manager.setStatus(taskId, "failed", err);
@@ -207,6 +277,7 @@ export default function delegate(pi: ExtensionAPI) {
         rpcClient.start();
         rpcClient.send({ type: "prompt", message: params.task });
       } catch (err) {
+        tryCleanupTempFile();
         manager.setStatus(taskId, "failed", err instanceof Error ? err.message : String(err));
         tryCloseLogWriter();
         const message = err instanceof Error ? err.message : String(err);
