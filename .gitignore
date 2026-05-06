@@ -82,3 +82,6 @@ launcher/
 logs/
 users/
 .familyos-pi/
+
+# Ticket system
+in-progress/
