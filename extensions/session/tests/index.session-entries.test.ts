@@ -85,10 +85,13 @@ describe("session_entries", () => {
     expect(entries).toEqual([{
       id: "b2c3d4e5",
       entry_type: "compaction",
-      message_role: undefined,
       timestamp: "2026-05-04T10:05:00.000Z",
       preview: "[compaction] User read the spec and sharded tickets",
     }]);
+    expect(Object.prototype.hasOwnProperty.call(entries[0] as object, "message_role")).toBe(false);
+
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed[0]).not.toHaveProperty("message_role");
   });
 
   it("previews model_change entries as provider/modelId", async () => {
@@ -123,6 +126,60 @@ describe("session_entries", () => {
     const result = await getTool("session_entries")!.execute("c1", {}, undefined, undefined, makeCtx(branch));
     const entries = (result.details as { entries: unknown[] }).entries;
     expect((entries[0] as { preview: string }).preview).toBe("[tool: bash]");
+  });
+
+  it("previews assistant messages with multiple tool calls using [tool: name1, name2]", async () => {
+    const { pi, getTool } = createFakePi();
+    session(pi);
+    const branch = [{
+      id: "f6g7h8i9",
+      type: "message",
+      parentId: null,
+      timestamp: "2026-05-04T10:16:00.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } },
+          { type: "toolCall", id: "call_2", name: "read", arguments: { path: "README.md" } },
+        ],
+      },
+    }];
+    const result = await getTool("session_entries")!.execute("c1", {}, undefined, undefined, makeCtx(branch));
+    const entries = (result.details as { entries: unknown[] }).entries;
+    expect((entries[0] as { preview: string }).preview).toBe("[tool: bash, read]");
+  });
+
+  it("previews custom_message entries with string content", async () => {
+    const { pi, getTool } = createFakePi();
+    session(pi);
+    const branch = [{
+      id: "g7h8i9j0",
+      type: "custom_message",
+      parentId: null,
+      timestamp: "2026-05-04T10:17:00.000Z",
+      content: "Custom string payload",
+    }];
+    const result = await getTool("session_entries")!.execute("c1", {}, undefined, undefined, makeCtx(branch));
+    const entries = (result.details as { entries: unknown[] }).entries;
+    expect((entries[0] as { preview: string }).preview).toBe("Custom string payload");
+  });
+
+  it("previews custom_message entries with text block array content", async () => {
+    const { pi, getTool } = createFakePi();
+    session(pi);
+    const branch = [{
+      id: "h8i9j0k1",
+      type: "custom_message",
+      parentId: null,
+      timestamp: "2026-05-04T10:18:00.000Z",
+      content: [
+        { type: "text", text: "Custom block payload" },
+        { type: "image", source: { type: "url", url: "https://example.com/image.png" } },
+      ],
+    }];
+    const result = await getTool("session_entries")!.execute("c1", {}, undefined, undefined, makeCtx(branch));
+    const entries = (result.details as { entries: unknown[] }).entries;
+    expect((entries[0] as { preview: string }).preview).toBe("Custom block payload");
   });
 
   it("truncates long text previews to 120 characters", async () => {

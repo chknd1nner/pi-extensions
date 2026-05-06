@@ -3,30 +3,30 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 type SessionEntry = Record<string, unknown>;
 
+function previewFromContent(content: unknown): string {
+  if (typeof content === "string") return content.slice(0, 120);
+  if (!Array.isArray(content)) return "";
+
+  const textBlock = content.find((b) => (b as { type?: string }).type === "text") as
+    | { text?: string }
+    | undefined;
+  if (textBlock?.text) return textBlock.text.slice(0, 120);
+
+  const toolCalls = content.filter((b) => (b as { type?: string }).type === "toolCall") as
+    Array<{ name?: string }>;
+  if (toolCalls.length > 0) {
+    return `[tool: ${toolCalls.map((toolCall) => toolCall.name ?? "unknown").join(", ")}]`;
+  }
+
+  return "";
+}
+
 function buildPreview(entry: SessionEntry): string {
   const type = entry.type as string;
 
   if (type === "message") {
     const msg = entry.message as { role: string; content: unknown };
-    const { content } = msg;
-    if (typeof content === "string") return content.slice(0, 120);
-    if (Array.isArray(content)) {
-      const textBlock = content.find((b) => (b as { type: string }).type === "text") as
-        | { text?: string }
-        | undefined;
-      if (textBlock?.text) return textBlock.text.slice(0, 120);
-      const toolCall = content.find((b) => (b as { type: string }).type === "toolCall") as
-        | { name?: string }
-        | undefined;
-      if (Array.isArray(content)) {
-        const toolCalls = content.filter((b) => (b as { type: string }).type === "toolCall") as
-          Array<{ name?: string }>;
-        if (toolCalls.length > 0) {
-          return `[tool: ${toolCalls.map((t) => t.name ?? "unknown").join(", ")}]`;
-        }
-      }
-    }
-    return "";
+    return previewFromContent(msg.content);
   }
 
   if (type === "compaction") {
@@ -39,16 +39,7 @@ function buildPreview(entry: SessionEntry): string {
   if (type === "branch_summary") {
     return `[branch_summary] ${((entry.summary as string) ?? "").slice(0, 100)}`;
   }
-  if (type === "custom_message") {
-    const content = entry.content;
-    if (typeof content === "string") return content.slice(0, 120);
-    if (Array.isArray(content)) {
-      const textBlock = content.find((b) => (b as { type: string }).type === "text") as
-        | { text?: string }
-        | undefined;
-      if (textBlock?.text) return textBlock.text.slice(0, 120);
-    }
-  }
+  if (type === "custom_message") return previewFromContent(entry.content);
   return "";
 }
 
@@ -68,10 +59,9 @@ export default function session(pi: ExtensionAPI) {
       const entries = branch.map((entry) => ({
         id: entry.id as string,
         entry_type: entry.type as string,
-        message_role:
-          entry.type === "message"
-            ? ((entry.message as { role: string }).role as string)
-            : undefined,
+        ...(entry.type === "message"
+          ? { message_role: (entry.message as { role: string }).role as string }
+          : {}),
         timestamp: entry.timestamp as string,
         preview: buildPreview(entry),
       }));
