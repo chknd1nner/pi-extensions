@@ -24,6 +24,7 @@ export type RPCClientOptions = {
   cwd: string;
   allToolNames?: string[];
   deniedTools?: string[];
+  sessionPath?: string;
 };
 
 export type RPCClientCallbacks = {
@@ -157,13 +158,17 @@ export class RPCClient {
     return this.proc !== null && !this.exited;
   }
 
-  private buildArgs(): string[] {
+  buildArgs(): string[] {
     const args = [
       "--mode", "rpc",
-      "--no-session",
       "--model", this.options.model,
       "--provider", this.options.provider,
     ];
+    if (this.options.sessionPath) {
+      args.push("--session", this.options.sessionPath);
+    } else {
+      args.push("--no-session");
+    }
     // Workers load extensions normally so they can use the user's custom tools.
     // delegate_* tools are excluded via the --tools allowlist to prevent recursive delegation.
     if (this.options.thinking) {

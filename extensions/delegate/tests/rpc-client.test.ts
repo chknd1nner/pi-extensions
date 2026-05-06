@@ -53,3 +53,51 @@ describe("RPCClient.sendAndWait", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("RPCClient.buildArgs", () => {
+  it("emits --no-session when sessionPath is not set", () => {
+    const client = new RPCClient(
+      { model: "claude-sonnet-4-5", provider: "anthropic", cwd: "/tmp" },
+      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
+    );
+    const args = client.buildArgs();
+    expect(args).toContain("--no-session");
+    expect(args).not.toContain("--session");
+  });
+
+  it("emits --session <path> when sessionPath is set", () => {
+    const client = new RPCClient(
+      {
+        model: "claude-sonnet-4-5",
+        provider: "anthropic",
+        cwd: "/tmp",
+        sessionPath: "/tmp/snap.jsonl",
+      },
+      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
+    );
+    const args = client.buildArgs();
+    const idx = args.indexOf("--session");
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe("/tmp/snap.jsonl");
+    expect(args).not.toContain("--no-session");
+  });
+
+  it("always includes --model and --provider", () => {
+    const client = new RPCClient(
+      { model: "gpt-5.4", provider: "github-copilot", cwd: "/tmp" },
+      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
+    );
+    const args = client.buildArgs();
+    expect(args[args.indexOf("--model") + 1]).toBe("gpt-5.4");
+    expect(args[args.indexOf("--provider") + 1]).toBe("github-copilot");
+  });
+
+  it("includes --thinking when set", () => {
+    const client = new RPCClient(
+      { model: "m", provider: "p", cwd: "/tmp", thinking: "high" },
+      { onEvent: () => {}, onExit: () => {}, onError: () => {} },
+    );
+    const args = client.buildArgs();
+    expect(args[args.indexOf("--thinking") + 1]).toBe("high");
+  });
+});
