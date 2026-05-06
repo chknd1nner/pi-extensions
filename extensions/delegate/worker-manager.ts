@@ -11,6 +11,7 @@ export type WorkerEntry = {
   rpcClient?: RPCClient;
   progress?: ProgressAccumulator;
   logWriter?: ProgressLogWriter;
+  tempFilePath?: string;
   error?: string;
   timeoutTimer?: ReturnType<typeof setTimeout>;
 };
