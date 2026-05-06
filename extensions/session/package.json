@@ -1,0 +1,19 @@
+{
+  "name": "session-extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "latest",
+    "typebox": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
