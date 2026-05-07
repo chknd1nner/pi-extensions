@@ -74,25 +74,28 @@ completed
 
 ### Write Semantics
 
-Status writes must be atomic to avoid partial reads by polling scripts.
+Status writes must be atomic and ordered to avoid partial reads or stale regressions.
 
 Implementation approach:
 
 1. Ensure the parent directory exists.
-2. Write the next status to a temp file in the same directory.
+2. Write the next status plus trailing newline to a temp file in the same directory.
 3. Rename the temp file over `<taskId>.status`.
+4. Use synchronous filesystem operations for `StatusFileWriter.writeStatus(...)` so an earlier `running` write cannot land after a later terminal write.
 
 Unlike `progress.md`, the status file is not append-streamed. Atomic replace is therefore safe and preferred.
 
+**Invariant:** status-file contents must never regress from a terminal state back to `running` because of delayed IO.
+
 ### Creation Timing
 
-On the successful `delegate_start` path, write `running` before the worker process is started. This ensures that a watcher launched immediately after `delegate_start` receives a stable file to observe.
+On the successful `delegate_start` path, perform all pre-launch setup first (including context snapshot/temp-file creation when requested). After pre-launch setup succeeds, write `running` immediately before the worker process is started. This ensures that a watcher launched immediately after `delegate_start` receives a stable file to observe while avoiding a stale `running` file for workers that fail before launch.
 
 ---
 
 ## API Surface Change
 
-`delegate_start` should include the generated file paths in its returned `details` payload:
+A successful `delegate_start` call should include the generated file paths in its returned `details` payload:
 
 ```json
 {
@@ -104,6 +107,12 @@ On the successful `delegate_start` path, write `running` before the worker proce
 ```
 
 The human-facing text response can remain short, but the details object should expose both paths so watcher scripts do not need to reconstruct date/session directories.
+
+Clarifications:
+
+- `progress_file` is the append-only log path and may not exist yet until the first progress event is written.
+- `status_file` is intended to exist immediately after a successful start, but watcher logic must still tolerate it being absent temporarily because status-file IO is best-effort.
+- These new fields are additive and are present only on successful `delegate_start` responses. Existing thrown-error behavior is unchanged.
 
 ---
 
@@ -123,41 +132,74 @@ Add a small sibling writer to `extensions/delegate/visibility.ts`:
 
 - `StatusFileWriter`
 - constructs the same directory path shape as `ProgressLogWriter`
-- exposes `writeStatus(status)`
+- exposes `writeStatus(status: WorkerStatus): void`
 - exposes `getFilePath()`
-- uses atomic temp-file + rename writes
+- uses synchronous atomic temp-file + rename writes
+- writes exactly `<status>\n`
+- never throws to lifecycle code; after the first IO failure it becomes a no-op for the rest of the worker lifetime
 
 `ProgressLogWriter` remains append-only and unchanged in role.
+
+### Worker Entry + Transition Contract
+
+The writer must be reachable from all lifecycle paths that can terminate a worker, not just the `delegate_start` closure.
+
+Expected additions:
+
+- `WorkerEntry.statusWriter?: StatusFileWriter`
+- `WorkerManager.setStatus(...)` returns `boolean` indicating whether the transition was applied
+
+**Rule:** terminal status-file writes must only happen when the corresponding in-memory status transition succeeds. Example:
+
+```ts
+if (manager.setStatus(taskId, "aborted", "Timed out after 600s")) {
+  entry.statusWriter?.writeStatus("aborted");
+}
+```
+
+This prevents a later `agent_end` callback from overwriting a prior `aborted` or `failed` terminal state on disk.
 
 ### Required Status Updates
 
 Write the status file at these points:
 
-1. **After worker registration / before process start**  
+1. **After worker registration and after all pre-launch setup succeeds, but before `rpcClient.start()`**  
    Write `running`.
 
-2. **On `agent_end` for a still-`running` worker**  
-   Write `completed`.
+2. **If session snapshot/temp-file setup fails before launch**  
+   Attempt the in-memory transition to `failed`; only if that transition applies, best-effort write `failed`.
 
-   This must not overwrite a prior terminal transition such as timeout/manual abort. If the in-memory worker status is already `aborted` or `failed`, leave the status file unchanged.
+3. **If `rpcClient.start()` or initial `send()` throws**  
+   Attempt the in-memory transition to `failed`; only if that transition applies, best-effort write `failed`.
 
-3. **If session snapshot/temp-file setup fails before launch**  
-   Set in-memory status to `failed`, then best-effort write `failed`.
+4. **On `agent_end` while the worker is still `running`**  
+   Inspect the final assistant message in `event.messages`, if present:
+   - `stopReason === "aborted"` → transition/write `aborted`
+   - `stopReason === "error"` → transition/write `failed`
+   - otherwise → transition/write `completed`
 
-4. **If `rpcClient.start()` or initial `send()` throws**  
-   Set in-memory status to `failed`, then best-effort write `failed`.
+   If the worker is already terminal in memory, do not change the status file.
 
-5. **On unexpected process exit while still `running`**  
-   Set in-memory status to `failed`, then best-effort write `failed`.
+5. **On unexpected process termination after RPC stdout has been fully drained, while still `running`**  
+   Attempt the in-memory transition to `failed`; only if that transition applies, best-effort write `failed`.
 
 6. **On `onError` while still `running`**  
-   Set in-memory status to `failed`, then best-effort write `failed`.
+   Attempt the in-memory transition to `failed`; only if that transition applies, best-effort write `failed`.
 
 7. **On timeout**  
-   Set in-memory status to `aborted`, best-effort write `aborted`, then abort/kill the worker.
+   Attempt the in-memory transition to `aborted`; only if that transition applies, best-effort write `aborted`, then abort/kill the worker.
 
 8. **On manual `delegate_abort`**  
-   Set in-memory status to `aborted`, best-effort write `aborted`, then abort/kill the worker.
+   Attempt the in-memory transition to `aborted`; only if that transition applies, best-effort write `aborted`, then abort/kill the worker.
+
+9. **On `session_shutdown` / `disposeAll()`**  
+   For every worker still `running`, attempt the in-memory transition to `aborted` with an orchestrator-shutdown reason; only if that transition applies, best-effort write `aborted`, clear timeout state, then kill/close the worker.
+
+### Exit Ordering Requirement
+
+Unexpected-exit classification must happen only after the worker's RPC stdout has been fully drained. Otherwise a fast process exit can race with buffered `agent_end` delivery and incorrectly classify a completed worker as `failed`.
+
+The implementation may satisfy this by using child-process `close` instead of `exit`, or any equivalent mechanism that guarantees stream-drain-before-classification.
 
 ### Failure Policy
 
@@ -232,6 +274,8 @@ This works well with `process` alerts:
 
 The recommended shell loop must avoid `&&` command chaining. Past experiments showed chained expressions could leave stale reads or skip expected control flow, making the loop fail to exit even after the worker finished.
 
+Run the template with **Bash**.
+
 Known-good template:
 
 ```bash
@@ -240,7 +284,7 @@ task_id="w1"
 timeout_seconds=600
 poll_seconds=3
 last_status="unknown"
-start_time="$(date +%s)"
+start_seconds=$SECONDS
 
 while true; do
   if [[ -f "$status_file" ]]; then
@@ -263,8 +307,7 @@ while true; do
     fi
   fi
 
-  now="$(date +%s)"
-  elapsed=$((now - start_time))
+  elapsed=$((SECONDS - start_seconds))
   if (( elapsed >= timeout_seconds )); then
     echo "DELEGATE_WATCH_TIMEOUT $task_id last=$last_status"
     exit 124
@@ -294,22 +337,28 @@ A watcher timeout means only that file-based observation was inconclusive. It do
 - `extensions/delegate/visibility.ts`
   - add `StatusFileWriter`
 - `extensions/delegate/index.ts`
-  - instantiate writer
+  - instantiate/store the writer
   - write initial `running`
+  - gate terminal file writes on successful in-memory transitions
   - update terminal-state writes at all lifecycle transitions
   - return `progress_file` and `status_file` from `delegate_start`
+- `extensions/delegate/worker-manager.ts`
+  - return transition success from `setStatus(...)`
+  - mark running workers `aborted` during shutdown disposal
+- `extensions/delegate/rpc-client.ts`
+  - ensure unexpected-exit classification happens after stdout drain (`close` or equivalent)
 - `extensions/delegate/tests/visibility.test.ts`
   - add tests for atomic status writes and file paths
 - `extensions/delegate/tests/index.delegate-start.test.ts`
   - assert returned details expose `status_file` and `progress_file`
 - `extensions/delegate/tests/...`
-  - update/add lifecycle tests covering failed, completed, aborted transitions
+  - update/add lifecycle tests covering failed, completed, aborted transitions, shutdown disposal, and non-regressing terminal status writes
 
 ### Backwards Compatibility
 
 - existing progress-log behaviour remains intact
 - delegate tool semantics remain unchanged
-- new `details.progress_file` and `details.status_file` fields are additive
+- new `details.progress_file` and `details.status_file` fields are additive on successful `delegate_start` responses only
 
 ---
 
