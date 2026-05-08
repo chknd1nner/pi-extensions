@@ -4,7 +4,7 @@ import {
   createAgentSessionRuntime,
   generateBranchSummary,
   type ModelRegistry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { AuditLog } from "../audit-log.js";
 import { AgentLoader } from "../config/agent-loader.js";
 import { StateStore } from "../identity/state-store.js";

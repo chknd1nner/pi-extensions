@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import type { AuditLog } from "../audit-log.js";
 import type { ResolvedUser } from "../types.js";
 import { injectHandoffIntoProviderPayload, OneShotHandoff } from "./handoff.js";

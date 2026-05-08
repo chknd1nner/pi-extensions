@@ -1,5 +1,5 @@
-import { SessionManager } from "@mariozechner/pi-coding-agent";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AuditLog } from "../audit-log.js";
 import { AgentLoader } from "../config/agent-loader.js";
 import { StateStore } from "../identity/state-store.js";

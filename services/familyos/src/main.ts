@@ -1,5 +1,5 @@
 import path from "node:path";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { createAuditLog } from "./audit-log.js";
 import { loadBootstrapConfig } from "./config.js";
 import { AgentLoader } from "./config/agent-loader.js";

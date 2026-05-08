@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import delegate from "../index";
 
 type RegisteredTool = {

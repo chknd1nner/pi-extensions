@@ -1,4 +1,4 @@
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai";
 
 export type ToolName = "read" | "write" | "edit" | "grep" | "find" | "ls";
 export type TreeFilter = "default" | "no-tools" | "user-only" | "labeled-only" | "all";

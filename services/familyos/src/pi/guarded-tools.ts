@@ -1,4 +1,4 @@
-import type { AgentToolResult, ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createEditToolDefinition,
   createFindToolDefinition,
@@ -6,7 +6,7 @@ import {
   createLsToolDefinition,
   createReadToolDefinition,
   createWriteToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { ResolvedAgent, ResolvedUser, ToolName } from "../types.js";
 import { PathPolicy } from "./path-policy.js";
 

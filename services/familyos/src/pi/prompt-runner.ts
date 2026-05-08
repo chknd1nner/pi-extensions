@@ -1,4 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { TurnInput } from "../types.js";
 
 export function buildPromptText(input: TurnInput): string {

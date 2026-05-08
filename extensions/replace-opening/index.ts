@@ -14,7 +14,7 @@
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function replaceOpeningPrompt(pi: ExtensionAPI) {
   // Exact sentence we want to replace (must match default verbatim)

@@ -6,7 +6,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
     "@sinclair/typebox": "^0.34.33",
     "typescript": "^5.9.3"
   }

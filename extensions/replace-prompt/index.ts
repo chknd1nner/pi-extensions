@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyRulesToPrompt } from "./apply-rules";
 import { appendLog } from "./logging";
 import { loadScopeConfig, selectLogPath } from "./load-config";

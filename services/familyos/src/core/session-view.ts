@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionInfo } from "@mariozechner/pi-coding-agent";
+import type { SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { SessionListItem, TreeFilter, TreePage } from "../types.js";
 
 function formatUtcMinute(date: Date) {
