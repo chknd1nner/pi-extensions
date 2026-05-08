@@ -1,7 +1,7 @@
 # Delegate Status File + Watcher Design
 
 **Date:** 2026-05-07  
-**Status:** Draft  
+**Status:** Approved  
 **Extensions affected:** `extensions/delegate/`
 
 ---
