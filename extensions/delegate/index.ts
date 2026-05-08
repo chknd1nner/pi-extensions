@@ -145,10 +145,11 @@ export default function delegate(pi: ExtensionAPI) {
       const progress = new ProgressAccumulator();
       entry.progress = progress;
 
-      const logWriter = new ProgressLogWriter(projectRoot, todayDate(), sessionId, taskId);
+      const artifactDate = todayDate();
+      const logWriter = new ProgressLogWriter(projectRoot, artifactDate, sessionId, taskId);
       entry.logWriter = logWriter;
 
-      const statusWriter = new StatusFileWriter(projectRoot, todayDate(), sessionId, taskId);
+      const statusWriter = new StatusFileWriter(projectRoot, artifactDate, sessionId, taskId);
       entry.statusWriter = statusWriter;
 
       let logWriterFailed = false;
