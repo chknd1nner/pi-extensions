@@ -1,8 +1,8 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { ProgressLogWriter } from "../visibility";
+import { ProgressLogWriter, StatusFileWriter } from "../visibility";
 
 describe("ProgressLogWriter", () => {
   let tmpDir: string;
@@ -12,6 +12,7 @@ describe("ProgressLogWriter", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -51,6 +52,29 @@ describe("ProgressLogWriter", () => {
     writer.close();
 
     const filePath = path.join(tmpDir, ".pi", "delegate", "2026-04-26", "sess-abc", "w1.progress.md");
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it("writes sibling status files with a trailing newline and replaces old contents", () => {
+    const writer = new StatusFileWriter(tmpDir, "2026-05-07", "sess-abc", "w1");
+    writer.writeStatus("running");
+    writer.writeStatus("completed");
+
+    const filePath = path.join(tmpDir, ".pi", "delegate", "2026-05-07", "sess-abc", "w1.status");
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(fs.readFileSync(filePath, "utf8")).toBe("completed\n");
+  });
+
+  it("disables itself after the first filesystem failure", () => {
+    vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
+
+    const writer = new StatusFileWriter(tmpDir, "2026-05-07", "sess-abc", "w1");
+    expect(() => writer.writeStatus("running")).not.toThrow();
+    expect(() => writer.writeStatus("completed")).not.toThrow();
+
+    const filePath = path.join(tmpDir, ".pi", "delegate", "2026-05-07", "sess-abc", "w1.status");
     expect(fs.existsSync(filePath)).toBe(false);
   });
 });
