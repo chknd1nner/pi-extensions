@@ -1,14 +1,48 @@
 {
-  "name": "replace-prompt-extension",
-  "private": true,
+  "name": "pi-replace-prompt",
+  "version": "0.1.0",
+  "description": "Pi extension package for rewriting the computed system prompt with ordered literal and regex replacement rules.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "system-prompt",
+    "prompt",
+    "rules"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chknd1nner/pi-extensions.git",
+    "directory": "extensions/replace-prompt"
+  },
+  "homepage": "https://github.com/chknd1nner/pi-extensions/tree/main/extensions/replace-prompt",
+  "bugs": {
+    "url": "https://github.com/chknd1nner/pi-extensions/issues"
+  },
   "type": "module",
+  "files": [
+    "*.ts",
+    "README.md",
+    "docs",
+    "opening.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "jiti": "^2.4.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
-    "jiti": "^2.4.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }
