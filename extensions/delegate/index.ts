@@ -269,7 +269,8 @@ export default function delegate(pi: ExtensionAPI) {
             }
 
             if (event.type === "agent_end") {
-              manager.setStatus(taskId, "completed");
+              const nextStatus = statusFromAgentEndMessages((event as { messages?: unknown[] }).messages);
+              transitionWorker(nextStatus);
               rpcClient.closeStdin();
               tryCloseLogWriter();
               if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
@@ -277,21 +278,15 @@ export default function delegate(pi: ExtensionAPI) {
           },
           onExit(code, _signal) {
             tryCleanupTempFile();
-            const current = manager.get(taskId);
-            if (current && current.status === "running") {
-              manager.setStatus(taskId, "failed", `Process exited unexpectedly (code ${code})`);
-              tryCloseLogWriter();
-              if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
-            }
+            transitionWorker("failed", `Process exited unexpectedly (code ${code})`);
+            tryCloseLogWriter();
+            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
           },
           onError(err) {
             tryCleanupTempFile();
-            const current = manager.get(taskId);
-            if (current && current.status === "running") {
-              manager.setStatus(taskId, "failed", err);
-              tryCloseLogWriter();
-              if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
-            }
+            transitionWorker("failed", err);
+            tryCloseLogWriter();
+            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
           },
         },
       );
@@ -311,12 +306,11 @@ export default function delegate(pi: ExtensionAPI) {
       }
 
       entry.timeoutTimer = setTimeout(async () => {
-        const current = manager.get(taskId);
-        if (current && current.status === "running") {
-          manager.setStatus(taskId, "aborted", `Timed out after ${timeout}s`);
+        const applied = transitionWorker("aborted", `Timed out after ${timeout}s`);
+        if (applied) {
           await rpcClient.kill();
-          tryCloseLogWriter();
         }
+        tryCloseLogWriter();
       }, timeout * 1000);
 
       return {
@@ -496,15 +490,15 @@ export default function delegate(pi: ExtensionAPI) {
         throw new Error(`Unknown task ID: ${params.task_id}`);
       }
 
-      if (entry.status !== "running") {
-        // Already terminal — not an error, just a no-op the orchestrator can branch on.
+      const applied = manager.setStatus(params.task_id, "aborted", "Aborted by orchestrator");
+      if (!applied) {
         return {
           content: [{ type: "text" as const, text: `Worker ${params.task_id} is already ${entry.status}.` }],
           details: { success: false },
         };
       }
 
-      manager.setStatus(params.task_id, "aborted", "Aborted by orchestrator");
+      entry.statusWriter?.writeStatus("aborted");
       if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
 
       if (entry.rpcClient) {
