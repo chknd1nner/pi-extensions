@@ -7,9 +7,9 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
 import { buildSessionSnapshot } from "./snapshot";
-import { ProgressLogWriter } from "./visibility";
+import { ProgressLogWriter, StatusFileWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
-import type { DelegateStartParams } from "./types";
+import type { DelegateStartParams, WorkerStatus } from "./types";
 
 function resolveGitRoot(cwd: string): string {
   try {
@@ -21,6 +21,20 @@ function resolveGitRoot(cwd: string): string {
 
 function todayDate(): string {
   return new Date().toLocaleDateString("en-CA");
+}
+
+function statusFromAgentEndMessages(messages: unknown[] | undefined): WorkerStatus {
+  if (!Array.isArray(messages)) return "completed";
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; stopReason?: string };
+    if (message.role !== "assistant") continue;
+    if (message.stopReason === "aborted") return "aborted";
+    if (message.stopReason === "error") return "failed";
+    return "completed";
+  }
+
+  return "completed";
 }
 
 const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result", "delegate_anchor"];
@@ -134,6 +148,9 @@ export default function delegate(pi: ExtensionAPI) {
       const logWriter = new ProgressLogWriter(projectRoot, todayDate(), sessionId, taskId);
       entry.logWriter = logWriter;
 
+      const statusWriter = new StatusFileWriter(projectRoot, todayDate(), sessionId, taskId);
+      entry.statusWriter = statusWriter;
+
       let logWriterFailed = false;
       const tryAppendText = (text: string) => {
         if (logWriterFailed) return;
@@ -166,6 +183,14 @@ export default function delegate(pi: ExtensionAPI) {
         } catch {
           // ignore
         }
+      };
+
+      const transitionWorker = (status: WorkerStatus, error?: string): boolean => {
+        const applied = manager.setStatus(taskId, status, error);
+        if (applied) {
+          statusWriter.writeStatus(status);
+        }
+        return applied;
       };
 
       let sessionPath: string | undefined;
@@ -211,7 +236,7 @@ export default function delegate(pi: ExtensionAPI) {
             }
           }
           const msg = err instanceof Error ? err.message : String(err);
-          manager.setStatus(taskId, "failed", msg);
+          transitionWorker("failed", msg);
           tryCloseLogWriter();
           throw new Error(msg);
         }
@@ -274,13 +299,14 @@ export default function delegate(pi: ExtensionAPI) {
       entry.rpcClient = rpcClient;
 
       try {
+        statusWriter.writeStatus("running");
         rpcClient.start();
         rpcClient.send({ type: "prompt", message: params.task });
       } catch (err) {
         tryCleanupTempFile();
-        manager.setStatus(taskId, "failed", err instanceof Error ? err.message : String(err));
-        tryCloseLogWriter();
         const message = err instanceof Error ? err.message : String(err);
+        transitionWorker("failed", message);
+        tryCloseLogWriter();
         throw new Error(`Failed to start worker ${taskId}: ${message}`);
       }
 
@@ -295,7 +321,12 @@ export default function delegate(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text" as const, text: `Worker ${taskId} started. Use delegate_check("${taskId}") to monitor progress.` }],
-        details: { task_id: taskId, status: "running" },
+        details: {
+          task_id: taskId,
+          status: "running",
+          progress_file: logWriter.getFilePath(),
+          status_file: statusWriter.getFilePath(),
+        },
       };
     },
   });

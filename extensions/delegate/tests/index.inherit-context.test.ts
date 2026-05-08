@@ -31,6 +31,15 @@ const fsMock = vi.hoisted(() => ({
   rmSync: vi.fn(),
 }));
 
+const visibilityMocks = vi.hoisted(() => ({
+  progressFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.progress.md",
+  statusFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.status",
+  appendText: vi.fn(),
+  appendToolCall: vi.fn(),
+  close: vi.fn(),
+  writeStatus: vi.fn(),
+}));
+
 vi.mock("../worker-manager", () => ({
   WorkerManager: vi.fn().mockImplementation(() => ({
     canStart: managerMocks.canStart,
@@ -57,6 +66,19 @@ vi.mock("../rpc-client", () => ({
 
 vi.mock("../snapshot", () => ({
   buildSessionSnapshot: snapshotMock.buildSessionSnapshot,
+}));
+
+vi.mock("../visibility", () => ({
+  ProgressLogWriter: vi.fn().mockImplementation(() => ({
+    appendText: visibilityMocks.appendText,
+    appendToolCall: visibilityMocks.appendToolCall,
+    close: visibilityMocks.close,
+    getFilePath: () => visibilityMocks.progressFile,
+  })),
+  StatusFileWriter: vi.fn().mockImplementation(() => ({
+    writeStatus: visibilityMocks.writeStatus,
+    getFilePath: () => visibilityMocks.statusFile,
+  })),
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -107,6 +129,7 @@ describe("delegate_start inherit_context", () => {
     capturedRpcOptions.value = null;
     managerMocks.canStart.mockReturnValue(true);
     managerMocks.nextTaskId.mockReturnValue("w1");
+    managerMocks.setStatus.mockReturnValue(true);
     managerMocks.register.mockReturnValue({
       taskId: "w1", status: "running", params: {}, startedAt: Date.now(),
     });
@@ -164,6 +187,7 @@ describe("delegate_start inherit_context", () => {
     );
 
     expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "failed", expect.stringContaining("No anchor named 'missing'"));
+    expect(visibilityMocks.writeStatus).toHaveBeenCalledWith("failed");
     expect(fsMock.writeFileSync).not.toHaveBeenCalled();
     expect(rpcMocks.start).not.toHaveBeenCalled();
   });
@@ -179,6 +203,7 @@ describe("delegate_start inherit_context", () => {
     await expect(getTool("delegate_start")!.execute("c1", { task: "x", model: "m", provider: "p", inherit_context: true }, undefined, undefined, makeCtx())).rejects.toThrow("disk full");
 
     expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "failed", expect.stringContaining("disk full"));
+    expect(visibilityMocks.writeStatus).toHaveBeenCalledWith("failed");
     expect(rpcMocks.start).not.toHaveBeenCalled();
   });
 
@@ -202,6 +227,7 @@ describe("delegate_start inherit_context", () => {
     await expect(getTool("delegate_start")!.execute("c1", { task: "x", model: "m", provider: "p", inherit_context: true }, undefined, undefined, {})).rejects.toThrow();
 
     expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "failed", expect.any(String));
+    expect(visibilityMocks.writeStatus).toHaveBeenCalledWith("failed");
     expect(rpcMocks.start).not.toHaveBeenCalled();
   });
 
