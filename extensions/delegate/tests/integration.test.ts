@@ -127,6 +127,7 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
       const sessionId = `delegate-integration-${Date.now()}`;
       const logDir = path.join(PROJECT_ROOT, ".pi", "delegate", todayDate(), sessionId);
       const logPath = path.join(logDir, "w1.progress.md");
+      const statusPath = path.join(logDir, "w1.status");
       const harness = createIntegrationHarness();
       const modelRegistry = {
         find: () => ({ contextWindow: 200_000 }),
@@ -162,7 +163,22 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
           cwd: PROJECT_ROOT,
         });
 
-        expect(startResult.details).toEqual({ task_id: "w1", status: "running" });
+        expect(startResult.details).toEqual({
+          task_id: "w1",
+          status: "running",
+          progress_file: logPath,
+          status_file: statusPath,
+        });
+
+        await waitForValue(
+          "status file creation",
+          () => {
+            if (!fs.existsSync(statusPath)) return undefined;
+            const content = fs.readFileSync(statusPath, "utf8");
+            return content === "running\n" ? content : undefined;
+          },
+          30_000,
+        );
 
         await waitForValue(
           "progress log creation",
@@ -207,6 +223,16 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
         expect(completedCheck.details.tool_calls).toBeGreaterThanOrEqual(1);
         expect(completedCheck.details.recent_activity.some((entry) => entry.includes("bash"))).toBe(true);
         expect(completedCheck.checkResult.content[0]?.text).toContain("DELEGATE_TEST_OK");
+
+        await waitForValue(
+          "terminal status file",
+          () => {
+            if (!fs.existsSync(statusPath)) return undefined;
+            const content = fs.readFileSync(statusPath, "utf8");
+            return content === "completed\n" ? content : undefined;
+          },
+          60_000,
+        );
 
         const result = await resultTool!.execute("call-result", { task_id: "w1" });
         const resultDetails = result.details as DelegateResultDetails | undefined;
