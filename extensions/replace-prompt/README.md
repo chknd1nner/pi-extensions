@@ -27,12 +27,14 @@ pi install git:github.com/<you>/pi-replace-prompt
 
 ## Configure
 
-The extension reads active config from the standard Pi extension locations:
+Drop your `rules.ts` file into one or both of these Pi extension config folders:
 
-- Global: `~/.pi/agent/extensions/replace-prompt/`
-- Project: `.pi/extensions/replace-prompt/`
+- User-scoped: `~/.pi/agent/extensions/replace-prompt/rules.ts`
+- Project-scoped: `<your-project>/.pi/extensions/replace-prompt/rules.ts`
 
-Create a `rules.ts` file in either location.
+Use the user-scoped file for defaults you want in every project. Use the project-scoped file when a single repo needs different prompt rewrites.
+
+This package ships with a commented starter `rules.ts` example, but the example rule is disabled by default (`enabled: false`) so nothing auto-applies until you customize it.
 
 Minimal example:
 
@@ -40,6 +42,7 @@ Minimal example:
 export default {
   rules: [
     {
+      enabled: false,
       id: "replace-opening",
       type: "literal",
       target:
@@ -58,10 +61,13 @@ You are a specialised assistant focused on pragmatic, step-by-step code changes 
 
 ## Scope behavior
 
-- global rules are loaded first
-- project rules override global rules by matching `id`
-- project-only rules are appended after inherited global rules
-- `replacementFile` resolves from the project scope first, then the global scope
+If both files exist, Pi loads them like this:
+
+- user-scoped rules load first
+- project-scoped rules override user-scoped rules when they use the same `id`
+- project-only rules are appended after inherited user-scoped rules
+- a project rule can disable an inherited user rule with `{ id: "same-id", enabled: false }`
+- `replacementFile` resolves from the project scope first, then falls back to the user scope
 
 ## Logging
 

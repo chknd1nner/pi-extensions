@@ -7,6 +7,10 @@ export default {
   // Rules run in order, top to bottom
   rules: [
     {
+      // Starter example only: shipped disabled so the package does nothing
+      // until you customize this file and explicitly enable a rule.
+      enabled: false,
+
       // Unique kebab-case identifier (required)
       id: "replace-opening",
 

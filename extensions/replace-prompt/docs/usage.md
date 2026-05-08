@@ -12,10 +12,12 @@ It supports:
 
 ## Installation locations
 
-You can install the extension in either or both of these places:
+Put your `rules.ts` file in one or both of these places:
 
-- Global: `~/.pi/agent/extensions/replace-prompt/`
-- Project: `<your-project>/.pi/extensions/replace-prompt/`
+- User-scoped: `~/.pi/agent/extensions/replace-prompt/rules.ts`
+- Project-scoped: `<your-project>/.pi/extensions/replace-prompt/rules.ts`
+
+Use the user-scoped file for defaults you want across all projects. Use the project-scoped file when one repo needs its own overrides.
 
 The extension looks for a `rules.ts` file inside each installed scope.
 
@@ -43,6 +45,8 @@ The extension looks for a `rules.ts` file inside each installed scope.
 ├── rules.ts
 └── opening.md
 ```
+
+If both files exist, project scope wins for matching rule ids. That means you can keep a general user-scoped rule set and override or disable specific rules per project without touching your global defaults.
 
 ## `rules.ts` shape
 
@@ -104,7 +108,7 @@ Rule ids must be **kebab-case**:
 
 ### Disable-only override
 
-Use this in project config to turn off an inherited global rule:
+Use this in project config to turn off an inherited user-scoped rule:
 
 ```ts
 {
