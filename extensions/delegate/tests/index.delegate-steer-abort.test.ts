@@ -77,6 +77,7 @@ function createFakePi() {
 describe("delegate_steer and delegate_abort", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    managerMocks.setStatus.mockReturnValue(true);
     rpcClientMocks.isAlive.mockReturnValue(true);
     rpcClientMocks.sendAndWait.mockResolvedValue(null as unknown);
   });
@@ -175,6 +176,7 @@ describe("delegate_steer and delegate_abort", () => {
   });
 
   it("returns a no-op result when abort targets an already terminal worker", async () => {
+    managerMocks.setStatus.mockReturnValue(false);
     managerMocks.get.mockReturnValue({
       taskId: "w1",
       status: "completed",
@@ -191,7 +193,7 @@ describe("delegate_steer and delegate_abort", () => {
 
     const result = await tool!.execute("call-1", { task_id: "w1" });
 
-    expect(managerMocks.setStatus).not.toHaveBeenCalled();
+    expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "aborted", "Aborted by orchestrator");
     expect(rpcClientMocks.kill).not.toHaveBeenCalled();
     expect(result.details).toEqual({ success: false });
     expect(result.content[0].text).toContain("Worker w1 is already completed.");

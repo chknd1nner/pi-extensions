@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { WorkerManager } from "../worker-manager";
 import type { DelegateStartParams } from "../types";
 
@@ -70,6 +70,48 @@ describe("WorkerManager", () => {
     manager.setStatus("w1", "completed");
     manager.setStatus("w1", "running");
     expect(manager.get("w1")!.status).toBe("completed");
+  });
+
+  it("returns whether a transition was applied", () => {
+    manager.register("w1", baseParams);
+
+    expect(manager.setStatus("w1", "completed")).toBe(true);
+    expect(manager.setStatus("w1", "failed", "late failure")).toBe(false);
+    expect(manager.get("w1")!.status).toBe("completed");
+  });
+
+  it("marks running workers aborted during disposeAll and writes the aborted status file", async () => {
+    const kill = vi.fn(async () => {});
+    const writeStatus = vi.fn();
+    const close = vi.fn();
+
+    const entry = manager.register("w1", baseParams);
+    entry.rpcClient = { kill } as never;
+    entry.statusWriter = { writeStatus, getFilePath: () => "/tmp/w1.status" } as never;
+    entry.logWriter = { close } as never;
+
+    await manager.disposeAll();
+
+    expect(entry.status).toBe("aborted");
+    expect(entry.error).toBe("Aborted during session shutdown");
+    expect(writeStatus).toHaveBeenCalledWith("aborted");
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not kill workers that were already terminal before disposeAll", async () => {
+    const kill = vi.fn(async () => {});
+    const close = vi.fn();
+
+    const entry = manager.register("w1", baseParams);
+    entry.rpcClient = { kill } as never;
+    entry.logWriter = { close } as never;
+    manager.setStatus("w1", "completed");
+
+    await manager.disposeAll();
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("reads max workers from env var", () => {

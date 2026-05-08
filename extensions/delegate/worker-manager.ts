@@ -1,7 +1,7 @@
 import type { DelegateStartParams, WorkerStatus } from "./types";
 import type { RPCClient } from "./rpc-client";
 import type { ProgressAccumulator } from "./progress";
-import type { ProgressLogWriter } from "./visibility";
+import type { ProgressLogWriter, StatusFileWriter } from "./visibility";
 
 export type WorkerEntry = {
   taskId: string;
@@ -11,6 +11,7 @@ export type WorkerEntry = {
   rpcClient?: RPCClient;
   progress?: ProgressAccumulator;
   logWriter?: ProgressLogWriter;
+  statusWriter?: StatusFileWriter;
   tempFilePath?: string;
   error?: string;
   timeoutTimer?: ReturnType<typeof setTimeout>;
@@ -59,12 +60,16 @@ export class WorkerManager {
     return this.workers.get(taskId);
   }
 
-  setStatus(taskId: string, status: WorkerStatus, error?: string): void {
+  setStatus(taskId: string, status: WorkerStatus, error?: string): boolean {
     const entry = this.workers.get(taskId);
-    if (!entry) return;
-    if (entry.status === "completed" || entry.status === "failed" || entry.status === "aborted") return;
+    if (!entry) return false;
+    if (entry.status === "completed" || entry.status === "failed" || entry.status === "aborted") {
+      return false;
+    }
+
     entry.status = status;
-    if (error) entry.error = error;
+    if (error !== undefined) entry.error = error;
+    return true;
   }
 
   activeCount(): number {
@@ -91,13 +96,23 @@ export class WorkerManager {
 
   async disposeAll(): Promise<void> {
     const kills: Promise<void>[] = [];
+
     for (const entry of this.workers.values()) {
       if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
-      if (entry.status === "running" && entry.rpcClient) {
-        kills.push(entry.rpcClient.kill());
+
+      if (entry.status === "running") {
+        const applied = this.setStatus(entry.taskId, "aborted", "Aborted during session shutdown");
+        if (applied) {
+          entry.statusWriter?.writeStatus("aborted");
+          if (entry.rpcClient) {
+            kills.push(entry.rpcClient.kill());
+          }
+        }
       }
+
       entry.logWriter?.close();
     }
+
     await Promise.allSettled(kills);
   }
 }

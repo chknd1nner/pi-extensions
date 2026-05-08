@@ -7,9 +7,9 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
 import { buildSessionSnapshot } from "./snapshot";
-import { ProgressLogWriter } from "./visibility";
+import { ProgressLogWriter, StatusFileWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
-import type { DelegateStartParams } from "./types";
+import type { DelegateStartParams, WorkerStatus } from "./types";
 
 function resolveGitRoot(cwd: string): string {
   try {
@@ -21,6 +21,20 @@ function resolveGitRoot(cwd: string): string {
 
 function todayDate(): string {
   return new Date().toLocaleDateString("en-CA");
+}
+
+function statusFromAgentEndMessages(messages: unknown[] | undefined): WorkerStatus {
+  if (!Array.isArray(messages)) return "completed";
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; stopReason?: string };
+    if (message.role !== "assistant") continue;
+    if (message.stopReason === "aborted") return "aborted";
+    if (message.stopReason === "error") return "failed";
+    return "completed";
+  }
+
+  return "completed";
 }
 
 const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result", "delegate_anchor"];
@@ -131,8 +145,12 @@ export default function delegate(pi: ExtensionAPI) {
       const progress = new ProgressAccumulator();
       entry.progress = progress;
 
-      const logWriter = new ProgressLogWriter(projectRoot, todayDate(), sessionId, taskId);
+      const artifactDate = todayDate();
+      const logWriter = new ProgressLogWriter(projectRoot, artifactDate, sessionId, taskId);
       entry.logWriter = logWriter;
+
+      const statusWriter = new StatusFileWriter(projectRoot, artifactDate, sessionId, taskId);
+      entry.statusWriter = statusWriter;
 
       let logWriterFailed = false;
       const tryAppendText = (text: string) => {
@@ -166,6 +184,14 @@ export default function delegate(pi: ExtensionAPI) {
         } catch {
           // ignore
         }
+      };
+
+      const transitionWorker = (status: WorkerStatus, error?: string): boolean => {
+        const applied = manager.setStatus(taskId, status, error);
+        if (applied) {
+          statusWriter.writeStatus(status);
+        }
+        return applied;
       };
 
       let sessionPath: string | undefined;
@@ -211,7 +237,7 @@ export default function delegate(pi: ExtensionAPI) {
             }
           }
           const msg = err instanceof Error ? err.message : String(err);
-          manager.setStatus(taskId, "failed", msg);
+          transitionWorker("failed", msg);
           tryCloseLogWriter();
           throw new Error(msg);
         }
@@ -244,7 +270,8 @@ export default function delegate(pi: ExtensionAPI) {
             }
 
             if (event.type === "agent_end") {
-              manager.setStatus(taskId, "completed");
+              const nextStatus = statusFromAgentEndMessages((event as { messages?: unknown[] }).messages);
+              transitionWorker(nextStatus);
               rpcClient.closeStdin();
               tryCloseLogWriter();
               if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
@@ -252,21 +279,15 @@ export default function delegate(pi: ExtensionAPI) {
           },
           onExit(code, _signal) {
             tryCleanupTempFile();
-            const current = manager.get(taskId);
-            if (current && current.status === "running") {
-              manager.setStatus(taskId, "failed", `Process exited unexpectedly (code ${code})`);
-              tryCloseLogWriter();
-              if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
-            }
+            transitionWorker("failed", `Process exited unexpectedly (code ${code})`);
+            tryCloseLogWriter();
+            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
           },
           onError(err) {
             tryCleanupTempFile();
-            const current = manager.get(taskId);
-            if (current && current.status === "running") {
-              manager.setStatus(taskId, "failed", err);
-              tryCloseLogWriter();
-              if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
-            }
+            transitionWorker("failed", err);
+            tryCloseLogWriter();
+            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
           },
         },
       );
@@ -274,28 +295,33 @@ export default function delegate(pi: ExtensionAPI) {
       entry.rpcClient = rpcClient;
 
       try {
+        statusWriter.writeStatus("running");
         rpcClient.start();
         rpcClient.send({ type: "prompt", message: params.task });
       } catch (err) {
         tryCleanupTempFile();
-        manager.setStatus(taskId, "failed", err instanceof Error ? err.message : String(err));
-        tryCloseLogWriter();
         const message = err instanceof Error ? err.message : String(err);
+        transitionWorker("failed", message);
+        tryCloseLogWriter();
         throw new Error(`Failed to start worker ${taskId}: ${message}`);
       }
 
       entry.timeoutTimer = setTimeout(async () => {
-        const current = manager.get(taskId);
-        if (current && current.status === "running") {
-          manager.setStatus(taskId, "aborted", `Timed out after ${timeout}s`);
+        const applied = transitionWorker("aborted", `Timed out after ${timeout}s`);
+        if (applied) {
           await rpcClient.kill();
-          tryCloseLogWriter();
         }
+        tryCloseLogWriter();
       }, timeout * 1000);
 
       return {
         content: [{ type: "text" as const, text: `Worker ${taskId} started. Use delegate_check("${taskId}") to monitor progress.` }],
-        details: { task_id: taskId, status: "running" },
+        details: {
+          task_id: taskId,
+          status: "running",
+          progress_file: logWriter.getFilePath(),
+          status_file: statusWriter.getFilePath(),
+        },
       };
     },
   });
@@ -465,15 +491,15 @@ export default function delegate(pi: ExtensionAPI) {
         throw new Error(`Unknown task ID: ${params.task_id}`);
       }
 
-      if (entry.status !== "running") {
-        // Already terminal — not an error, just a no-op the orchestrator can branch on.
+      const applied = manager.setStatus(params.task_id, "aborted", "Aborted by orchestrator");
+      if (!applied) {
         return {
           content: [{ type: "text" as const, text: `Worker ${params.task_id} is already ${entry.status}.` }],
           details: { success: false },
         };
       }
 
-      manager.setStatus(params.task_id, "aborted", "Aborted by orchestrator");
+      entry.statusWriter?.writeStatus("aborted");
       if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
 
       if (entry.rpcClient) {

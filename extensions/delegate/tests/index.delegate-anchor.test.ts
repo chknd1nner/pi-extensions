@@ -21,6 +21,15 @@ const rpcClientMocks = vi.hoisted(() => ({
   isAlive: vi.fn(() => true),
 }));
 
+const visibilityMocks = vi.hoisted(() => ({
+  progressFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.progress.md",
+  statusFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.status",
+  appendText: vi.fn(),
+  appendToolCall: vi.fn(),
+  close: vi.fn(),
+  writeStatus: vi.fn(),
+}));
+
 vi.mock("../worker-manager", () => ({
   WorkerManager: vi.fn().mockImplementation(() => ({
     canStart: managerMocks.canStart,
@@ -43,6 +52,19 @@ vi.mock("../rpc-client", () => ({
       isAlive: rpcClientMocks.isAlive,
     };
   }),
+}));
+
+vi.mock("../visibility", () => ({
+  ProgressLogWriter: vi.fn().mockImplementation(() => ({
+    appendText: visibilityMocks.appendText,
+    appendToolCall: visibilityMocks.appendToolCall,
+    close: visibilityMocks.close,
+    getFilePath: () => visibilityMocks.progressFile,
+  })),
+  StatusFileWriter: vi.fn().mockImplementation(() => ({
+    writeStatus: visibilityMocks.writeStatus,
+    getFilePath: () => visibilityMocks.statusFile,
+  })),
 }));
 
 type RegisteredTool = {
