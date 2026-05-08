@@ -58,9 +58,17 @@ export class RPCClient {
     });
 
     this.exitPromise = new Promise<void>((resolve) => {
+      let exitCode: number | null = null;
+      let exitSignal: string | null = null;
+
       this.proc!.once("exit", (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+      });
+
+      this.proc!.once("close", (code, signal) => {
         this.exited = true;
-        this.callbacks.onExit(code, signal);
+        this.callbacks.onExit(exitCode ?? code, exitSignal ?? signal);
         resolve();
       });
     });

@@ -1,4 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+class MockStream extends EventEmitter {
+  writable = true;
+  write = vi.fn();
+  end = vi.fn(() => {
+    this.writable = false;
+  });
+}
+
+class MockChild extends EventEmitter {
+  stdout = new MockStream();
+  stderr = new MockStream();
+  stdin = new MockStream();
+  kill = vi.fn();
+}
+
+const spawnMock = vi.hoisted(() => vi.fn());
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => spawnMock(...args),
+  };
+});
+
 import { parseJsonlBuffer, RPCClient } from "../rpc-client";
 
 describe("parseJsonlBuffer", () => {
@@ -39,6 +66,37 @@ describe("parseJsonlBuffer", () => {
     const { lines, remainder } = parseJsonlBuffer('{"type":"ok"}\r\n');
     expect(lines).toEqual(['{"type":"ok"}']);
     expect(remainder).toBe("");
+  });
+});
+
+describe("RPCClient.start ordering", () => {
+  beforeEach(() => {
+    spawnMock.mockReset();
+  });
+
+  it("emits onExit only after close, after buffered stdout events are delivered", () => {
+    const child = new MockChild();
+    spawnMock.mockReturnValue(child);
+    const calls: string[] = [];
+
+    const client = new RPCClient(
+      { model: "test", provider: "test", cwd: "/tmp" },
+      {
+        onEvent: (event) => calls.push(`event:${String(event.type)}`),
+        onExit: () => calls.push("exit"),
+        onError: () => calls.push("error"),
+      },
+    );
+
+    client.start();
+
+    child.emit("exit", 0, null);
+    expect(calls).toEqual([]);
+
+    child.stdout.emit("data", Buffer.from('{"type":"agent_end","messages":[]}\n'));
+    child.emit("close", 0, null);
+
+    expect(calls).toEqual(["event:agent_end", "exit"]);
   });
 });
 
