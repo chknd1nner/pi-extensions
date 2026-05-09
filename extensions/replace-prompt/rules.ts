@@ -1,3 +1,5 @@
+import type { RawConfig } from "./types";
+
 // Rules configuration for replace-prompt extension
 // See docs/usage.md for full documentation
 export default {
@@ -38,4 +40,4 @@ export default {
       // },
     },
   ],
-};
+} satisfies RawConfig;

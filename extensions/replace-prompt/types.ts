@@ -98,7 +98,7 @@ export type RawRule =
       replacement?: string;
       replacementFile?: string;
       mode?: RuleMode;
-      condition?: unknown;
+      condition?: RuleCondition;
     }
   | {
       id: string;
@@ -108,7 +108,7 @@ export type RawRule =
       replacement?: string;
       replacementFile?: string;
       mode?: RuleMode;
-      condition?: unknown;
+      condition?: RuleCondition;
     };
 
 export type RawConfig = {
