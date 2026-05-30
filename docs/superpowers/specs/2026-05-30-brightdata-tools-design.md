@@ -25,7 +25,7 @@ The first version intentionally keeps the tool boundary narrow: general web sear
 4. Store full results behind stable `responseId` values so later tool calls can retrieve content without repeating Bright Data requests.
 5. Use compact TUI rendering patterns similar to `pi-web-access`.
 6. Keep Bright Data API keys out of repo files and use environment variables for secrets.
-7. Keep non-secret Bright Data zone names and defaults in an editable TOML config file in the extension folder.
+7. Keep non-secret Bright Data zone names and defaults in an editable user-level JSON config file.
 
 ## Non-goals for v1
 
@@ -45,7 +45,6 @@ extensions/brightdata/
   index.ts
   brightdata-client.ts
   config.ts
-  config.toml
   search.ts
   fetch.ts
   pdf.ts
@@ -70,51 +69,58 @@ Supported variables, in priority order:
 
 `BRIGHT_DATA_KEY` is supported as the primary variable because the user's existing `.secrets` file already exports it. `BRIGHTDATA_API_KEY` is accepted as a compatibility alias for users who prefer the common provider-style name.
 
-The API key is never stored in TOML, session entries, tool details, or logs.
+The API key is never stored in config files, session entries, tool details, or logs.
 
-### Non-secret TOML configuration
+### Non-secret JSON configuration
 
-Non-secret Bright Data settings live in the extension folder:
+Non-secret Bright Data settings live in a user-level JSON file, matching the `pi-web-access` convention (`~/.pi/web-search.json`):
 
 ```text
-extensions/brightdata/config.toml
+~/.pi/brightdata.json
 ```
+
+JSON is used instead of TOML so the extension needs no TOML-parser dependency (Node has no built-in TOML support) and so config conventions match the rest of the Pi ecosystem. A user-level path also stays editable after the extension is installed as an npm/git Pi package, where editing package-local files is inconvenient.
 
 Initial config shape:
 
-```toml
-[brightdata]
-serp_zone = "serp_api1"
-unlocker_zone = "mcp_unlocker"
-default_country = "au"
-default_language = "en"
-request_timeout_ms = 60000
-concurrency = 3
-
-[search]
-default_engine = "google"
-default_limit = 10
-max_queries = 10
-max_results = 20
-
-[fetch]
-max_urls = 10
-max_inline_chars = 30000
-prefer_markdown = true
-
-[pdf]
-enabled = true
-inline_max_pages = 5
-inline_max_chars = 20000
-preview_chars = 2000
-max_pages = 200
-max_bytes = 52428800
-output_dir = ".pi/brightdata/pdfs"
+```json
+{
+  "brightdata": {
+    "serpZone": "serp_api1",
+    "unlockerZone": "mcp_unlocker",
+    "defaultCountry": "au",
+    "defaultLanguage": "en",
+    "requestTimeoutMs": 60000,
+    "concurrency": 3
+  },
+  "search": {
+    "defaultEngine": "google",
+    "defaultLimit": 10,
+    "maxQueries": 10,
+    "maxResults": 20
+  },
+  "fetch": {
+    "maxUrls": 10,
+    "maxInlineChars": 30000,
+    "preferMarkdown": true
+  },
+  "pdf": {
+    "enabled": true,
+    "inlineMaxPages": 5,
+    "inlineMaxChars": 20000,
+    "previewChars": 2000,
+    "maxPages": 200,
+    "maxBytes": 52428800,
+    "outputDir": ".pi/brightdata/pdfs"
+  }
+}
 ```
 
-Relative paths inside the config, such as `pdf.output_dir`, resolve against the current Pi project working directory, not against the extension source folder. This avoids writing generated files into the extension package.
+Optionally, `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` environment variables override the configured zone names, so the extension drops into existing Bright Data setups with zero config edits.
 
-Invalid or missing config values fall back to safe defaults. A malformed TOML file produces a clear tool error that names the config path and parse failure.
+Relative paths inside the config, such as `pdf.outputDir`, resolve against the current Pi project working directory, not against the extension source folder. This avoids writing generated files into the extension package.
+
+The entire config file is optional: a missing file uses all defaults, and invalid or missing individual values fall back to safe defaults. A malformed JSON file produces a clear tool error that names the config path and parse failure.
 
 ## Bright Data client
 
@@ -126,6 +132,7 @@ Responsibilities:
 - Attach `Authorization: Bearer <key>`.
 - Pass Pi's `AbortSignal` to `fetch`.
 - Apply request timeouts.
+- Build the request body with the documented Bright Data fields: `zone`, `url`, `format` (`"raw"` or `"json"` — controls the response envelope), and optional `data_format: "markdown"` (HTML→Markdown conversion) and `country`.
 - Parse JSON responses opportunistically.
 - Preserve raw text/binary responses when the Bright Data endpoint returns raw content.
 - Normalize Bright Data errors into actionable messages:
@@ -145,17 +152,17 @@ Parameters:
 
 - `query?: string` — single search query.
 - `queries?: string[]` — multiple search queries.
-- `engine?: "google" | "bing" | "duckduckgo" | "yandex"` — defaults from TOML.
-- `country?: string` — defaults from TOML.
-- `language?: string` — defaults from TOML.
-- `numResults?: number` — capped by TOML `search.max_results`.
+- `engine?: "google" | "bing" | "duckduckgo" | "yandex"` — defaults from config. Define this with `StringEnum` from `@earendil-works/pi-ai` (not a raw `Type.Union`) for Gemini/Google-compatible tool schemas.
+- `country?: string` — defaults from config.
+- `language?: string` — defaults from config.
+- `numResults?: number` — capped by config `search.maxResults`.
 
 Behavior:
 
 1. Normalize `query`/`queries` into a non-empty query list.
-2. Reject query batches larger than `search.max_queries`.
-3. Build target search URLs for the selected engine.
-4. Call Bright Data SERP using `brightdata.serp_zone` and `format: "json"`.
+2. Reject query batches larger than `search.maxQueries`.
+3. Build target search URLs for the selected engine, appending `brd_json=1` to the target URL to request parsed SERP JSON. (Note: parsed results come from the `brd_json` URL parameter, not from the request body `format` field. The request uses `zone: brightdata.serpZone` and `format: "raw"`; the parsed JSON is returned in the response body because of `brd_json`.)
+4. Call Bright Data `/request` with the constructed target URL.
 5. Normalize common SERP fields into:
 
 ```ts
@@ -181,20 +188,20 @@ Parameters:
 
 - `url?: string` — single public `http`/`https` URL.
 - `urls?: string[]` — multiple public `http`/`https` URLs.
-- `country?: string` — defaults from TOML.
-- `maxCharsPerPage?: number` — capped by TOML `fetch.max_inline_chars`.
+- `country?: string` — defaults from config.
+- `maxCharsPerPage?: number` — capped by config `fetch.maxInlineChars`.
 
 Behavior:
 
 1. Normalize `url`/`urls` into a non-empty URL list.
-2. Reject URL batches larger than `fetch.max_urls`.
+2. Reject URL batches larger than `fetch.maxUrls`.
 3. Reject non-HTTP(S), localhost, and common private-network URLs.
-4. Process URLs with bounded concurrency from TOML.
+4. Process URLs with bounded concurrency from config, using `p-limit` (matching `pi-web-access`).
 5. For normal web pages:
-   - call Bright Data Unlocker with `brightdata.unlocker_zone`;
-   - request Markdown transformation when `fetch.prefer_markdown` is true;
+   - call Bright Data Unlocker with `zone: brightdata.unlockerZone`;
+   - request HTML→Markdown conversion via `data_format: "markdown"` when `fetch.preferMarkdown` is true;
    - return inline content up to `maxCharsPerPage`;
-   - store full content behind `responseId`.
+   - store full content behind `responseId` (and, when content exceeds the inline cap, also save it to disk so it survives reload — see Storage model).
 6. For PDFs:
    - route through adaptive PDF handling described below.
 
@@ -202,7 +209,7 @@ Behavior:
 
 ## Adaptive PDF handling
 
-PDF handling stays in scope because a PDF URL is still a web document fetch.
+PDF handling stays in scope because a PDF URL is still a web document fetch, and Bright Data's `data_format: "markdown"` only converts **HTML pages** to Markdown — it does not extract text from PDF binaries. For a PDF URL, Unlocker returns the raw PDF bytes, so the extension must parse the PDF itself (mirroring `pi-web-access`, which fetches PDF bytes and runs `unpdf`). Unlocker is used here only as a fallback transport to retrieve the bytes past anti-bot protection, never as a Markdown extractor.
 
 Detection:
 
@@ -211,26 +218,26 @@ Detection:
 
 Fetch strategy:
 
-1. If the URL path ends in `.pdf`, attempt a direct PDF byte fetch first, because this avoids spending Bright Data quota for ordinary public PDFs.
-2. For URLs that do not end in `.pdf`, perform a lightweight direct `HEAD` request when possible; if it reports `application/pdf`, route to PDF extraction.
-3. If direct PDF fetch fails, times out, returns a blocking status, or does not return a PDF, retry through Bright Data Unlocker using raw PDF bytes rather than Markdown transformation.
-4. Enforce `pdf.max_bytes` before parsing.
+1. If the URL path ends in `.pdf`, attempt a direct PDF byte fetch first, because this avoids spending Bright Data quota for ordinary public PDFs. Disable redirect following on this direct fetch (or re-validate every redirect hop against the private-network blocklist) to avoid SSRF via a redirect to an internal address after the initial URL passed validation.
+2. For URLs that do not end in `.pdf`, perform a lightweight direct `HEAD` request when possible; if it reports `application/pdf`, route to PDF extraction. Treat a non-`application/pdf` or failed/unsupported HEAD as inconclusive ("probably not a PDF"): proceed with the normal page path, which still detects PDF bytes as a fallback. Routing must not hard-depend on HEAD, since many servers reject HEAD or report a content-type that differs from GET.
+3. If direct PDF fetch fails, times out, returns a blocking status, or does not return a PDF, retry through Bright Data Unlocker with `format: "raw"` to retrieve the raw PDF bytes (not `data_format: "markdown"`, which is HTML-only).
+4. Enforce `pdf.maxBytes` before parsing.
 5. Extract text with a PDF parser such as `unpdf`.
 6. Extract metadata when available: title, author, page count.
 7. Convert extracted pages into Markdown with source metadata and page markers.
-8. Extract up to `pdf.max_pages`; mark truncation clearly if the document has more pages.
+8. Extract up to `pdf.maxPages`; mark truncation clearly if the document has more pages.
 
 Inline-vs-file rule:
 
 Return the full extracted Markdown inline only when both are true:
 
-- extracted page count is `<= pdf.inline_max_pages`; and
-- extracted Markdown length is `<= pdf.inline_max_chars`.
+- extracted page count is `<= pdf.inlineMaxPages`; and
+- extracted Markdown length is `<= pdf.inlineMaxChars`.
 
 Otherwise:
 
-- save full extracted Markdown to `pdf.output_dir`;
-- return title, URL, page count, extracted character count, truncation status, saved path, and a preview of `pdf.preview_chars`;
+- save full extracted Markdown to `pdf.outputDir`;
+- return title, URL, page count, extracted character count, truncation status, saved path, and a preview of `pdf.previewChars`;
 - store metadata and the saved path under the fetch `responseId`.
 
 Example large-PDF tool output:
@@ -273,18 +280,22 @@ The tool output is truncated using Pi's truncation utilities to avoid context ov
 
 ## Storage model
 
-The extension keeps an in-memory map of `responseId -> result data` during a session and also persists compact metadata through Pi session entries. After reload/resume, `brightdata_get_content` can restore entries that either fit in the session metadata or point to saved Markdown files on disk. Large unsaved inline-only content is not guaranteed to survive reload; the tool response must say when content is stored only in memory.
+The storage layer mirrors `pi-web-access`: an in-memory `Map<responseId, StoredData>` for the active session, plus persistence through Pi session custom entries so results survive reload/resume.
+
+- Persistence uses `pi.appendEntry` with a dedicated `customType` of `brightdata-results`.
+- On `session_start`, a `restoreFromSession(ctx)` helper rebuilds the in-memory map from the current branch's custom entries, validating each entry's shape with a type guard and discarding entries older than a freshness TTL (`pi-web-access` uses one hour; reuse that default).
+- Full content is persisted in the session entry (like `pi-web-access`'s `StoredSearchData`, which stores complete `queries`/`urls`), except for large content already saved to disk, where the entry stores the saved path and metadata instead of duplicating the bytes.
 
 Stored entries include:
 
 - provider: `brightdata`;
 - tool name;
 - timestamp;
-- normalized search results or fetch metadata;
-- saved file paths for large PDFs;
+- normalized search results or fetch content/metadata;
+- saved file paths for large PDFs and large fetched pages;
 - enough metadata to render useful summaries.
 
-Large page/PDF content is not duplicated into session entries if it has been saved to disk. Session entries store the path and metadata instead.
+Reload survival is symmetric across content types: large fetched HTML pages and large PDFs are both saved to disk and referenced by path, so `brightdata_get_content` can always recover them after reload. Only content that fits inline (and is therefore small) lives purely in the session entry. The API key is never written into any session entry.
 
 ## TUI rendering
 
@@ -313,10 +324,10 @@ The v1 renderers stay text-only. No browser curator or rich UI is included.
 ## Error handling and safety
 
 - Missing API key returns an actionable error naming `BRIGHT_DATA_KEY` and `BRIGHTDATA_API_KEY`.
-- Missing zone config returns an actionable error naming `brightdata.serp_zone` or `brightdata.unlocker_zone` in `config.toml`.
-- Bad TOML reports the config path and parser message.
+- Missing zone config returns an actionable error naming `brightdata.serpZone` or `brightdata.unlockerZone` in `~/.pi/brightdata.json`.
+- Bad JSON reports the config path and parser message.
 - Invalid URLs are rejected before any Bright Data request.
-- Local/private URLs are rejected before any Bright Data request.
+- Local/private URLs are rejected before any Bright Data request, including redirect targets on the direct PDF fetch path.
 - Tool aborts propagate to Bright Data requests and PDF parsing where possible.
 - Quota/rate-limit failures are surfaced clearly and do not trigger large retry loops.
 - Outputs are truncated and disclose truncation clearly.
@@ -329,13 +340,15 @@ Unit tests use `node:test` and mocked `fetch`/fixtures.
 Coverage:
 
 1. Config loading:
-   - valid TOML;
-   - defaults;
-   - malformed TOML;
-   - `BRIGHT_DATA_KEY` and `BRIGHTDATA_API_KEY` precedence.
-2. SERP normalization:
+   - valid JSON;
+   - missing file / defaults;
+   - malformed JSON;
+   - `BRIGHT_DATA_KEY` and `BRIGHTDATA_API_KEY` precedence;
+   - `BRIGHTDATA_SERP_ZONE` / `BRIGHTDATA_UNLOCKER_ZONE` override of configured zones.
+2. SERP request and normalization:
+   - target URL is built with `brd_json=1` appended;
    - organic results;
-   - alternate Bright Data response shapes;
+   - alternate Bright Data `brd_json` response shapes;
    - empty result sets.
 3. URL validation:
    - valid public HTTP(S);
@@ -350,6 +363,8 @@ Coverage:
    - single page;
    - multi-page batch;
    - truncation notice;
+   - large page saved to disk and recovered via `brightdata_get_content` after reload;
+   - `restoreFromSession` rebuilds the map and honors the freshness TTL;
    - `brightdata_get_content` selection by index/URL.
 6. PDF extraction:
    - small PDF inline path;
@@ -372,4 +387,3 @@ Potential follow-up additions after v1 proves useful:
 3. Bright Data Browser API or screenshot tools.
 4. Batch crawl tools.
 5. Optional summarization on top of SERP results.
-6. User-level config file support if the extension is published as an npm package and editing package-local TOML becomes inconvenient.
