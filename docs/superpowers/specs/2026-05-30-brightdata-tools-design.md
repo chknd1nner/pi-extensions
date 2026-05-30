@@ -335,7 +335,7 @@ The v1 renderers stay text-only. No browser curator or rich UI is included.
 
 ## Testing strategy
 
-Unit tests use `node:test` and mocked `fetch`/fixtures.
+Unit tests use Vitest (matching the existing extension packages in this repository) and mocked `fetch`/fixtures.
 
 Coverage:
 
