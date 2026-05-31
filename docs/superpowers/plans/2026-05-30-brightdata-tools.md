@@ -164,6 +164,7 @@ describe("loadBrightDataConfig", () => {
     expect(config.brightdata.defaultCountry).toBe("au");
     expect(config.search.maxResults).toBe(20);
     expect(config.fetch.maxInlineChars).toBe(30000);
+    expect(config.fetch.outputDir).toBe(".pi/brightdata/pages");
     expect(config.pdf.outputDir).toBe(".pi/brightdata/pdfs");
   });
 
@@ -173,7 +174,7 @@ describe("loadBrightDataConfig", () => {
     writeFileSync(join(home, ".pi", "brightdata.json"), JSON.stringify({
       brightdata: { serpZone: "serp_custom", unlockerZone: "unlock_custom", defaultCountry: "us", defaultLanguage: "fr", concurrency: 2 },
       search: { defaultEngine: "bing", defaultLimit: 7, maxQueries: 4, maxResults: 9 },
-      fetch: { maxUrls: 3, maxInlineChars: 12000, preferMarkdown: false },
+      fetch: { maxUrls: 3, maxInlineChars: 12000, preferMarkdown: false, outputDir: "tmp/pages" },
       pdf: { inlineMaxPages: 2, inlineMaxChars: 5000, outputDir: "tmp/pdfs" }
     }));
     const { loadBrightDataConfig } = await loadFresh();
@@ -187,6 +188,7 @@ describe("loadBrightDataConfig", () => {
     expect(config.search.defaultEngine).toBe("bing");
     expect(config.search.defaultLimit).toBe(7);
     expect(config.fetch.preferMarkdown).toBe(false);
+    expect(config.fetch.outputDir).toBe("tmp/pages");
     expect(config.pdf.inlineMaxPages).toBe(2);
     expect(config.pdf.outputDir).toBe("tmp/pdfs");
   });
@@ -270,6 +272,7 @@ export interface BrightDataConfig {
     maxUrls: number;
     maxInlineChars: number;
     preferMarkdown: boolean;
+    outputDir: string;
   };
   pdf: {
     enabled: boolean;
@@ -332,6 +335,7 @@ const DEFAULT_CONFIG: BrightDataConfig = {
     maxUrls: 10,
     maxInlineChars: 30000,
     preferMarkdown: true,
+    outputDir: ".pi/brightdata/pages",
   },
   pdf: {
     enabled: true,
@@ -414,6 +418,7 @@ export function loadBrightDataConfig(): BrightDataConfig {
       maxUrls: positiveInteger(fetch.maxUrls, DEFAULT_CONFIG.fetch.maxUrls),
       maxInlineChars: positiveInteger(fetch.maxInlineChars, DEFAULT_CONFIG.fetch.maxInlineChars),
       preferMarkdown: booleanValue(fetch.preferMarkdown, DEFAULT_CONFIG.fetch.preferMarkdown),
+      outputDir: nonEmptyString(fetch.outputDir, DEFAULT_CONFIG.fetch.outputDir),
     },
     pdf: {
       enabled: booleanValue(pdf.enabled, DEFAULT_CONFIG.pdf.enabled),
@@ -1722,12 +1727,15 @@ Modify `extensions/brightdata/fetch.ts`:
 
 ```ts
 pdfEnabled: boolean;
+pdfOutputDir: string;
 pdfInlineMaxPages: number;
 pdfInlineMaxChars: number;
 pdfPreviewChars: number;
 pdfMaxPages: number;
 pdfMaxBytes: number;
 ```
+
+`outputDir` (already on `FetchOptions`) is the destination for spilled **HTML** page Markdown; `pdfOutputDir` is the separate destination for spilled **PDF** Markdown. Keeping them distinct is what lets HTML pages land in `.pi/brightdata/pages` while PDFs land in `.pi/brightdata/pdfs`.
 
 - In the per-URL worker, before the normal page Bright Data request, add:
 
@@ -1743,7 +1751,7 @@ if (options.pdfEnabled && await shouldTreatAsPdfUrl(url, options.signal)) {
   return extractPdfFromBytes({
     url,
     bytes,
-    outputDir: options.outputDir,
+    outputDir: options.pdfOutputDir,
     cwd: options.cwd,
     inlineMaxPages: options.pdfInlineMaxPages,
     inlineMaxChars: options.pdfInlineMaxChars,
@@ -1757,6 +1765,7 @@ if (options.pdfEnabled && await shouldTreatAsPdfUrl(url, options.signal)) {
 
 ```ts
 pdfEnabled: false,
+pdfOutputDir: makeDir(),
 pdfInlineMaxPages: 5,
 pdfInlineMaxChars: 20000,
 pdfPreviewChars: 2000,
@@ -1979,10 +1988,11 @@ export default function brightdataExtension(pi: ExtensionAPI) {
         preferMarkdown: config.fetch.preferMarkdown,
         maxUrls: config.fetch.maxUrls,
         maxInlineChars: Math.min(params.maxCharsPerPage ?? config.fetch.maxInlineChars, 100000),
-        outputDir: config.pdf.outputDir,
+        outputDir: config.fetch.outputDir,
         cwd: ctx.cwd,
         concurrency: config.brightdata.concurrency,
         pdfEnabled: config.pdf.enabled,
+        pdfOutputDir: config.pdf.outputDir,
         pdfInlineMaxPages: config.pdf.inlineMaxPages,
         pdfInlineMaxChars: config.pdf.inlineMaxChars,
         pdfPreviewChars: config.pdf.previewChars,
@@ -2090,7 +2100,8 @@ Example:
   "fetch": {
     "maxUrls": 10,
     "maxInlineChars": 30000,
-    "preferMarkdown": true
+    "preferMarkdown": true,
+    "outputDir": ".pi/brightdata/pages"
   },
   "pdf": {
     "enabled": true,
@@ -2140,7 +2151,7 @@ Then:
 Use brightdata_fetch on one of the result URLs.
 ```
 
-For PDF behavior, fetch one small PDF and one larger PDF. Small PDFs should return inline Markdown. Large PDFs should save Markdown to `.pi/brightdata/pdfs` and return a path plus preview.
+For PDF behavior, fetch one small PDF and one larger PDF. Small PDFs should return inline Markdown. Large PDFs should save Markdown to `.pi/brightdata/pdfs` and return a path plus preview. For large HTML pages, confirm the spilled Markdown is saved under `.pi/brightdata/pages` (the separate fetch output directory) and returned as a path plus preview.
 ```
 
 - [ ] **Step 2: Update root README structure list**

@@ -102,7 +102,8 @@ Initial config shape:
   "fetch": {
     "maxUrls": 10,
     "maxInlineChars": 30000,
-    "preferMarkdown": true
+    "preferMarkdown": true,
+    "outputDir": ".pi/brightdata/pages"
   },
   "pdf": {
     "enabled": true,
@@ -118,7 +119,7 @@ Initial config shape:
 
 Optionally, `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` environment variables override the configured zone names, so the extension drops into existing Bright Data setups with zero config edits.
 
-Relative paths inside the config, such as `pdf.outputDir`, resolve against the current Pi project working directory, not against the extension source folder. This avoids writing generated files into the extension package.
+Relative paths inside the config, such as `fetch.outputDir` and `pdf.outputDir`, resolve against the current Pi project working directory, not against the extension source folder. This avoids writing generated files into the extension package.
 
 The entire config file is optional: a missing file uses all defaults, and invalid or missing individual values fall back to safe defaults. A malformed JSON file produces a clear tool error that names the config path and parse failure.
 
@@ -197,15 +198,43 @@ Behavior:
 2. Reject URL batches larger than `fetch.maxUrls`.
 3. Reject non-HTTP(S), localhost, and common private-network URLs.
 4. Process URLs with bounded concurrency from config, using `p-limit` (matching `pi-web-access`).
-5. For normal web pages:
+5. For normal web pages, process each URL into a per-page result:
    - call Bright Data Unlocker with `zone: brightdata.unlockerZone`;
    - request HTML→Markdown conversion via `data_format: "markdown"` when `fetch.preferMarkdown` is true;
-   - return inline content up to `maxCharsPerPage`;
-   - store full content behind `responseId` (and, when content exceeds the inline cap, also save it to disk so it survives reload — see Storage model).
-6. For PDFs:
-   - route through adaptive PDF handling described below.
+   - apply the per-page inline cap (`maxCharsPerPage`, itself capped by `fetch.maxInlineChars`): if the page is within the cap, keep its full content inline; if it exceeds the cap, save the full content to disk (see Storage model) and keep only a head preview plus a truncation note that records the saved path;
+   - store every page (full inline content, or saved path + metadata for spilled pages) behind a single shared `responseId` for the call.
+6. Return shape depends on URL count, matching `pi-web-access`'s `fetch_content` and avoiding context flooding for batches:
+   - **Single URL** — return that page's content directly inline (already truncated with a saved-path note if it exceeded the cap), followed by the `responseId`.
+   - **Multiple URLs** — return a compact summary list only (one line per page: title/URL, character count, and saved path when spilled), followed by the single `responseId`. Do **not** inline page bodies for batches. The agent retrieves any full page on demand via `brightdata_get_content` using a `url`/`urlIndex` selector.
+7. For PDFs:
+   - route through adaptive PDF handling described below (the per-page inline-vs-disk decision uses the PDF-specific limits, not `maxCharsPerPage`).
 
 `brightdata_fetch` is intentionally not a domain-specific workflow tool. It does not clone GitHub repos, run `yt-dlp`, call Whisper, or analyze video. Those belong in skills or separate tools.
+
+Example single-URL output (full content inline):
+
+```text
+# Example Page Title
+
+[full Markdown body, or a head preview ending in a `[Content truncated. Saved full content to: ...]` note if it exceeded the cap]
+
+---
+Response ID: bd_...
+```
+
+Example multi-URL output (summary only — no page bodies inline):
+
+```text
+## Fetched URLs
+
+- Example Page Title: 8,200 chars
+- Another Page: 64,000 chars, saved: .pi/brightdata/pages/another-page.md
+- https://blocked.example/x: Error - <message>
+
+Response ID: bd_...
+```
+
+The agent then pulls any specific page in full with `brightdata_get_content({ responseId: "bd_...", urlIndex: 1 })` (or a `url` selector).
 
 ## Adaptive PDF handling
 
@@ -272,7 +301,7 @@ Parameters:
 Behavior:
 
 - For search results, return the selected query's normalized results and raw result summary.
-- For fetched pages, return the selected page content.
+- For fetched pages, select the page by `url`/`urlIndex` (defaulting to the first page) and return its content. When the page was spilled to disk, read the full content back from its saved path; otherwise return the stored inline content.
 - For large PDFs saved to disk, return metadata, saved path, and a preview. It may return full content only if it can do so within the same truncation limits used by other tools.
 - If content is too large, instruct the agent to use the built-in `read` tool on the saved Markdown path.
 
@@ -295,7 +324,7 @@ Stored entries include:
 - saved file paths for large PDFs and large fetched pages;
 - enough metadata to render useful summaries.
 
-Reload survival is symmetric across content types: large fetched HTML pages and large PDFs are both saved to disk and referenced by path, so `brightdata_get_content` can always recover them after reload. Only content that fits inline (and is therefore small) lives purely in the session entry. The API key is never written into any session entry.
+Reload survival is symmetric across content types: large fetched HTML pages and large PDFs are both saved to disk and referenced by path, so `brightdata_get_content` can always recover them after reload. The two content types use separate, independently configurable directories — large HTML pages spill to `fetch.outputDir` (default `.pi/brightdata/pages`) and large PDFs spill to `pdf.outputDir` (default `.pi/brightdata/pdfs`) — so a saved file's location matches its content type. Only content that fits inline (and is therefore small) lives purely in the session entry. The API key is never written into any session entry.
 
 ## TUI rendering
 
