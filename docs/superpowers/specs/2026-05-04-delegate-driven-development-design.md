@@ -1,8 +1,10 @@
 # Delegate-Driven Development Skill — Design
 
 **Date:** 2026-05-04  
-**Status:** Draft  
+**Status:** Superseded by [`2026-05-31-delegate-driven-development-v2-design.md`](2026-05-31-delegate-driven-development-v2-design.md)  
 **Location:** `~/.pi/agent/skills/delegate-driven-development/SKILL.md`
+
+> **Superseded.** v2 reverses this design's central "minimal capsule / no session history" decision in favour of a shared, cached spec+plan prefix (`delegate_anchor` + `inherit_context`), replaces `delegate_check` polling with non-blocking background-process waits, and adds `models.json` (locked-per-run for cache correctness) plus a review-failure escalation circuit-breaker. Retained here as historical record.
 
 ---
 
