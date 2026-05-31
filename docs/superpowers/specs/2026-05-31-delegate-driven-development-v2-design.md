@@ -171,11 +171,14 @@ For each ticket in `ready` (ascending task number):
 4. **Wait (non-blocking)** — launch the wait-script via `process` (§6). Orchestrator is now free to chat / investigate / pre-draft, but **must not advance the pipeline** until the completion alert fires.
 5. On alert → `delegate_result` → parse `STATUS:` footer.
    - `BLOCKED` / `NEEDS_CONTEXT` → `ticket_move blocked`; **stop and escalate to user** with the worker's report.
-   - `DONE` / `DONE_WITH_CONCERNS` → record concerns in `## Notes`; proceed.
+   - `DONE` / `DONE_WITH_CONCERNS` → optionally note concerns (see *Notes* below); proceed to the commit-boundary gate.
+5a. **Commit-boundary gate (mandatory before review).** Verify in the worktree that the implementer actually committed: `git rev-parse HEAD` must differ from `task_base_sha`, **and** `git status --porcelain` must be empty (clean tree). If `HEAD` did not advance or the tree is dirty, the task commit is missing/partial — `git diff <task_base_sha>..HEAD` would miss uncommitted work. Treat as incomplete: re-dispatch (implementer/fixer) with an explicit "commit your work" instruction, or escalate. Do **not** proceed to review until this gate passes.
 6. `ticket_move review`. Assemble **combined reviewer prompt** (skill reviewer template + env block + the per-ticket diff command `git diff <task_base_sha>..HEAD` and `git log <task_base_sha>..HEAD`, so the reviewer sees **only this ticket's changes**, never cumulative branch history); `delegate_start` with reviewer model, **read-only tools `[read, bash]`**, `inherit_context: "plan-foundation"`. Wait via §6.
 7. `delegate_result` → parse `VERDICT:`.
-   - `PASS` → `ticket_move done`; write verification evidence to `## Notes`; next ticket.
-   - `FAIL` → write the reviewer's fix instructions to `next_prompt`; `review_failures += 1`; go to §7.
+   - `PASS` → `ticket_move done`; optionally record verification evidence (see *Notes* below); next ticket.
+   - `FAIL` → write the reviewer's fix instructions to `next_prompt`; increment `review_failures` (`ticket_get` → +1 → `ticket_set`); go to §7.
+
+***Notes* (optional, human-facing).** The `## Notes` body is for human readability only. The orchestrator may append to it via a **direct file edit** of the ticket markdown (it has `edit`/`write` and knows the ticket path) — no `ticket_*` body-append tool is added. **Durable, loop-critical state never lives in Notes**: it lives in frontmatter (`review_failures`, `task_base_sha`) and `next_prompt`, which survive crashes and are read back via `ticket_get`/`ticket_next`.
 
 **Per-ticket diff boundary (inherited from subagent-driven-development / requesting-code-review):** the implementer commits exactly one task commit; reviewers and fixers operate on `git diff <task_base_sha>..HEAD`. A fixer that *amends* must update nothing else; a fixer that *adds* a fix commit keeps the base SHA fixed so the range still captures the whole task. This prevents reviewing cumulative history and conflating prior tasks with the current one.
 
@@ -289,12 +292,14 @@ This skill covers the **orchestration loop only**. Out of scope (delegated to ot
 ```
 brainstorming
   → writing-plans
-    → using-git-worktrees (feature branch + worktree)
-      → Read spec + plan → delegate_anchor("plan-foundation")
+    → /new + Read FULL spec + plan (to EOF) → delegate_anchor("plan-foundation")   [anchor FIRST]
+      → using-git-worktrees (feature branch + worktree)
         → ticket_shard
           → delegate-driven-development (v2)   ← THIS SKILL
             → finishing-a-development-branch
 ```
+
+(Ordering is load-bearing: the anchor must precede worktree setup so setup noise never enters the inherited prefix — see §1/§4.)
 
 `delegate-driven-development` v2 slots in where `subagent-driven-development` sits in the generic superpowers flow.
 
