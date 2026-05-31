@@ -169,12 +169,12 @@ For each ticket in `ready` (ascending task number):
 2. Assemble **implementer prompt** = skill implementer template + ticket `## Plan excerpt` + env block (worktree path, branch, "do not create branches/worktrees; make all changes in the worktree; do not touch `in-progress/`") + the commit requirement: **the implementer must create exactly one task commit when done** (the basis for the per-ticket diff boundary).
 3. `delegate_start({ task, cwd: worktree, inherit_context: "plan-foundation", provider/model: implementer, thinking, tools: [read, edit, write, bash] })`.
 4. **Wait (non-blocking)** — launch the wait-script via `process` (§6). Orchestrator is now free to chat / investigate / pre-draft, but **must not advance the pipeline** until the completion alert fires.
-5. On alert → `delegate_result` → parse `STATUS:` footer.
+5. On alert → `delegate_check` (authoritative reconcile, §6) → `delegate_result` → parse `STATUS:` footer.
    - `BLOCKED` / `NEEDS_CONTEXT` → `ticket_move blocked`; **stop and escalate to user** with the worker's report.
    - `DONE` / `DONE_WITH_CONCERNS` → optionally note concerns (see *Notes* below); proceed to the commit-boundary gate.
-5a. **Commit-boundary gate (mandatory before review).** Verify in the worktree that the implementer actually committed: `git rev-parse HEAD` must differ from `task_base_sha`, **and** `git status --porcelain` must be empty (clean tree). If `HEAD` did not advance or the tree is dirty, the task commit is missing/partial — `git diff <task_base_sha>..HEAD` would miss uncommitted work. Treat as incomplete: re-dispatch (implementer/fixer) with an explicit "commit your work" instruction, or escalate. Do **not** proceed to review until this gate passes.
+5a. **Commit-boundary gate (mandatory before EVERY review and re-review — implementer *and* fixer).** Verify in the worktree that the worker actually committed: `git rev-parse HEAD` must differ from `task_base_sha`, **and** `git status --porcelain` must be empty (clean tree). If `HEAD` did not advance or the tree is dirty, the task commit is missing/partial — `git diff <task_base_sha>..HEAD` would miss uncommitted work. Treat as incomplete: re-dispatch (implementer/fixer) with an explicit "commit your work" instruction, or escalate. Do **not** proceed to review (or re-review after a fix) until this gate passes.
 6. `ticket_move review`. Assemble **combined reviewer prompt** (skill reviewer template + env block + the per-ticket diff command `git diff <task_base_sha>..HEAD` and `git log <task_base_sha>..HEAD`, so the reviewer sees **only this ticket's changes**, never cumulative branch history); `delegate_start` with reviewer model, **read-only tools `[read, bash]`**, `inherit_context: "plan-foundation"`. Wait via §6.
-7. `delegate_result` → parse `VERDICT:`.
+7. On alert → `delegate_check` (reconcile, §6) → `delegate_result` → parse `VERDICT:`.
    - `PASS` → `ticket_move done`; optionally record verification evidence (see *Notes* below); next ticket.
    - `FAIL` → write the reviewer's fix instructions to `next_prompt`; increment `review_failures` (`ticket_get` → +1 → `ticket_set`); go to §7.
 
@@ -222,7 +222,7 @@ Launch via `process({ action: "start", command: "bash wait.sh <status_file> <tim
 - Returns a combined verdict via `delegate_result`.
 
 **Fix loop** uses a **fresh fixer worker** each time (stateless workers; continuity lives in the orchestrator + ticket):
-- Fixer inherits the same `plan-foundation` anchor + the reviewer's findings (read from `next_prompt`) + instruction to amend the diff, then re-enters review (§5.6).
+- Fixer inherits the same `plan-foundation` anchor + the reviewer's findings (read from `next_prompt`) + instruction to amend/extend the task's commit(s). After the fixer reports, the orchestrator **re-runs the §5a commit-boundary gate** (the fixer must leave `HEAD` advanced/amended and a clean tree, exactly like the implementer) and only then re-enters review (§5.6).
 
 **Escalation by `review_failures`:**
 - **1** → routine fixer run.
