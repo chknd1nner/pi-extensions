@@ -4,7 +4,7 @@
 
 **Goal:** Build a standalone `pi-brightdata-tools` Pi extension with Bright Data SERP search, Unlocker fetch, adaptive PDF extraction, storage/retrieval, and compact TUI rendering.
 
-**Architecture:** The extension is split into focused modules: config loading, Bright Data HTTP client, URL/search normalization, storage/disk persistence, HTML fetch, PDF extraction, renderers, and Pi tool registration. Tools delegate to pure modules so most behavior is unit-testable without launching Pi.
+**Architecture:** The extension is split into focused modules: config loading, Bright Data HTTP client, pure URL/search helpers, request safety, output safety, storage/disk persistence, HTML fetch, PDF extraction, renderers, and Pi tool registration. Tools delegate to pure modules so most behavior is unit-testable without launching Pi. URL/request hardening lives in `request-safety.ts`; output truncation/untrusted-content handling lives in `output-safety.ts`.
 
 **Tech Stack:** TypeScript ESM, Pi extension API from `@earendil-works/pi-coding-agent`, schemas via `typebox` and `StringEnum` from `@earendil-works/pi-ai`, TUI `Text` from `@earendil-works/pi-tui`, concurrency via `p-limit`, PDF parsing via `unpdf`, tests via Vitest.
 
@@ -18,11 +18,13 @@ Create these files under `extensions/brightdata/`:
 - `tsconfig.json` — strict TypeScript config matching existing extension packages.
 - `types.ts` — shared config/result/storage types.
 - `config.ts` — `~/.pi/brightdata.json` loading, defaults, env override handling.
-- `urls.ts` — public URL validation, private-network blocking, SERP URL construction.
+- `urls.ts` — pure URL helpers and SERP URL construction; no security policy beyond basic parsing/canonicalization helpers.
+- `request-safety.ts` — centralized request target validation, local/private/link-local blocking, manual redirect validation for local fetches, and `UnsafeUrlError`.
+- `output-safety.ts` — centralized truncation and saved-path guidance for large/untrusted tool outputs.
 - `brightdata-client.ts` — Bright Data `/request` wrapper, timeout/abort/error handling.
 - `search.ts` — SERP request construction, response parsing, result normalization, Markdown formatting.
 - `storage.ts` — response IDs, in-memory map, `pi.appendEntry` payloads, session restore, disk persistence for large content.
-- `fetch.ts` — normal page fetch through Unlocker, multi-URL orchestration, truncation/disk save decisions.
+- `fetch.ts` — normal page fetch through Unlocker, multi-URL orchestration, PDF response detection/routing, truncation/disk save decisions.
 - `pdf.ts` — direct/Bright Data PDF byte fetching, `unpdf` parsing, adaptive inline-vs-file output.
 - `render.ts` — compact tool call/result renderers.
 - `index.ts` — Pi tool schemas, registration, `session_start` restore, tool execution wiring.
@@ -454,40 +456,23 @@ git commit -m "feat: scaffold Bright Data config"
 
 ---
 
-### Task 2: Bright Data client and URL utilities
+### Task 2: Bright Data client, URL utilities, and request safety
 
 **Files:**
 - Create: `extensions/brightdata/brightdata-client.ts`
 - Create: `extensions/brightdata/urls.ts`
+- Create: `extensions/brightdata/request-safety.ts`
 - Create: `extensions/brightdata/tests/client.test.ts`
 - Create: `extensions/brightdata/tests/urls.test.ts`
+- Create: `extensions/brightdata/tests/request-safety.test.ts`
 
-- [ ] **Step 1: Write failing URL utility tests**
+- [ ] **Step 1: Write failing URL utility and request-safety tests**
 
 Create `extensions/brightdata/tests/urls.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { assertPublicHttpUrl, buildSearchUrl } from "../urls.js";
-
-describe("assertPublicHttpUrl", () => {
-  it("accepts public http and https URLs", () => {
-    expect(assertPublicHttpUrl("https://example.com/a?b=1")).toBe("https://example.com/a?b=1");
-    expect(assertPublicHttpUrl("http://example.com/")).toBe("http://example.com/");
-  });
-
-  it("rejects non-http protocols", () => {
-    expect(() => assertPublicHttpUrl("file:///etc/passwd")).toThrow(/Only public http\/https URLs/);
-  });
-
-  it("rejects localhost and private IPv4 hosts", () => {
-    expect(() => assertPublicHttpUrl("http://localhost:3000")).toThrow(/private or local/);
-    expect(() => assertPublicHttpUrl("http://127.0.0.1:3000")).toThrow(/private or local/);
-    expect(() => assertPublicHttpUrl("http://10.0.0.5")).toThrow(/private or local/);
-    expect(() => assertPublicHttpUrl("http://172.16.0.1")).toThrow(/private or local/);
-    expect(() => assertPublicHttpUrl("http://192.168.1.1")).toThrow(/private or local/);
-  });
-});
+import { buildSearchUrl } from "../urls.js";
 
 describe("buildSearchUrl", () => {
   it("builds a Google SERP URL with brd_json=1", () => {
@@ -501,6 +486,69 @@ describe("buildSearchUrl", () => {
   it("builds Bing and DuckDuckGo URLs with brd_json=1", () => {
     expect(buildSearchUrl("bing", "abc", "en")).toBe("https://www.bing.com/search?q=abc&brd_json=1");
     expect(buildSearchUrl("duckduckgo", "abc", "en")).toBe("https://duckduckgo.com/html/?q=abc&brd_json=1");
+  });
+});
+```
+
+Create `extensions/brightdata/tests/request-safety.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  UnsafeUrlError,
+  fetchPublicWithManualRedirects,
+  resolvePublicRedirectUrl,
+  validateBrightDataTarget,
+  validatePublicHttpUrl,
+} from "../request-safety.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("validatePublicHttpUrl", () => {
+  it("accepts public http and https URLs", () => {
+    expect(validatePublicHttpUrl("https://example.com/a?b=1").href).toBe("https://example.com/a?b=1");
+    expect(validateBrightDataTarget("http://example.com/")).toBe("http://example.com/");
+  });
+
+  it("rejects non-http, localhost, private, link-local, unspecified, and IPv6 loopback targets", () => {
+    const blocked = [
+      "file:///etc/passwd",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://0.0.0.0/",
+      "http://10.0.0.5/",
+      "http://172.16.0.1/",
+      "http://192.168.1.1/",
+      "http://169.254.10.20/",
+      "http://[::1]/",
+      "http://[::]/",
+      "http://[::ffff:127.0.0.1]/",
+    ];
+    for (const url of blocked) {
+      expect(() => validatePublicHttpUrl(url), url).toThrow(UnsafeUrlError);
+    }
+  });
+});
+
+describe("redirect safety", () => {
+  it("resolves safe relative redirects", () => {
+    expect(resolvePublicRedirectUrl("https://example.com/a/b", "../c")).toBe("https://example.com/c");
+  });
+
+  it("rejects redirects to private targets", () => {
+    expect(() => resolvePublicRedirectUrl("https://example.com/a", "http://127.0.0.1/private")).toThrow(UnsafeUrlError);
+  });
+
+  it("uses manual redirects for local direct fetches", async () => {
+    const fetchMock = vi.fn(async () => new Response("ok", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchPublicWithManualRedirects("https://example.com/a", { method: "HEAD" });
+
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/a", expect.objectContaining({ method: "HEAD", redirect: "manual" }));
   });
 });
 ```
@@ -566,46 +614,17 @@ describe("brightDataRequest", () => {
 Run:
 
 ```bash
-cd extensions/brightdata && npm test -- tests/urls.test.ts tests/client.test.ts
+cd extensions/brightdata && npm test -- tests/urls.test.ts tests/request-safety.test.ts tests/client.test.ts
 ```
 
-Expected: FAIL because `urls.ts` and `brightdata-client.ts` do not exist.
+Expected: FAIL because `urls.ts`, `request-safety.ts`, and `brightdata-client.ts` do not exist.
 
-- [ ] **Step 4: Implement URL utilities**
+- [ ] **Step 4: Implement URL utilities and request-safety boundary**
 
 Create `extensions/brightdata/urls.ts`:
 
 ```ts
 import type { SearchEngine } from "./types.js";
-
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
-
-function isPrivateIPv4(hostname: string): boolean {
-  return hostname.startsWith("10.")
-    || hostname.startsWith("192.168.")
-    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
-    || hostname.startsWith("169.254.");
-}
-
-export function assertPublicHttpUrl(raw: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`Invalid URL: ${raw}`);
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(`Only public http/https URLs are supported: ${raw}`);
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  if (LOCAL_HOSTS.has(hostname) || isPrivateIPv4(hostname)) {
-    throw new Error(`Refusing private or local URL: ${raw}`);
-  }
-
-  return parsed.toString();
-}
 
 function withParams(base: string, params: Record<string, string>): string {
   const url = new URL(base);
@@ -630,12 +649,112 @@ export function buildSearchUrl(engine: SearchEngine, query: string, language: st
 }
 ```
 
+Create `extensions/brightdata/request-safety.ts`:
+
+```ts
+import { isIP } from "node:net";
+
+export class UnsafeUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnsafeUrlError";
+  }
+}
+
+const LOCAL_HOSTS = new Set(["localhost", "localhost.localdomain"]);
+
+function parseIPv4(hostname: string): number[] | null {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((num) => !Number.isInteger(num) || num < 0 || num > 255)) return null;
+  return nums;
+}
+
+function isPrivateIPv4(hostname: string): boolean {
+  const ip = parseIPv4(hostname);
+  if (!ip) return false;
+  const [a, b] = ip;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168);
+}
+
+function isBlockedIPv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "::"
+    || normalized === "::1"
+    || normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("fe80:")
+    || normalized.startsWith("::ffff:127.")
+    || normalized.startsWith("::ffff:10.")
+    || normalized.startsWith("::ffff:192.168.")
+    || /^::ffff:172\.(1[6-9]|2\d|3[0-1])\./.test(normalized);
+}
+
+export function isPrivateOrLocalHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (LOCAL_HOSTS.has(normalized) || normalized.endsWith(".localhost")) return true;
+  if (isIP(normalized) === 4) return isPrivateIPv4(normalized);
+  if (isIP(normalized) === 6) return isBlockedIPv6(normalized);
+  return false;
+}
+
+export function validatePublicHttpUrl(raw: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new UnsafeUrlError(`Invalid URL: ${raw}`);
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new UnsafeUrlError(`Only public http/https URLs are supported: ${raw}`);
+  }
+  if (isPrivateOrLocalHostname(parsed.hostname)) {
+    throw new UnsafeUrlError(`Refusing private or local URL: ${raw}`);
+  }
+  return parsed;
+}
+
+export function validateBrightDataTarget(raw: string): string {
+  return validatePublicHttpUrl(raw).toString();
+}
+
+export function resolvePublicRedirectUrl(currentUrl: string, location: string): string {
+  return validatePublicHttpUrl(new URL(location, currentUrl).toString()).toString();
+}
+
+export async function fetchPublicWithManualRedirects(
+  rawUrl: string,
+  init: RequestInit = {},
+  options: { maxRedirects?: number } = {},
+): Promise<Response> {
+  let current = validatePublicHttpUrl(rawUrl).toString();
+  const maxRedirects = options.maxRedirects ?? 5;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const response = await fetch(current, { ...init, redirect: "manual" });
+    if (response.status < 300 || response.status >= 400) return response;
+    const location = response.headers.get("location");
+    if (!location) return response;
+    if (hop === maxRedirects) throw new Error(`Too many redirects for ${rawUrl}`);
+    current = resolvePublicRedirectUrl(current, location);
+  }
+  throw new Error(`Too many redirects for ${rawUrl}`);
+}
+```
+
 - [ ] **Step 5: Implement Bright Data client**
 
 Create `extensions/brightdata/brightdata-client.ts`:
 
 ```ts
 import { getBrightDataApiKey, loadBrightDataConfig } from "./config.js";
+import { validateBrightDataTarget } from "./request-safety.js";
 
 export interface BrightDataPayload {
   zone: string;
@@ -676,15 +795,26 @@ export async function brightDataRequest(payload: BrightDataPayload, signal?: Abo
   }
 
   const timeoutMs = loadBrightDataConfig().brightdata.requestTimeoutMs;
-  const response = await fetch("https://api.brightdata.com/request", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-    signal: combineSignals(timeoutMs, signal),
-  });
+  const safePayload = { ...payload, url: validateBrightDataTarget(payload.url) };
+  let response: Response;
+  try {
+    response = await fetch("https://api.brightdata.com/request", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(safePayload),
+      signal: combineSignals(timeoutMs, signal),
+    });
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    const message = err instanceof Error ? err.message : String(err);
+    if (name === "AbortError" || name === "TimeoutError" || message.toLowerCase().includes("abort")) {
+      throw new Error(`Bright Data request aborted or timed out: ${message}`);
+    }
+    throw new Error(`Bright Data network request failed: ${message}`);
+  }
 
   const bytes = await response.arrayBuffer();
   const text = new TextDecoder().decode(bytes);
@@ -711,7 +841,7 @@ export async function brightDataRequest(payload: BrightDataPayload, signal?: Abo
 Run:
 
 ```bash
-cd extensions/brightdata && npm test -- tests/urls.test.ts tests/client.test.ts && npm run typecheck
+cd extensions/brightdata && npm test -- tests/urls.test.ts tests/request-safety.test.ts tests/client.test.ts && npm run typecheck
 ```
 
 Expected: PASS and typecheck exits with code 0.
@@ -719,7 +849,7 @@ Expected: PASS and typecheck exits with code 0.
 - [ ] **Step 7: Commit client and URL utilities**
 
 ```bash
-git add extensions/brightdata/brightdata-client.ts extensions/brightdata/urls.ts extensions/brightdata/tests/client.test.ts extensions/brightdata/tests/urls.test.ts
+git add extensions/brightdata/brightdata-client.ts extensions/brightdata/urls.ts extensions/brightdata/request-safety.ts extensions/brightdata/tests/client.test.ts extensions/brightdata/tests/urls.test.ts extensions/brightdata/tests/request-safety.test.ts
 git commit -m "feat: add Bright Data client"
 ```
 
@@ -1006,7 +1136,7 @@ describe("storage", () => {
   it("saves large markdown to a safe file name", () => {
     const dir = makeDir();
     const saved = saveLargeMarkdown({ outputDir: dir, title: "A/B: C?", url: "https://example.com/doc", content: "hello" });
-    expect(saved).toMatch(/a-b-c\.md$/);
+    expect(saved).toMatch(/a-b-c-[a-f0-9]{8}\.md$/);
     expect(readFileSync(saved, "utf8")).toBe("hello");
   });
 });
@@ -1027,6 +1157,7 @@ Expected: FAIL because `storage.ts` does not exist.
 Create `extensions/brightdata/storage.ts`:
 
 ```ts
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { BrightDataSearchResult, FetchPageResult } from "./types.js";
@@ -1100,7 +1231,8 @@ function sanitizeFilename(title: string): string {
 export function saveLargeMarkdown(input: { outputDir: string; title: string; url: string; content: string; cwd?: string }): string {
   const baseDir = input.cwd ? resolve(input.cwd, input.outputDir) : resolve(input.outputDir);
   mkdirSync(baseDir, { recursive: true });
-  const filename = `${sanitizeFilename(input.title || new URL(input.url).hostname)}.md`;
+  const hash = createHash("sha256").update(input.url).digest("hex").slice(0, 8);
+  const filename = `${sanitizeFilename(input.title || new URL(input.url).hostname)}-${hash}.md`;
   const outputPath = join(baseDir, filename);
   writeFileSync(outputPath, input.content, "utf8");
   return outputPath;
@@ -1126,11 +1258,13 @@ git commit -m "feat: add Bright Data result storage"
 
 ---
 
-### Task 5: HTML/page fetch and content retrieval logic
+### Task 5: HTML/page fetch, output safety, and content retrieval logic
 
 **Files:**
 - Create: `extensions/brightdata/fetch.ts`
+- Create: `extensions/brightdata/output-safety.ts`
 - Create: `extensions/brightdata/tests/fetch.test.ts`
+- Create: `extensions/brightdata/tests/output-safety.test.ts`
 
 - [ ] **Step 1: Write failing fetch tests**
 
@@ -1231,6 +1365,48 @@ describe("getStoredContentText", () => {
 
     expect(getStoredContentText({ responseId: output.data.id, urlIndex: 0 })).toContain("# Page");
   });
+
+  it("does not return unbounded saved content", async () => {
+    const dir = makeDir();
+    brightDataRequest.mockResolvedValue(response("x".repeat(100)));
+    const output = await fetchBrightDataPages(["https://example.com/large"], {
+      zone: "unlock",
+      country: "au",
+      preferMarkdown: true,
+      maxUrls: 10,
+      maxInlineChars: 20,
+      outputDir: dir,
+      cwd: process.cwd(),
+      concurrency: 3,
+      signal: undefined
+    });
+
+    const text = getStoredContentText({ responseId: output.data.id, urlIndex: 0, maxOutputChars: 30 });
+
+    expect(text.length).toBeLessThan(100);
+    expect(text).toContain("Output truncated");
+    expect(text).toContain("Full content saved to");
+  });
+});
+```
+
+Create `extensions/brightdata/tests/output-safety.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { formatStoredContentForTool } from "../output-safety.js";
+
+describe("formatStoredContentForTool", () => {
+  it("returns small content unchanged", () => {
+    expect(formatStoredContentForTool({ content: "hello", maxOutputChars: 10 })).toBe("hello");
+  });
+
+  it("truncates large content and preserves saved path guidance", () => {
+    const text = formatStoredContentForTool({ content: "x".repeat(100), savedPath: "/tmp/full.md", maxOutputChars: 20 });
+    expect(text).toContain("x".repeat(20));
+    expect(text).toContain("Output truncated");
+    expect(text).toContain("/tmp/full.md");
+  });
 });
 ```
 
@@ -1239,12 +1415,44 @@ describe("getStoredContentText", () => {
 Run:
 
 ```bash
-cd extensions/brightdata && npm test -- tests/fetch.test.ts
+cd extensions/brightdata && npm test -- tests/fetch.test.ts tests/output-safety.test.ts
 ```
 
-Expected: FAIL because `fetch.ts` does not exist.
+Expected: FAIL because `fetch.ts` and `output-safety.ts` do not exist.
 
 - [ ] **Step 3: Implement fetch module**
+
+Create `extensions/brightdata/output-safety.ts`:
+
+```ts
+import { truncateHead } from "@earendil-works/pi-coding-agent";
+
+export function formatStoredContentForTool(input: { content: string; savedPath?: string; maxOutputChars?: number }): string {
+  const maxOutputChars = input.maxOutputChars ?? 50_000;
+  const truncation = truncateHead(input.content, { maxBytes: maxOutputChars, maxLines: 2000 });
+  if (!truncation.truncated) return truncation.content;
+  const pathNote = input.savedPath ? ` Full content saved to: ${input.savedPath}.` : "";
+  return `${truncation.content}\n\n[Output truncated: showing ${truncation.outputBytes} of ${truncation.totalBytes} bytes.${pathNote}]`;
+}
+
+export function formatLargePdfStoredContent(input: { title: string; url: string; savedPath: string; content: string; pages?: number; chars?: number; previewChars?: number }): string {
+  const previewChars = input.previewChars ?? 2000;
+  return [
+    "PDF content is stored on disk.",
+    "",
+    `Title: ${input.title}`,
+    `URL: ${input.url}`,
+    input.pages !== undefined ? `Pages: ${input.pages}` : undefined,
+    `Characters: ${input.chars ?? input.content.length}`,
+    `Saved markdown: ${input.savedPath}`,
+    "",
+    "Preview:",
+    input.content.slice(0, previewChars),
+    "",
+    "Use the built-in read tool on the saved Markdown path for the full content."
+  ].filter(Boolean).join("\n");
+}
+```
 
 Create `extensions/brightdata/fetch.ts`:
 
@@ -1252,7 +1460,8 @@ Create `extensions/brightdata/fetch.ts`:
 import { readFileSync } from "node:fs";
 import pLimit from "p-limit";
 import { brightDataRequest } from "./brightdata-client.js";
-import { assertPublicHttpUrl } from "./urls.js";
+import { formatLargePdfStoredContent, formatStoredContentForTool } from "./output-safety.js";
+import { validatePublicHttpUrl } from "./request-safety.js";
 import { generateResponseId, getStoredResult, saveLargeMarkdown, storeResult, type StoredBrightDataResult } from "./storage.js";
 import type { FetchPageResult } from "./types.js";
 
@@ -1318,7 +1527,7 @@ function formatFetchMarkdown(pages: FetchPageResult[], responseId: string): stri
 }
 
 export async function fetchBrightDataPages(urls: string[], options: FetchOptions): Promise<FetchOutput> {
-  const normalized = urls.map(assertPublicHttpUrl);
+  const normalized = urls.map((url) => validatePublicHttpUrl(url).toString());
   if (normalized.length === 0) throw new Error("No URL provided. Use url or urls.");
   if (normalized.length > options.maxUrls) throw new Error(`Too many URLs: ${normalized.length}. Maximum is ${options.maxUrls}.`);
 
@@ -1345,7 +1554,7 @@ export async function fetchBrightDataPages(urls: string[], options: FetchOptions
   return { markdown: formatFetchMarkdown(pages, id), data };
 }
 
-export function getStoredContentText(selector: { responseId: string; urlIndex?: number; url?: string; queryIndex?: number; query?: string }): string {
+export function getStoredContentText(selector: { responseId: string; urlIndex?: number; url?: string; queryIndex?: number; query?: string; maxOutputChars?: number }): string {
   const data = getStoredResult(selector.responseId);
   if (!data) return `Error: No stored result for ${selector.responseId}`;
   if (data.type === "fetch") {
@@ -1354,15 +1563,21 @@ export function getStoredContentText(selector: { responseId: string; urlIndex?: 
       ? pages.find((item) => item.url === selector.url)
       : pages[selector.urlIndex ?? 0];
     if (!page) return "Error: URL selection not found.";
-    if (page.savedPath) return readFileSync(page.savedPath, "utf8");
-    return page.content;
+    if (page.savedPath) {
+      const content = readFileSync(page.savedPath, "utf8");
+      if (page.kind === "pdf") {
+        return formatLargePdfStoredContent({ title: page.title, url: page.url, savedPath: page.savedPath, content, pages: page.pages, chars: page.chars });
+      }
+      return formatStoredContentForTool({ content, savedPath: page.savedPath, maxOutputChars: selector.maxOutputChars });
+    }
+    return formatStoredContentForTool({ content: page.content, maxOutputChars: selector.maxOutputChars });
   }
   const queries = data.queries ?? [];
   const query = selector.query !== undefined
     ? queries.find((item) => item.query === selector.query)
     : queries[selector.queryIndex ?? 0];
   if (!query) return "Error: Query selection not found.";
-  return JSON.stringify(query.results, null, 2);
+  return formatStoredContentForTool({ content: JSON.stringify(query.results, null, 2), maxOutputChars: selector.maxOutputChars });
 }
 ```
 
@@ -1371,7 +1586,7 @@ export function getStoredContentText(selector: { responseId: string; urlIndex?: 
 Run:
 
 ```bash
-cd extensions/brightdata && npm test -- tests/fetch.test.ts && npm run typecheck
+cd extensions/brightdata && npm test -- tests/fetch.test.ts tests/output-safety.test.ts && npm run typecheck
 ```
 
 Expected: PASS and typecheck exits with code 0.
@@ -1379,7 +1594,7 @@ Expected: PASS and typecheck exits with code 0.
 - [ ] **Step 5: Commit fetch module**
 
 ```bash
-git add extensions/brightdata/fetch.ts extensions/brightdata/tests/fetch.test.ts
+git add extensions/brightdata/fetch.ts extensions/brightdata/output-safety.ts extensions/brightdata/tests/fetch.test.ts extensions/brightdata/tests/output-safety.test.ts
 git commit -m "feat: add Bright Data page fetch"
 ```
 
@@ -1407,7 +1622,8 @@ import type { BrightDataResult } from "../brightdata-client.js";
 
 vi.mock("../brightdata-client.js", () => ({ brightDataRequest: vi.fn() }));
 const { brightDataRequest } = await import("../brightdata-client.js") as unknown as { brightDataRequest: ReturnType<typeof vi.fn> };
-const { extractPdfFromBytes, fetchPdfBytesWithFallback, isLikelyPdfUrl, shouldInlinePdf, shouldTreatAsPdfUrl } = await import("../pdf.js");
+const { UnsafeUrlError } = await import("../request-safety.js");
+const { extractPdfFromBytes, fetchPdfBytesWithFallback, isLikelyPdfUrl, isPdfResponse, shouldInlinePdf, shouldTreatAsPdfUrl } = await import("../pdf.js");
 
 const tempDirs: string[] = [];
 
@@ -1482,14 +1698,19 @@ describe("fetchPdfBytesWithFallback", () => {
     expect(brightDataRequest).toHaveBeenCalledWith({ zone: "unlock", url: "https://example.com/file.pdf", format: "raw", country: "au" }, undefined);
   });
 
-  it("rejects direct redirects to private hosts before fallback", async () => {
+  it("rejects direct redirects to private hosts without Bright Data fallback", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 302, headers: { location: "http://127.0.0.1/private.pdf" } })));
     brightDataRequest.mockResolvedValue(bdBytes(new Uint8Array([9])));
 
-    const bytes = await fetchPdfBytesWithFallback({ url: "https://example.com/file.pdf", zone: "unlock", country: "au", maxBytes: 1000 });
+    await expect(fetchPdfBytesWithFallback({ url: "https://example.com/file.pdf", zone: "unlock", country: "au", maxBytes: 1000 })).rejects.toThrow(UnsafeUrlError);
+    expect(brightDataRequest).not.toHaveBeenCalled();
+  });
+});
 
-    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([9]));
-    expect(brightDataRequest).toHaveBeenCalledTimes(1);
+describe("isPdfResponse", () => {
+  it("detects PDFs by content-type or magic bytes", () => {
+    expect(isPdfResponse("https://example.com/download", new Headers({ "content-type": "application/pdf" }), new Uint8Array([1]).buffer)).toBe(true);
+    expect(isPdfResponse("https://example.com/download", new Headers({ "content-type": "application/octet-stream" }), new Uint8Array([37, 80, 68, 70]).buffer)).toBe(true);
   });
 });
 
@@ -1553,8 +1774,8 @@ Create `extensions/brightdata/pdf.ts`:
 import { getDocumentProxy } from "unpdf";
 import { basename } from "node:path";
 import { brightDataRequest } from "./brightdata-client.js";
+import { UnsafeUrlError, fetchPublicWithManualRedirects, validatePublicHttpUrl } from "./request-safety.js";
 import { saveLargeMarkdown } from "./storage.js";
-import { assertPublicHttpUrl } from "./urls.js";
 import type { FetchPageResult } from "./types.js";
 
 export interface ParsedPdf {
@@ -1579,22 +1800,23 @@ function isPdfContentType(headers: Headers): boolean {
   return (headers.get("content-type") ?? "").toLowerCase().includes("application/pdf");
 }
 
+function hasPdfMagicBytes(bytes: ArrayBuffer): boolean {
+  const head = new Uint8Array(bytes.slice(0, 4));
+  return head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46; // %PDF
+}
+
+export function isPdfResponse(url: string, headers: Headers, bytes: ArrayBuffer): boolean {
+  return isLikelyPdfUrl(url) || isPdfContentType(headers) || hasPdfMagicBytes(bytes);
+}
+
 export async function shouldTreatAsPdfUrl(url: string, signal?: AbortSignal): Promise<boolean> {
   if (isLikelyPdfUrl(url)) return true;
   try {
-    let current = assertPublicHttpUrl(url);
-    for (let hop = 0; hop < 5; hop++) {
-      const response = await fetch(current, { method: "HEAD", redirect: "manual", signal });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) return false;
-        current = assertPublicHttpUrl(new URL(location, current).toString());
-        continue;
-      }
-      return response.ok && isPdfContentType(response.headers);
-    }
-    return false;
-  } catch {
+    validatePublicHttpUrl(url);
+    const response = await fetchPublicWithManualRedirects(url, { method: "HEAD", signal });
+    return response.ok && isPdfContentType(response.headers);
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) throw err;
     return false;
   }
 }
@@ -1604,21 +1826,11 @@ export function shouldInlinePdf(input: { pages: number; chars: number; inlineMax
 }
 
 async function directPdfFetch(url: string, maxBytes: number, signal?: AbortSignal): Promise<ArrayBuffer | null> {
-  let current = assertPublicHttpUrl(url);
-  for (let hop = 0; hop < 5; hop++) {
-    const response = await fetch(current, { redirect: "manual", signal });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) return null;
-      current = assertPublicHttpUrl(new URL(location, current).toString());
-      continue;
-    }
-    if (!response.ok || !isPdfContentType(response.headers)) return null;
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength > maxBytes) throw new Error(`PDF too large (${bytes.byteLength} bytes)`);
-    return bytes;
-  }
-  return null;
+  const response = await fetchPublicWithManualRedirects(url, { signal });
+  if (!response.ok) return null;
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength > maxBytes) throw new Error(`PDF too large (${bytes.byteLength} bytes)`);
+  return isPdfResponse(url, response.headers, bytes) ? bytes : null;
 }
 
 export async function fetchPdfBytesWithFallback(input: {
@@ -1632,13 +1844,15 @@ export async function fetchPdfBytesWithFallback(input: {
     const direct = await directPdfFetch(input.url, input.maxBytes, input.signal);
     if (direct) return direct;
   } catch (err) {
+    if (err instanceof UnsafeUrlError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("PDF too large")) throw err;
-    // Direct transport failed or redirected to a blocked host. Fall back to Bright Data raw bytes.
+    // Recoverable direct transport failures fall back to Bright Data raw bytes.
   }
 
   const response = await brightDataRequest({ zone: input.zone, url: input.url, format: "raw", country: input.country }, input.signal);
   if (response.bytes.byteLength > input.maxBytes) throw new Error(`PDF too large (${response.bytes.byteLength} bytes)`);
+  if (!isPdfResponse(input.url, response.headers, response.bytes)) throw new Error("Bright Data fallback did not return a PDF response.");
   return response.bytes;
 }
 
@@ -1722,7 +1936,7 @@ export async function extractPdfFromBytes(input: {
 
 Modify `extensions/brightdata/fetch.ts`:
 
-- Import `shouldTreatAsPdfUrl`, `fetchPdfBytesWithFallback`, and `extractPdfFromBytes`.
+- Import `shouldTreatAsPdfUrl`, `fetchPdfBytesWithFallback`, `extractPdfFromBytes`, and `isPdfResponse`.
 - Add these fields to `FetchOptions`:
 
 ```ts
@@ -1737,17 +1951,10 @@ pdfMaxBytes: number;
 
 `outputDir` (already on `FetchOptions`) is the destination for spilled **HTML** page Markdown; `pdfOutputDir` is the separate destination for spilled **PDF** Markdown. Keeping them distinct is what lets HTML pages land in `.pi/brightdata/pages` while PDFs land in `.pi/brightdata/pdfs`.
 
-- In the per-URL worker, before the normal page Bright Data request, add:
+- Add a small helper in `fetch.ts` so both pre-routed PDFs and PDF responses discovered after Bright Data fetch use the same extraction path:
 
 ```ts
-if (options.pdfEnabled && await shouldTreatAsPdfUrl(url, options.signal)) {
-  const bytes = await fetchPdfBytesWithFallback({
-    url,
-    zone: options.zone,
-    country: options.country,
-    maxBytes: options.pdfMaxBytes,
-    signal: options.signal,
-  });
+async function extractPdfPage(url: string, bytes: ArrayBuffer, options: FetchOptions): Promise<FetchPageResult> {
   return extractPdfFromBytes({
     url,
     bytes,
@@ -1760,6 +1967,32 @@ if (options.pdfEnabled && await shouldTreatAsPdfUrl(url, options.signal)) {
   });
 }
 ```
+
+- In the per-URL worker, before the normal page Bright Data request, add:
+
+```ts
+if (options.pdfEnabled && await shouldTreatAsPdfUrl(url, options.signal)) {
+  const bytes = await fetchPdfBytesWithFallback({
+    url,
+    zone: options.zone,
+    country: options.country,
+    maxBytes: options.pdfMaxBytes,
+    signal: options.signal,
+  });
+  return extractPdfPage(url, bytes, options);
+}
+```
+
+- After the normal Bright Data request, before calling `pageOutput`, detect extensionless/misreported PDFs and route them to PDF extraction:
+
+```ts
+if (options.pdfEnabled && isPdfResponse(url, response.headers, response.bytes)) {
+  if (response.bytes.byteLength > options.pdfMaxBytes) throw new Error(`PDF too large (${response.bytes.byteLength} bytes)`);
+  return extractPdfPage(url, response.bytes, options);
+}
+```
+
+This ensures a failed/inconclusive HEAD does not cause PDF bytes from Bright Data to be decoded as Markdown/text.
 
 - Update tests that call `fetchBrightDataPages` to pass the new fields:
 
@@ -1778,7 +2011,7 @@ pdfMaxBytes: 52428800,
 Run:
 
 ```bash
-cd extensions/brightdata && npm test -- tests/pdf.test.ts tests/fetch.test.ts && npm run typecheck
+cd extensions/brightdata && npm test -- tests/pdf.test.ts tests/fetch.test.ts tests/output-safety.test.ts && npm run typecheck
 ```
 
 Expected: PASS and typecheck exits with code 0.
@@ -1786,7 +2019,7 @@ Expected: PASS and typecheck exits with code 0.
 - [ ] **Step 6: Commit PDF extraction**
 
 ```bash
-git add extensions/brightdata/pdf.ts extensions/brightdata/tests/pdf.test.ts extensions/brightdata/fetch.ts extensions/brightdata/tests/fetch.test.ts extensions/brightdata/types.ts
+git add extensions/brightdata/pdf.ts extensions/brightdata/tests/pdf.test.ts extensions/brightdata/fetch.ts extensions/brightdata/tests/fetch.test.ts extensions/brightdata/output-safety.ts extensions/brightdata/tests/output-safety.test.ts extensions/brightdata/types.ts
 git commit -m "feat: add adaptive PDF extraction"
 ```
 
@@ -1889,7 +2122,7 @@ Create `extensions/brightdata/index.ts`:
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { loadBrightDataConfig } from "./config.js";
+import { getBrightDataApiKey, loadBrightDataConfig } from "./config.js";
 import { fetchBrightDataPages, getStoredContentText } from "./fetch.js";
 import { formatSearchMarkdown, searchBrightData } from "./search.js";
 import { BRIGHTDATA_RESULTS_CUSTOM_TYPE, generateResponseId, restoreFromSession, storeResult, type StoredBrightDataResult } from "./storage.js";
@@ -1901,23 +2134,29 @@ const SearchParams = Type.Object({
   engine: Type.Optional(StringEnum(["google", "bing", "duckduckgo", "yandex"] as const, { description: "Search engine. Defaults to config." })),
   country: Type.Optional(Type.String({ description: "Two-letter country code. Defaults to config." })),
   language: Type.Optional(Type.String({ description: "Language code. Defaults to config." })),
-  numResults: Type.Optional(Type.Number({ minimum: 1, maximum: 20, description: "Results per query." })),
+  numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Results per query." })),
 });
 
 const FetchParams = Type.Object({
   url: Type.Optional(Type.String({ description: "Single public http/https URL to fetch." })),
   urls: Type.Optional(Type.Array(Type.String(), { description: "Multiple public http/https URLs to fetch." })),
   country: Type.Optional(Type.String({ description: "Two-letter country code. Defaults to config." })),
-  maxCharsPerPage: Type.Optional(Type.Number({ minimum: 1000, maximum: 100000, description: "Inline character cap per page." })),
+  maxCharsPerPage: Type.Optional(Type.Integer({ minimum: 1000, maximum: 100000, description: "Inline character cap per page." })),
 });
 
 const GetContentParams = Type.Object({
   responseId: Type.String({ description: "Response ID from brightdata_search or brightdata_fetch." }),
   query: Type.Optional(Type.String({ description: "Search query to retrieve." })),
-  queryIndex: Type.Optional(Type.Number({ description: "Search query index to retrieve." })),
+  queryIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Search query index to retrieve." })),
   url: Type.Optional(Type.String({ description: "Fetched URL to retrieve." })),
-  urlIndex: Type.Optional(Type.Number({ description: "Fetched URL index to retrieve." })),
+  urlIndex: Type.Optional(Type.Integer({ minimum: 0, description: "Fetched URL index to retrieve." })),
 });
+
+function assertApiKeyConfigured(): void {
+  if (!getBrightDataApiKey()) {
+    throw new Error("Bright Data API key not found. Set BRIGHT_DATA_KEY or BRIGHTDATA_API_KEY.");
+  }
+}
 
 function queryList(params: { query?: string; queries?: string[] }): string[] {
   return (Array.isArray(params.queries) ? params.queries : params.query ? [params.query] : [])
@@ -1947,6 +2186,7 @@ export default function brightdataExtension(pi: ExtensionAPI) {
     ],
     parameters: SearchParams,
     async execute(_toolCallId, params, signal) {
+      assertApiKeyConfigured();
       const config = loadBrightDataConfig();
       const queries = queryList(params);
       const entries = await searchBrightData(queries, {
@@ -1979,6 +2219,7 @@ export default function brightdataExtension(pi: ExtensionAPI) {
     ],
     parameters: FetchParams,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      assertApiKeyConfigured();
       const config = loadBrightDataConfig();
       const urls = urlList(params);
       onUpdate?.({ content: [{ type: "text", text: `Fetching ${urls.length} URL(s)...` }], details: { phase: "fetch", progress: 0 } });
@@ -1987,7 +2228,7 @@ export default function brightdataExtension(pi: ExtensionAPI) {
         country: params.country ?? config.brightdata.defaultCountry,
         preferMarkdown: config.fetch.preferMarkdown,
         maxUrls: config.fetch.maxUrls,
-        maxInlineChars: Math.min(params.maxCharsPerPage ?? config.fetch.maxInlineChars, 100000),
+        maxInlineChars: Math.min(params.maxCharsPerPage ?? config.fetch.maxInlineChars, config.fetch.maxInlineChars),
         outputDir: config.fetch.outputDir,
         cwd: ctx.cwd,
         concurrency: config.brightdata.concurrency,
@@ -2059,6 +2300,8 @@ Bright Data tools for Pi:
 - `brightdata_search` — Bright Data SERP search with normalized ranked results.
 - `brightdata_fetch` — Bright Data Unlocker fetch with Markdown output and adaptive PDF extraction.
 - `brightdata_get_content` — retrieve stored content by `responseId`.
+
+The extension validates targets through a request-safety boundary before local fetches or Bright Data requests, rejects local/private URLs, and truncates large stored content on retrieval with saved-path guidance.
 
 ## Secrets
 
@@ -2151,7 +2394,7 @@ Then:
 Use brightdata_fetch on one of the result URLs.
 ```
 
-For PDF behavior, fetch one small PDF and one larger PDF. Small PDFs should return inline Markdown. Large PDFs should save Markdown to `.pi/brightdata/pdfs` and return a path plus preview. For large HTML pages, confirm the spilled Markdown is saved under `.pi/brightdata/pages` (the separate fetch output directory) and returned as a path plus preview.
+For PDF behavior, fetch one small PDF and one larger PDF. Small PDFs should return inline Markdown. Large PDFs should save Markdown to `.pi/brightdata/pdfs` and return a path plus preview. For large HTML pages, confirm the spilled Markdown is saved under `.pi/brightdata/pages` (the separate fetch output directory) and returned as a path plus preview. If practical, also verify that an extensionless PDF URL routes to PDF extraction and that saved content retrieval returns truncated/preview output rather than unbounded full files.
 ```
 
 - [ ] **Step 2: Update root README structure list**
@@ -2207,11 +2450,13 @@ Spec coverage:
 - Standalone package: Tasks 1 and 7.
 - `BRIGHT_DATA_KEY` primary and `BRIGHTDATA_API_KEY` fallback: Task 1.
 - `~/.pi/brightdata.json` JSON config and zone env overrides: Task 1.
-- Bright Data client with documented request fields: Task 2.
+- Bright Data client with documented request fields and target validation: Task 2.
+- Request safety boundary for public URL validation, private/local blocking, and safe manual redirects: Task 2.
 - `brd_json=1` SERP search with `format: "raw"`: Task 3.
 - Unlocker `data_format: "markdown"` fetch: Task 5.
-- Result storage using `brightdata-results`, TTL restore, and disk persistence: Task 4.
-- Adaptive PDF parsing with direct-byte fetch, Bright Data raw-byte fallback, `unpdf`, redirect safety, and file save for large PDFs: Task 6.
+- Result storage using `brightdata-results`, TTL restore, collision-resistant saved filenames, and disk persistence: Task 4.
+- Output safety/truncation for stored content retrieval: Task 5.
+- Adaptive PDF parsing with direct-byte fetch, Bright Data raw-byte fallback, `unpdf`, non-recoverable unsafe redirect handling, extensionless PDF detection, and file save for large PDFs: Task 6.
 - Pi tool registration with `StringEnum` and `@earendil-works` imports: Task 7.
 - TUI renderers: Task 7.
 - Documentation and manual smoke test: Task 8.

@@ -49,12 +49,21 @@ extensions/brightdata/
   fetch.ts
   pdf.ts
   storage.ts
+  urls.ts
+  request-safety.ts
+  output-safety.ts
   render.ts
   package.json
   tsconfig.json
 ```
 
 The package manifest declares the Pi extension entry via the `pi.extensions` field. Runtime dependencies live in `dependencies`, not `devDependencies`, so the extension works when installed as a Pi package later.
+
+Module boundaries:
+
+- `urls.ts` contains pure URL helpers and SERP URL construction. It should not own security policy beyond basic parsing/canonicalization helpers.
+- `request-safety.ts` is the centralized request-target safety boundary. It validates public HTTP(S) targets, rejects local/private/link-local addresses, validates redirect targets before local direct fetches follow them, exposes an `UnsafeUrlError` (or equivalent typed non-recoverable safety error), and provides safe local `HEAD`/`GET` helpers that use manual redirect handling.
+- `output-safety.ts` is the centralized tool-output safety boundary. It applies Pi truncation utilities, formats truncation notices, preserves saved-path guidance, and is the intended home for future untrusted-content/prompt-injection labeling.
 
 ## Configuration
 
@@ -123,6 +132,28 @@ Relative paths inside the config, such as `fetch.outputDir` and `pdf.outputDir`,
 
 The entire config file is optional: a missing file uses all defaults, and invalid or missing individual values fall back to safe defaults. A malformed JSON file produces a clear tool error that names the config path and parse failure.
 
+## Request safety boundary
+
+All user-provided URLs and all target URLs sent to Bright Data pass through `request-safety.ts` before any network request is made.
+
+The extension distinguishes two safety contexts:
+
+1. **Bright Data target validation** — before sending a URL to Bright Data, validate that it is an absolute public `http`/`https` URL.
+2. **Local direct fetch validation** — for any local `HEAD` or `GET` performed by the extension, validate the initial URL and every redirect target before following it.
+
+Local direct fetches must use manual redirect handling, not automatic redirect following. If any redirect target is blocked as local/private/unsafe, the operation fails with `UnsafeUrlError` and must not fall back to Bright Data for that same URL.
+
+Blocked targets include at least:
+
+- `localhost` and common local host aliases;
+- loopback IPv4/IPv6;
+- private IPv4 ranges;
+- link-local IPv4/IPv6;
+- unspecified addresses such as `0.0.0.0` and `::`;
+- IPv4-mapped IPv6 loopback/private forms.
+
+The v1 implementation may use syntactic IP/hostname checks. DNS-resolution-based private-IP detection is future hardening unless implemented in v1, but `request-safety.ts` must be structured so DNS checks, allow/deny policies, URL length limits, and similar request hardening can be added without changing search/fetch/PDF business logic.
+
 ## Bright Data client
 
 All Bright Data API calls go through one small client module.
@@ -130,6 +161,7 @@ All Bright Data API calls go through one small client module.
 Responsibilities:
 
 - Build requests to `https://api.brightdata.com/request`.
+- Accept only target URLs that have already passed `request-safety.ts` Bright Data target validation.
 - Attach `Authorization: Bearer <key>`.
 - Pass Pi's `AbortSignal` to `fetch`.
 - Apply request timeouts.
@@ -196,7 +228,7 @@ Behavior:
 
 1. Normalize `url`/`urls` into a non-empty URL list.
 2. Reject URL batches larger than `fetch.maxUrls`.
-3. Reject non-HTTP(S), localhost, and common private-network URLs.
+3. Validate every URL through `request-safety.ts` before any Bright Data request. Reject non-HTTP(S), localhost, private-network, link-local, loopback, unspecified, and other blocked targets.
 4. Process URLs with bounded concurrency from config, using `p-limit` (matching `pi-web-access`).
 5. For normal web pages, process each URL into a per-page result:
    - call Bright Data Unlocker with `zone: brightdata.unlockerZone`;
@@ -247,14 +279,16 @@ Detection:
 
 Fetch strategy:
 
-1. If the URL path ends in `.pdf`, attempt a direct PDF byte fetch first, because this avoids spending Bright Data quota for ordinary public PDFs. Disable redirect following on this direct fetch (or re-validate every redirect hop against the private-network blocklist) to avoid SSRF via a redirect to an internal address after the initial URL passed validation.
-2. For URLs that do not end in `.pdf`, perform a lightweight direct `HEAD` request when possible; if it reports `application/pdf`, route to PDF extraction. Treat a non-`application/pdf` or failed/unsupported HEAD as inconclusive ("probably not a PDF"): proceed with the normal page path, which still detects PDF bytes as a fallback. Routing must not hard-depend on HEAD, since many servers reject HEAD or report a content-type that differs from GET.
-3. If direct PDF fetch fails, times out, returns a blocking status, or does not return a PDF, retry through Bright Data Unlocker with `format: "raw"` to retrieve the raw PDF bytes (not `data_format: "markdown"`, which is HTML-only).
-4. Enforce `pdf.maxBytes` before parsing.
-5. Extract text with a PDF parser such as `unpdf`.
-6. Extract metadata when available: title, author, page count.
-7. Convert extracted pages into Markdown with source metadata and page markers.
-8. Extract up to `pdf.maxPages`; mark truncation clearly if the document has more pages.
+1. If the URL path ends in `.pdf`, attempt a direct PDF byte fetch first, because this avoids spending Bright Data quota for ordinary public PDFs. The direct fetch must use `request-safety.ts` local fetch helpers with manual redirects; every redirect target is validated before following. A private/local/unsafe redirect raises `UnsafeUrlError` and is not eligible for Bright Data fallback.
+2. For URLs that do not end in `.pdf`, perform a lightweight direct `HEAD` request through the same local safety helper when possible; if it reports `application/pdf`, route to PDF extraction. Treat a non-`application/pdf` or failed/unsupported HEAD as inconclusive ("probably not a PDF"): proceed with the normal page path, which still detects PDF bytes as a fallback. Routing must not hard-depend on HEAD, since many servers reject HEAD or report a content-type that differs from GET.
+3. If direct PDF fetch fails for recoverable transport reasons, times out, returns a blocking status, or does not return a PDF, retry through Bright Data Unlocker with `format: "raw"` to retrieve the raw PDF bytes (not `data_format: "markdown"`, which is HTML-only). Do not retry through Bright Data after `UnsafeUrlError`.
+4. For extensionless or misreported PDFs, normal Bright Data fetch processing must inspect the Bright Data response `Content-Type` and/or PDF magic bytes. If the response is a PDF, route to PDF extraction instead of treating bytes as Markdown/text.
+5. Enforce `pdf.maxBytes` before parsing.
+6. Validate that PDF fallback responses actually contain PDF bytes before parsing.
+7. Extract text with a PDF parser such as `unpdf`.
+8. Extract metadata when available: title, author, page count.
+9. Convert extracted pages into Markdown with source metadata and page markers.
+10. Extract up to `pdf.maxPages`; mark truncation clearly if the document has more pages.
 
 Inline-vs-file rule:
 
@@ -305,7 +339,7 @@ Behavior:
 - For large PDFs saved to disk, return metadata, saved path, and a preview. It may return full content only if it can do so within the same truncation limits used by other tools.
 - If content is too large, instruct the agent to use the built-in `read` tool on the saved Markdown path.
 
-The tool output is truncated using Pi's truncation utilities to avoid context overflow.
+The tool output is truncated through `output-safety.ts` using Pi's truncation utilities to avoid context overflow. `brightdata_get_content` must not blindly return full saved files. It returns full content only within Pi-safe limits, discloses truncation clearly, includes saved paths when available, and for large saved PDFs prefers metadata plus preview plus saved path over full inline content.
 
 ## Storage model
 
@@ -356,7 +390,8 @@ The v1 renderers stay text-only. No browser curator or rich UI is included.
 - Missing zone config returns an actionable error naming `brightdata.serpZone` or `brightdata.unlockerZone` in `~/.pi/brightdata.json`.
 - Bad JSON reports the config path and parser message.
 - Invalid URLs are rejected before any Bright Data request.
-- Local/private URLs are rejected before any Bright Data request, including redirect targets on the direct PDF fetch path.
+- Local/private/unsafe URLs are rejected before any Bright Data request, including redirect targets on local direct fetch paths.
+- `UnsafeUrlError` is non-recoverable: PDF direct fetch must not fall back to Bright Data after an unsafe redirect or unsafe target.
 - Tool aborts propagate to Bright Data requests and PDF parsing where possible.
 - Quota/rate-limit failures are surfaced clearly and do not trigger large retry loops.
 - Outputs are truncated and disclose truncation clearly.
@@ -379,10 +414,15 @@ Coverage:
    - organic results;
    - alternate Bright Data `brd_json` response shapes;
    - empty result sets.
-3. URL validation:
+3. Request safety:
    - valid public HTTP(S);
    - invalid URL;
-   - localhost/private IP rejection.
+   - non-HTTP(S) rejection;
+   - localhost, loopback, private, link-local, unspecified, and IPv4-mapped private/loopback rejection;
+   - relative redirect resolution against the current URL;
+   - redirects to local/private/unsafe targets are rejected;
+   - local fetch helper uses `redirect: "manual"`;
+   - `UnsafeUrlError` is non-recoverable and prevents PDF Bright Data fallback.
 4. Bright Data client:
    - success JSON;
    - success raw text;
@@ -398,9 +438,17 @@ Coverage:
 6. PDF extraction:
    - small PDF inline path;
    - large PDF saved-to-disk path;
+   - direct PDF fetch with safe manual redirects;
+   - direct unsafe redirect fails without Bright Data fallback;
+   - extensionless URL with failed/inconclusive HEAD but Bright Data `Content-Type: application/pdf` routes to PDF extraction;
+   - Bright Data response with PDF magic bytes routes to PDF extraction even if content type is missing or generic;
    - max-pages truncation note;
    - metadata returned correctly.
-7. Tool schemas:
+7. Output safety:
+   - `brightdata_get_content` truncates large stored content;
+   - saved PDF retrieval returns metadata/preview/path instead of unbounded full text;
+   - truncation notices include saved-path guidance.
+8. Tool schemas:
    - accepted minimal inputs;
    - rejected empty query/URL lists;
    - configured batch limits.
@@ -416,3 +464,5 @@ Potential follow-up additions after v1 proves useful:
 3. Bright Data Browser API or screenshot tools.
 4. Batch crawl tools.
 5. Optional summarization on top of SERP results.
+6. DNS-resolution-based private-IP detection, domain allow/deny policy, URL length policy, and additional request injection/SSRF hardening inside `request-safety.ts`.
+7. Prompt-injection labeling and stronger untrusted-content wrappers inside `output-safety.ts`.
