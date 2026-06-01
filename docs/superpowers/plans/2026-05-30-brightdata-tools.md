@@ -161,7 +161,7 @@ describe("loadBrightDataConfig", () => {
 
     const config = loadBrightDataConfig();
 
-    expect(config.brightdata.serpZone).toBe("serp_api1");
+    expect(config.brightdata.serpZone).toBe("pi_serp_api");
     expect(config.brightdata.unlockerZone).toBe("mcp_unlocker");
     expect(config.brightdata.defaultCountry).toBe("au");
     expect(config.search.maxResults).toBe(20);
@@ -320,7 +320,7 @@ export const CONFIG_PATH = join(homedir(), ".pi", "brightdata.json");
 
 const DEFAULT_CONFIG: BrightDataConfig = {
   brightdata: {
-    serpZone: "serp_api1",
+    serpZone: "pi_serp_api",
     unlockerZone: "mcp_unlocker",
     defaultCountry: "au",
     defaultLanguage: "en",
@@ -2327,7 +2327,7 @@ Example:
 ```json
 {
   "brightdata": {
-    "serpZone": "serp_api1",
+    "serpZone": "pi_serp_api",
     "unlockerZone": "mcp_unlocker",
     "defaultCountry": "au",
     "defaultLanguage": "en",
@@ -2361,7 +2361,7 @@ Example:
 Zone env vars override config:
 
 ```bash
-export BRIGHTDATA_SERP_ZONE="serp_api1"
+export BRIGHTDATA_SERP_ZONE="pi_serp_api"
 export BRIGHTDATA_UNLOCKER_ZONE="mcp_unlocker"
 ```
 
