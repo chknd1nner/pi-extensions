@@ -23,7 +23,7 @@ function mdedit(args: string[], cwd: string): string {
   return result.stdout || "";
 }
 
-function findTicket(pattern: string, cwd: string): string | null {
+export function findTicket(pattern: string, cwd: string): string | null {
   const ticketsDir = join(cwd, TICKETS_DIR);
   const matches: string[] = [];
 
@@ -87,7 +87,7 @@ interface ShardResult {
   outputDir: string;
 }
 
-function shardPlan(planPath: string, specPath: string | undefined, cwd: string): ShardResult {
+export function shardPlan(planPath: string, specPath: string | undefined, cwd: string): ShardResult {
   const fullPlanPath = join(cwd, planPath);
   if (!existsSync(fullPlanPath)) {
     throw new Error(`Plan file not found: ${planPath}`);
@@ -365,7 +365,7 @@ interface SetResult {
   value: string;
 }
 
-function setTicketField(pattern: string, field: string, value: string, cwd: string): SetResult {
+export function setTicketField(pattern: string, field: string, value: string, cwd: string): SetResult {
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
 
@@ -383,7 +383,7 @@ interface NextPromptResult {
   next_prompt: string;
 }
 
-function getNextPrompt(pattern: string, cwd: string): NextPromptResult {
+export function getNextPrompt(pattern: string, cwd: string): NextPromptResult {
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
 
