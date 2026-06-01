@@ -130,8 +130,8 @@ export function shardPlan(planPath: string, specPath: string | undefined, cwd: s
     let taskContent = "";
     try {
       const extracted = mdedit(["extract", fullPlanPath, heading], cwd);
-      // Skip the heading line itself
-      taskContent = extracted.split("\n").slice(1).join("\n");
+      const lines = extracted.split("\n");
+      taskContent = lines[0]?.startsWith("SECTION:") ? lines.slice(1).join("\n") : extracted;
     } catch {
       // mdedit may fail on headings with special chars - use line numbers
     }
@@ -154,78 +154,17 @@ export function shardPlan(planPath: string, specPath: string | undefined, cwd: s
       continue; // Skip if we couldn't extract content
     }
 
-    // Build prompts
-    const implPrompt = `Implement Task ${taskNum}: ${title}
-
-Read the Plan excerpt section below and execute each step in order.
-Check off steps as you complete them (- [x]).
-Run verification commands and confirm they pass.
-Commit when all steps are complete.
-
-When done:
-- Move ticket to review status (ticket_move task-${taskNumPadded} review)
-- Update next_prompt to the review_prompt_template value
-- The reviewer will perform spec + code review`;
-
-    const reviewPrompt = `Review Task ${taskNum}: ${title}
-
-Perform a TWO-STAGE REVIEW:
-
-## Stage 1: Spec Review
-Compare implementation against the design spec.
-- Read the spec_path document (if provided)
-- Check: Does implementation match spec intent?
-- Check: Any divergences from spec requirements?
-- Check: Missing spec requirements?
-
-If MAJOR spec issues found, you may terminate review early.
-If minor spec divergences, note them and continue to Stage 2.
-
-## Stage 2: Code Review
-Use the superpowers:requesting-code-review skill approach.
-- Get git diff for this task's changes
-- Check code quality, architecture, testing
-- Categorize issues: Critical / Important / Minor
-
-## Review Output
-
-### Spec Compliance
-[Matches spec / Minor divergences / Major divergences]
-[List any divergences with spec section references]
-
-### Code Quality
-[Strengths and issues per code-reviewer format]
-
-### Verdict
-If task passes BOTH stages:
-- Move ticket to done status (ticket_move task-${taskNumPadded} done)
-- Add approval_note field with verification evidence
-
-If task needs changes:
-- Move ticket to needs-fix status (ticket_move task-${taskNumPadded} needs-fix)
-- Update next_prompt with specific fix instructions
-- Record findings in ## Notes section`;
-
-    // Build frontmatter
+    // Build frontmatter (data only — worker prompts live in the skill, not the ticket)
     const specField = specPath ? `spec_path: ${specPath}\n` : "";
-    const implPromptIndented = implPrompt
-      .split("\n")
-      .map((l) => "  " + l)
-      .join("\n");
-    const reviewPromptIndented = reviewPrompt
-      .split("\n")
-      .map((l) => "  " + l)
-      .join("\n");
 
     const content = `---
 task_number: ${taskNum}
 title: "${title}"
 status: ready
 plan_path: ${planPath}
-${specField}next_prompt: |-
-${implPromptIndented}
-review_prompt_template: |-
-${reviewPromptIndented}
+${specField}next_prompt: ""
+review_failures: 0
+task_base_sha: ""
 ---
 
 # Task ${taskNumPadded} — ${title}
@@ -238,7 +177,7 @@ ${taskContent}
 
 ## Notes
 
-<!-- Verification results, issues, and runtime notes go here -->
+<!-- Optional, human-facing. Durable loop state lives in frontmatter / next_prompt. -->
 `;
 
     writeFileSync(filepath, content);
