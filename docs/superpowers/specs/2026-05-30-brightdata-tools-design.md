@@ -95,7 +95,7 @@ Initial config shape:
 ```json
 {
   "brightdata": {
-    "serpZone": "serp_api1",
+    "serpZone": "pi_serp_api",
     "unlockerZone": "mcp_unlocker",
     "defaultCountry": "au",
     "defaultLanguage": "en",
