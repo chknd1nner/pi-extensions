@@ -1,5 +1,5 @@
 {
-  "implementer": { "provider": "anthropic", "model": "claude-sonnet-4-5", "thinking": "low" },
-  "reviewer":    { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
-  "fixer":       { "provider": "anthropic", "model": "claude-sonnet-4-5", "thinking": "low" }
+  "implementer": { "provider": "openai-codex", "model": "gpt-5.3-codex", "thinking": "xhigh" },
+  "reviewer":    { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "xhigh" },
+  "fixer":       { "provider": "anthropic", "model": "claude-opus-4-8", "thinking": "high" }
 }
