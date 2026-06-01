@@ -1,0 +1,45 @@
+{
+  "name": "pi-brightdata-tools",
+  "version": "0.1.0",
+  "description": "Bright Data SERP search, Unlocker fetch, and adaptive PDF extraction tools for Pi.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "brightdata",
+    "web-search",
+    "web-fetch"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "*.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "p-limit": "^6.2.0",
+    "unpdf": "^1.6.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "typebox": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
