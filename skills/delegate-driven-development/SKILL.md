@@ -41,6 +41,8 @@ The first worker of each role pays to process it; later same-role workers hit ca
    every used role has non-empty `provider` and `model`; if not, halt and ask the user.
 
 ## Orchestration loop (sequential — one worker in flight)
+**Keep dispatches lean.** Pass each worker a short task that points at its template file (`references/implementer-prompt.md`, `references/reviewer-prompt.md`, `references/fixer-prompt.md`) and supplies only per-task substitutions (`{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{TASK_BASE_SHA}}`, `{{FIX_INSTRUCTIONS}}`), instructing the worker to read the template and apply them. Do not inline full template bodies into the `task` argument: that identical boilerplate would accumulate in the orchestrator context over long runs. (Workers read templates from the worktree; the shared anchor already dedups spec+plan.)
+
 For each ticket in `ready`, ascending task number:
 
 1. `ticket_move task-NN active`. Record the diff boundary:
