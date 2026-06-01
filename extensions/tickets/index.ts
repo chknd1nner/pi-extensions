@@ -23,7 +23,7 @@ function mdedit(args: string[], cwd: string): string {
   return result.stdout || "";
 }
 
-function findTicket(pattern: string, cwd: string): string | null {
+export function findTicket(pattern: string, cwd: string): string | null {
   const ticketsDir = join(cwd, TICKETS_DIR);
   const matches: string[] = [];
 
@@ -87,7 +87,7 @@ interface ShardResult {
   outputDir: string;
 }
 
-function shardPlan(planPath: string, specPath: string | undefined, cwd: string): ShardResult {
+export function shardPlan(planPath: string, specPath: string | undefined, cwd: string): ShardResult {
   const fullPlanPath = join(cwd, planPath);
   if (!existsSync(fullPlanPath)) {
     throw new Error(`Plan file not found: ${planPath}`);
@@ -130,8 +130,8 @@ function shardPlan(planPath: string, specPath: string | undefined, cwd: string):
     let taskContent = "";
     try {
       const extracted = mdedit(["extract", fullPlanPath, heading], cwd);
-      // Skip the heading line itself
-      taskContent = extracted.split("\n").slice(1).join("\n");
+      const lines = extracted.split("\n");
+      taskContent = lines[0]?.startsWith("SECTION:") ? lines.slice(1).join("\n") : extracted;
     } catch {
       // mdedit may fail on headings with special chars - use line numbers
     }
@@ -154,78 +154,17 @@ function shardPlan(planPath: string, specPath: string | undefined, cwd: string):
       continue; // Skip if we couldn't extract content
     }
 
-    // Build prompts
-    const implPrompt = `Implement Task ${taskNum}: ${title}
-
-Read the Plan excerpt section below and execute each step in order.
-Check off steps as you complete them (- [x]).
-Run verification commands and confirm they pass.
-Commit when all steps are complete.
-
-When done:
-- Move ticket to review status (ticket_move task-${taskNumPadded} review)
-- Update next_prompt to the review_prompt_template value
-- The reviewer will perform spec + code review`;
-
-    const reviewPrompt = `Review Task ${taskNum}: ${title}
-
-Perform a TWO-STAGE REVIEW:
-
-## Stage 1: Spec Review
-Compare implementation against the design spec.
-- Read the spec_path document (if provided)
-- Check: Does implementation match spec intent?
-- Check: Any divergences from spec requirements?
-- Check: Missing spec requirements?
-
-If MAJOR spec issues found, you may terminate review early.
-If minor spec divergences, note them and continue to Stage 2.
-
-## Stage 2: Code Review
-Use the superpowers:requesting-code-review skill approach.
-- Get git diff for this task's changes
-- Check code quality, architecture, testing
-- Categorize issues: Critical / Important / Minor
-
-## Review Output
-
-### Spec Compliance
-[Matches spec / Minor divergences / Major divergences]
-[List any divergences with spec section references]
-
-### Code Quality
-[Strengths and issues per code-reviewer format]
-
-### Verdict
-If task passes BOTH stages:
-- Move ticket to done status (ticket_move task-${taskNumPadded} done)
-- Add approval_note field with verification evidence
-
-If task needs changes:
-- Move ticket to needs-fix status (ticket_move task-${taskNumPadded} needs-fix)
-- Update next_prompt with specific fix instructions
-- Record findings in ## Notes section`;
-
-    // Build frontmatter
+    // Build frontmatter (data only — worker prompts live in the skill, not the ticket)
     const specField = specPath ? `spec_path: ${specPath}\n` : "";
-    const implPromptIndented = implPrompt
-      .split("\n")
-      .map((l) => "  " + l)
-      .join("\n");
-    const reviewPromptIndented = reviewPrompt
-      .split("\n")
-      .map((l) => "  " + l)
-      .join("\n");
 
     const content = `---
 task_number: ${taskNum}
 title: "${title}"
 status: ready
 plan_path: ${planPath}
-${specField}next_prompt: |-
-${implPromptIndented}
-review_prompt_template: |-
-${reviewPromptIndented}
+${specField}next_prompt: ""
+review_failures: 0
+task_base_sha: ""
 ---
 
 # Task ${taskNumPadded} — ${title}
@@ -238,7 +177,7 @@ ${taskContent}
 
 ## Notes
 
-<!-- Verification results, issues, and runtime notes go here -->
+<!-- Optional, human-facing. Durable loop state lives in frontmatter / next_prompt. -->
 `;
 
     writeFileSync(filepath, content);
@@ -365,7 +304,7 @@ interface SetResult {
   value: string;
 }
 
-function setTicketField(pattern: string, field: string, value: string, cwd: string): SetResult {
+export function setTicketField(pattern: string, field: string, value: string, cwd: string): SetResult {
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
 
@@ -383,7 +322,26 @@ interface NextPromptResult {
   next_prompt: string;
 }
 
-function getNextPrompt(pattern: string, cwd: string): NextPromptResult {
+interface GetFieldResult {
+  file: string;
+  field: string;
+  value: string;
+}
+
+export function getTicketField(pattern: string, field: string, cwd: string): GetFieldResult {
+  const filepath = findTicket(pattern, cwd);
+  if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
+
+  // mdedit prints the raw field value (no "field:" prefix). Empty value -> "".
+  const output = mdedit(["frontmatter", "get", filepath, field], cwd);
+  return {
+    file: basename(filepath),
+    field,
+    value: output.replace(/\n+$/, ""),
+  };
+}
+
+export function getNextPrompt(pattern: string, cwd: string): NextPromptResult {
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
 
@@ -406,9 +364,9 @@ export default function ticketsExtension(pi: ExtensionAPI) {
     name: "ticket_shard",
     label: "Shard Plan",
     description:
-      "Shard an implementation plan into individual ticket files. Parses '### Task N:' sections from the plan and creates one ticket per task in in-progress/ready/. Each ticket includes the plan excerpt, implementation prompt, and two-stage review prompt template.",
+      "Shard an implementation plan into individual data-only ticket files. Parses '### Task N:' sections and creates one ticket per task in in-progress/ready/. Each ticket holds the plan excerpt plus frontmatter (task_number, title, status, plan_path, spec_path, next_prompt, review_failures, task_base_sha). Worker prompts live in the delegate-driven-development skill, not in tickets.",
     promptSnippet:
-      "Use to convert an implementation plan into executable tickets. Requires a plan with '### Task N: Title' sections.",
+      "Use to convert an implementation plan into data-only executable tickets. Requires a plan with '### Task N: Title' sections.",
     parameters: Type.Object({
       plan_path: Type.String({ description: "Path to the implementation plan markdown file" }),
       spec_path: Type.Optional(
@@ -428,7 +386,7 @@ export default function ticketsExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `✓ Sharded plan into ${result.ticketsCreated} tickets\n\n${ticketList}\n\nNext: Move first ticket to active with ticket_move`,
+              text: `✓ Sharded plan into ${result.ticketsCreated} tickets\n\n${ticketList}\n\nNext: the orchestrator moves the first ticket to active with ticket_move and dispatches an implementer.`,
             },
           ],
           details: result,
@@ -637,6 +595,46 @@ export default function ticketsExtension(pi: ExtensionAPI) {
             {
               type: "text",
               text: `📋 Next prompt for ${result.file}:\n\n---\n${result.next_prompt}\n---`,
+            },
+          ],
+          details: result,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Error: ${message}` }],
+          details: { error: message },
+        };
+      }
+    },
+  });
+
+  // Tool: ticket_get
+  pi.registerTool({
+    name: "ticket_get",
+    label: "Get Ticket Field",
+    description:
+      "Read a single frontmatter field from a ticket (e.g. review_failures, task_base_sha, status, title). Returns the raw value.",
+    promptSnippet:
+      "Use to read back a ticket frontmatter field, e.g. the review_failures counter or task_base_sha diff boundary.",
+    parameters: Type.Object({
+      ticket: Type.String({
+        description: "Ticket identifier (filename or partial match)",
+      }),
+      field: Type.String({
+        description: "Frontmatter field name to read",
+      }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx?.cwd ?? process.cwd();
+      try {
+        const result = getTicketField(params.ticket, params.field, cwd);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${result.field} on ${result.file}: ${result.value === "" ? "(empty)" : result.value}`,
             },
           ],
           details: result,
