@@ -345,9 +345,9 @@ export default function ticketsExtension(pi: ExtensionAPI) {
     name: "ticket_shard",
     label: "Shard Plan",
     description:
-      "Shard an implementation plan into individual ticket files. Parses '### Task N:' sections from the plan and creates one ticket per task in in-progress/ready/. Each ticket includes the plan excerpt, implementation prompt, and two-stage review prompt template.",
+      "Shard an implementation plan into individual data-only ticket files. Parses '### Task N:' sections and creates one ticket per task in in-progress/ready/. Each ticket holds the plan excerpt plus frontmatter (task_number, title, status, plan_path, spec_path, next_prompt, review_failures, task_base_sha). Worker prompts live in the delegate-driven-development skill, not in tickets.",
     promptSnippet:
-      "Use to convert an implementation plan into executable tickets. Requires a plan with '### Task N: Title' sections.",
+      "Use to convert an implementation plan into data-only executable tickets. Requires a plan with '### Task N: Title' sections.",
     parameters: Type.Object({
       plan_path: Type.String({ description: "Path to the implementation plan markdown file" }),
       spec_path: Type.Optional(
@@ -367,7 +367,7 @@ export default function ticketsExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `✓ Sharded plan into ${result.ticketsCreated} tickets\n\n${ticketList}\n\nNext: Move first ticket to active with ticket_move`,
+              text: `✓ Sharded plan into ${result.ticketsCreated} tickets\n\n${ticketList}\n\nNext: the orchestrator moves the first ticket to active with ticket_move and dispatches an implementer.`,
             },
           ],
           details: result,
