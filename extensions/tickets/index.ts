@@ -322,6 +322,25 @@ interface NextPromptResult {
   next_prompt: string;
 }
 
+interface GetFieldResult {
+  file: string;
+  field: string;
+  value: string;
+}
+
+export function getTicketField(pattern: string, field: string, cwd: string): GetFieldResult {
+  const filepath = findTicket(pattern, cwd);
+  if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
+
+  // mdedit prints the raw field value (no "field:" prefix). Empty value -> "".
+  const output = mdedit(["frontmatter", "get", filepath, field], cwd);
+  return {
+    file: basename(filepath),
+    field,
+    value: output.replace(/\n+$/, ""),
+  };
+}
+
 export function getNextPrompt(pattern: string, cwd: string): NextPromptResult {
   const filepath = findTicket(pattern, cwd);
   if (!filepath) throw new Error(`No ticket found matching '${pattern}'`);
