@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { shardPlan, getTicketField, setTicketField } from "../index";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import ticketsExtension, { shardPlan, getTicketField, setTicketField } from "../index";
 
 let dir: string;
 
@@ -35,5 +36,17 @@ describe("getTicketField", () => {
 
     setTicketField("task-01", "review_failures", "2", dir);
     expect(getTicketField("task-01", "review_failures", dir).value).toBe("2");
+  });
+});
+
+describe("ticket_get registration", () => {
+  it("registers a ticket_get tool", () => {
+    const names: string[] = [];
+    const fakePi = {
+      registerTool: (def: { name: string }) => names.push(def.name),
+    } as unknown as ExtensionAPI;
+
+    ticketsExtension(fakePi);
+    expect(names).toContain("ticket_get");
   });
 });

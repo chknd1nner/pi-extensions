@@ -608,4 +608,44 @@ export default function ticketsExtension(pi: ExtensionAPI) {
       }
     },
   });
+
+  // Tool: ticket_get
+  pi.registerTool({
+    name: "ticket_get",
+    label: "Get Ticket Field",
+    description:
+      "Read a single frontmatter field from a ticket (e.g. review_failures, task_base_sha, status, title). Returns the raw value.",
+    promptSnippet:
+      "Use to read back a ticket frontmatter field, e.g. the review_failures counter or task_base_sha diff boundary.",
+    parameters: Type.Object({
+      ticket: Type.String({
+        description: "Ticket identifier (filename or partial match)",
+      }),
+      field: Type.String({
+        description: "Frontmatter field name to read",
+      }),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const cwd = ctx?.cwd ?? process.cwd();
+      try {
+        const result = getTicketField(params.ticket, params.field, cwd);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${result.field} on ${result.file}: ${result.value === "" ? "(empty)" : result.value}`,
+            },
+          ],
+          details: result,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: "text", text: `Error: ${message}` }],
+          details: { error: message },
+        };
+      }
+    },
+  });
 }
