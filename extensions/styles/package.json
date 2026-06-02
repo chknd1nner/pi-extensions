@@ -1,0 +1,22 @@
+{
+  "name": "pi-styles",
+  "version": "0.1.0",
+  "description": "claude.ai-style ephemeral output styles for Pi, injected as a trailing <userStyle> block after cache_control so prompt caching is preserved.",
+  "keywords": ["pi-package", "pi-extension", "styles", "userStyle", "prompt"],
+  "license": "MIT",
+  "type": "module",
+  "files": ["*.ts", "styles", "README.md"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "typescript": "^5.9.3"
+  }
+}
