@@ -2,8 +2,13 @@
   "name": "delegate-extension",
   "private": true,
   "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --cache=false",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {

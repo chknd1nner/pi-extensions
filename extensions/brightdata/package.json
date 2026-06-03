@@ -21,7 +21,7 @@
     ]
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --cache=false",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

@@ -1,0 +1,23 @@
+{
+  "name": "pi-extensions-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "extensions/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "latest",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "jiti": "^2.4.2",
+    "p-limit": "^6.2.0",
+    "typebox": "latest",
+    "typescript": "^5.9.3",
+    "unpdf": "^1.6.2",
+    "vitest": "^3.2.4"
+  }
+}
