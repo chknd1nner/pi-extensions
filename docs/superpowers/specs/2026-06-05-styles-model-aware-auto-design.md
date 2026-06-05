@@ -106,102 +106,195 @@ The file is optional. If absent, no auto rules fire and the extension behaves as
 
 Both the dispatcher's `variants[].match` and the auto-config's `auto[].match` use the same string convention:
 
-- **Plain string** (e.g. `"claude-haiku-4-5"`) → exact equality on `modelId`.
-- **Slash-delimited regex** (e.g. `"/^claude-/"`, `"/gpt-5/i"`) → parsed as `new RegExp(pattern, flags)` and matched with `.test(modelId)`. Detection rule: a `match` string is treated as regex iff it satisfies `/^\/(.+)\/([gimsuy]*)$/` (leading `/`, trailing `/` optionally followed by JS regex flags). Any other string is an exact match. This makes the boundary unambiguous even for the pathological case of a model whose literal ID happens to contain slashes.
+- **Plain string** (e.g. `"claude-haiku-4-5"`) → exact equality on `modelId`. **Case-sensitive.**
+- **Slash-delimited regex** (e.g. `"/^claude-/"`, `"/gpt-5/i"`) → parsed as `new RegExp(pattern, flags)` and matched with `.test(modelId)`. Detection rule: a `match` string is treated as regex iff it satisfies `/^\/(.+)\/([imsu]*)$/` (leading `/`, trailing `/` optionally followed by a subset of JS regex flags). All other strings are exact matches.
 
-This mirrors `replace-prompt`'s `string | RegExp` semantics in TS-land, serialized for JSON. Implementation: a single `compileMatcher(spec: string): (modelId: string) => boolean` helper, used in both layers.
+**Allowed regex flags: `i`, `m`, `s`, `u` only.** The `g` and `y` flags are explicitly disallowed because `RegExp.test()` with them mutates `lastIndex`, making the matcher stateful across calls. A rule with disallowed flags is treated as invalid and skipped with a one-time warning.
 
-Invalid regex → emit a one-time warning naming the offending rule, skip that rule, continue evaluating the rest.
+**Case sensitivity:** matching is case-sensitive by default. Authors who want case-insensitive matching use the `/i` flag (e.g. `/^claude-/i`).
+
+**Inspiration vs alignment:** the design is *inspired by* `replace-prompt`'s `string | RegExp` discrimination in TS-land, but the JSON serialization is novel — `replace-prompt` carries actual `RegExp` objects in a TS rules file. The slash-delimited form is the JSON equivalent.
+
+**Acknowledged limitation:** a model ID that is *literally* `"/foo/"` (with leading and trailing slashes) cannot be expressed as an exact-match string — it will be parsed as a regex. This is accepted as a non-issue: real-world model IDs from all currently supported providers use the alphabet `[a-z0-9._-]` and would not collide with this rule. If a future provider introduces slash-bearing IDs, an explicit object form (e.g. `{ "literal": "..." }`) can be added as an additive change without breaking existing configs.
+
+**Style-name validation (auto-config only):** the `style` field of an `auto[]` rule must be a valid style basename — it must match `/^[A-Za-z0-9_][A-Za-z0-9_.\-]*$/`. No slashes, no leading dot, no `..`. Rules with invalid names are skipped with a one-time warning. This is the resolver's only defense against a malformed `_config.json` causing `path.join` to escape `stylesDir`.
+
+**Invalid regex pattern (e.g. unbalanced brackets):** one-time warning naming the offending rule, rule is skipped, evaluation continues with the next rule.
+
+**Implementation:** a single `compileMatcher(spec: string): (modelId: string) => boolean` helper, used in both layers. Returns `null` (or a sentinel) for invalid specs so the caller can warn-and-skip uniformly.
 
 ### 5. Resolution algorithm
 
-Responsibilities split cleanly between `index.ts` (stateful coordinator, owns side effects) and `resolver.ts` (pure function, no I/O of `ctx`).
+Responsibilities split between `index.ts` (stateful coordinator, owns `ctx` and UI) and `resolver.ts` (ctx-free and UI-free; does its own filesystem reads but returns diagnostics rather than calling `ctx.ui` directly).
+
+**Model-change detection (precise definition):**
+
+```
+modelChanged(prev: string | undefined, curr: string | undefined): boolean
+  := prev !== undefined && curr !== undefined && prev !== curr
+```
+
+Only transitions between two **defined and different** `modelId` values count as a model change. Transitions involving `undefined` (e.g. the very first request of a session, transient missing model info) do **not** reset `manualOverride`. This protects manual override stickiness against providers that may briefly report `undefined`.
 
 **`index.ts` per-request flow (stateful):**
 
 ```
 State held across requests:
-  manualName            : string | null    // persisted via session entry
-  manualOverride        : boolean          // user manually picked under current modelId
-  lastModelId           : string | undefined
-  lastResult            : ResolveOutput | null   // for diffing to detect auto-fire
+  manualName        : string | null    // persisted via session entry; null = "off"
+  manualOverride    : boolean          // user has explicitly chosen for current model
+  lastModelId       : string | undefined
+  lastResult        : ResolvedStyle | null   // last resolver inner result, for autoFired diff
+  warnedKeys        : Set<string>      // dedupes one-time warnings
 
 On before_provider_request:
-  1. modelChanged := (ctx.model.id !== lastModelId)
-  2. If modelChanged: manualOverride := false      // reset on model change
-  3. result := resolveStyle({ manualName, manualOverride,
-                              modelId: ctx.model.id, stylesDir })
-  4. autoFired := result?.isAuto === true
-                  && (modelChanged
-                      || lastResult?.name !== result.name
+  1. currentModelId := ctx.model?.id
+  2. If modelChanged(lastModelId, currentModelId):
+         manualOverride := false        // reset stickiness on real model switch
+  3. output := resolveStyle({ manualName, manualOverride,
+                              modelId: currentModelId, stylesDir })
+     result := output.result            // ResolvedStyle | null
+  4. For w in output.warnings:
+         if w.key not in warnedKeys:
+             warnedKeys.add(w.key); ctx.ui.notify(w.message, "warning")
+  5. autoFired := result?.isAuto === true
+                  && (lastResult?.name !== result.name
                       || lastResult?.isAuto !== true)
-  5. If autoFired: ctx.ui.notify("Auto-applied style …", "info")
-  6. updateFooter(ctx, result)             // "(auto)" suffix iff result.isAuto
-  7. If result: inject(result.content) via INJECTORS[ctx.model.api]
-  8. lastModelId := ctx.model.id; lastResult := result
+     // Note: autoFired depends on result transition, NOT on modelChanged.
+     // Switching between two models mapped to the same style does not re-notify.
+  6. If autoFired:
+         ctx.ui.notify(`Auto-applied style '${result.name}' for model '${currentModelId}'.`, "info")
+  7. updateFooter(ctx, result)           // "style: <name>" or "style: <name> (auto)" or cleared
+  8. If result: pass result.content to INJECTORS[ctx.model.api] (existing dispatch)
+  9. lastModelId := currentModelId; lastResult := result
 ```
 
-**`resolver.ts` (pure):**
+**Manual-selection state mutation (the *only* paths that set `manualOverride = true`):**
+
+Every user-initiated activation in `index.ts` must funnel through a single `setActiveManual(name | null)` helper that:
+- updates `manualName`
+- sets `manualOverride := true`
+- persists via `pi.appendEntry(ACTIVE_ENTRY, { name })` (existing mechanism, unchanged shape)
+
+The paths required to use this helper:
+- `/style <name>` direct activation
+- `/style off` (passes `null`)
+- `/style` picker selection of an existing style
+- Picker `⊕  Create new style…` after content is saved
+
+Auto-applied styles flow through the resolver result only; they do **not** call `setActiveManual` and do **not** write a session entry. This is what keeps auto-applied state ephemeral and recomputed on resume.
+
+**`resolver.ts` (ctx-free, UI-free):**
 
 ```
 resolveStyle({ manualName, manualOverride, modelId, stylesDir }):
-  1. If manualOverride and manualName:
-       chosenName := manualName, isAuto := false
+  warnings := []
+
+  1. Determine chosenName + isAuto:
+     If manualOverride:
+         // Manual selection wins, including the explicit "off" case (manualName = null).
+         chosenName := manualName; isAuto := false
      Else if modelId is defined:
-       walk loadAutoConfig(stylesDir) rules; first match against modelId →
-         chosenName := rule.style, isAuto := true
-       If no rule matches:
-         chosenName := manualName (may be null), isAuto := false
+         // Walk auto rules; first *resolvable* match wins.
+         For each rule in loadAutoConfig(stylesDir):
+             If rule.match.test(modelId):
+                 If rule.style fails basename validation:
+                     warnings.push({ key: "auto:badname:" + rule.style,
+                                     message: "... ignored: invalid style name ..." })
+                     continue
+                 If styleExists(stylesDir, rule.style):
+                     chosenName := rule.style; isAuto := true; break
+                 Else:
+                     warnings.push({ key: "auto:missing:" + rule.style,
+                                     message: "auto-rule matched but style … missing; skipped" })
+                     continue
+         If no resolvable rule matched:
+             chosenName := manualName; isAuto := false
      Else:
-       chosenName := manualName, isAuto := false
+         // modelId undefined: no auto evaluation, fall back to manual baseline.
+         chosenName := manualName; isAuto := false
 
-  2. If chosenName is null → return null.
+  2. If chosenName is null → return { warnings } as a Result with no style.
 
-  3. Detect style kind:
-       styles/<chosenName>.md exists        → simple, content := readFile
-       styles/<chosenName>/dispatcher.json  → complex, go to step 4
-       neither                              → return null (one-time warning)
+  3. Detect style kind. If both forms exist (collision case):
+       styles/<chosenName>.md (file)        AND
+       styles/<chosenName>/dispatcher.json  (directory)
+     → Simple file wins. Emit a one-time warning for this name.
+
+     Otherwise:
+       file exists       → simple,  rawContent := readContent("<chosenName>.md")
+       directory exists  → complex, go to step 4
+       neither           → warnings.push(missing-style); return { warnings, result: null }
 
   4. For complex styles:
-       Load dispatcher (mtime-cached).
-       Walk variants[] in order; first match against modelId → variantFile.
-       No match → variantFile := dispatcher.default.
-       content := readFile(variantFile).
-       If dispatcher.preamble set → content := readFile(preamble) + "\n\n" + content.
+       Load dispatcher (mtime-cached). Validate shape; missing/unreadable default
+       → warn + return { warnings, result: null }.
+       Walk dispatcher.variants[] in order. First match against modelId selects variantFile.
+       If variantFile does not exist → warn + fall through to default.
+       If no variant matches, or matched variant missing → variantFile := dispatcher.default.
+       If dispatcher.default file is missing/unreadable → warn + return { warnings, result: null }.
+       rawContent := readContent(variantFile)
+       If dispatcher.preamble specified:
+           preambleContent := readContent(preamble) (warn if missing, treat as empty)
+           preambleContent := preambleContent.trim()
+           If preambleContent is non-empty:
+               rawContent := preambleContent + "\n\n" + rawContent
 
-  5. Return { name: chosenName, isAuto, content: "<userStyle>\n" + content + "\n</userStyle>" }.
+  5. Trim/empty handling (preserves current readStyleText behaviour):
+       trimmed := rawContent.trim()
+       If trimmed is empty → return { warnings, result: null }   // no injection
+       wrapped := "<userStyle>\n" + trimmed + "\n</userStyle>"
+
+  6. Return { warnings, result: { name: chosenName, isAuto, content: wrapped } }.
 ```
 
-The injector receives the final wrapped string and is unchanged. All UI effects (`notify`, `setStatus`) live in `index.ts`; the resolver is pure and easily unit-testable.
+The resolver returns a `(result, warnings)` pair. The injector receives `result.content` and is unchanged. Warnings are deduped and emitted by `index.ts`.
 
-Note on `manualOverride` semantics: any `/style <name>` or `/style off` invocation by the user sets `manualOverride = true` (and updates `manualName`). The flag is cleared in step 2 of the index flow whenever `modelId` changes, so auto-config gets a fresh evaluation on the next request after a model switch.
+**On caching and `_config.json` edits mid-session:** the resolver evaluates auto-config on every request (it is mtime-cached so the cost is one `fs.statSync` on warm cache). When `_config.json` is edited, the new rules take effect on the **next request where `manualOverride` is `false`** — because the resolver only walks auto rules in that branch. A user who has manually overridden keeps their override; auto re-evaluates on the next model change (which resets `manualOverride`) or on a manual `/style off` followed by a model change.
 
 ### 6. Auto-firing semantics ("Option B")
 
-- Auto-config is consulted on **model change** (detected by `modelId` differing from the previous request's `modelId`) and on **session start** (effectively a model change from `undefined`).
-- When an auto rule fires, it sets the active style and the `(auto)` flag, and the TUI receives a one-shot notification:
-  > `Auto-applied style 'thought-catalyst' for model 'claude-sonnet-4-5'.`
-- A **manual** `/style <name>` (or `/style off`) sets `manualOverride = true` and clears `isAuto`. The user's choice sticks for as long as the current `modelId` stays unchanged.
-- On the next `modelId` change, `manualOverride` resets to `false` and auto-config evaluates fresh.
+**Trigger model:** auto-config is **evaluated on every request**, but only in the branch where `manualOverride` is `false`. The flag is what gates auto vs manual; the request loop is what re-checks.
 
-Rationale: auto removes the burden of picking the right style; the `(auto)` badge plus notification make the source of truth explicit; a manual override is read as "user knows what they're doing" and respected until the context (the model) changes.
+- `manualOverride := true` is set by any user-initiated `/style` action (see §5 manual-selection mutation).
+- `manualOverride := false` is set by the model-change detector (§5: only between two defined, different `modelId`s).
+- Whenever `manualOverride` is `false` and `modelId` is defined, the resolver walks auto rules and picks the first resolvable match.
+
+**Notification (one-shot per *transition*, not per model change):**
+
+The TUI receives:
+> `Auto-applied style 'thought-catalyst' for model 'claude-sonnet-4-5'.`
+
+exactly when the *resolved style name or `isAuto` flag changes from the previous request's result*. Switching between two models that map to the same auto style does **not** re-notify. Switching between two models that map to different auto styles **does** notify.
+
+**Footer (`style: <name> (auto)`):** rendered whenever the current `result.isAuto === true`. Drops the `(auto)` suffix the moment a manual override fires.
+
+**Rationale:** auto removes the burden of picking the right style; the `(auto)` badge plus one-shot notification make the source of truth explicit; a manual override is read as "user knows what they're doing" and respected until the model context changes.
 
 ### 7. UX surfaces
 
 | Surface | Behaviour |
 | --- | --- |
-| Footer (`ctx.ui.setStatus("style", …)`) | `style: <name>` for manual, `style: <name> (auto)` when the active style was set by auto-config and hasn't been manually overridden. |
-| Notification on auto-fire | One per model-change-triggered auto activation. Suppressed if the auto rule resolves to the same style that was already active. |
-| Notification on missing target | If an auto rule names a non-existent style, log a one-time warning naming the rule, fall through to the next rule. |
-| `/style` picker | Unchanged surface. Shows simple and complex styles uniformly. Active style is prefixed `✓` regardless of how it became active. |
+| Footer (`ctx.ui.setStatus("style", …)`) | `style: <name>` for manual selection, `style: <name> (auto)` whenever the current `result.isAuto === true`. Cleared when no style is active. |
+| Notification on auto-fire | Fired when the resolved style name or `isAuto` flag *transitions* between requests (see §6). Switching between two models mapped to the same auto style does not re-notify. |
+| Diagnostic warnings | Resolver returns `warnings: { key, message }[]` in its output. `index.ts` dedupes by `key` against a session-scoped `warnedKeys` set and surfaces unseen warnings via `ctx.ui.notify(message, "warning")`. Used for: invalid regex flags, invalid style names, missing auto-target, missing variant/preamble/default file, simple↔complex name collision. |
+| `/style` picker | Lists simple `.md` styles and complex directories uniformly. Active style is prefixed `✓` regardless of whether it became active manually or via auto-config. Picking from the picker counts as a manual override (sets `manualOverride = true`). |
 
 ### 8. Session persistence
 
-Unchanged in shape: a single `styles:active` session entry holds `{ name }` for the manually-selected style.
+Unchanged in shape: a single `styles:active` session entry holds `{ name }` for the manually-selected style (where `name` may be `null` to represent an explicit "off").
 
-- Auto-applied styles are **not** persisted as `styles:active` entries — they are derived state, recomputed from `_config.json` + current `modelId` on every session resume. This avoids stale persistence (e.g. a user changes `_config.json`, expects new behaviour on next session, but gets the old auto-applied style baked in).
-- Manual overrides are persisted exactly as today.
-- On `session_start`, we still scan the branch for `styles:active`; that becomes the manual baseline, and auto-config evaluates against the current `modelId` on the first request.
+- Auto-applied styles are **not** persisted as `styles:active` entries — they are derived state, recomputed from `_config.json` + current `modelId` on every session resume. Avoids stale persistence if the user edits `_config.json` between sessions.
+- Manual selections are persisted exactly as today (`setActiveManual` writes the entry; that's the only writer).
+
+**Session resume semantics (clarifying I2):**
+
+- On `session_start`, we scan the branch for the latest `styles:active` entry; its `name` becomes the in-memory `manualName` (may be `null`).
+- `manualOverride` is initialised to **`false`** on resume. The persisted manual selection is treated as a *baseline fallback*, not as an active override.
+- This means on the first request after resume, if an auto rule matches the current model, **auto wins** and a one-shot notification fires (because `lastResult` is null → transition condition holds). The persisted `manualName` only applies when no auto rule matches.
+- The deliberate UX consequence: a user who resumes a session under a model that has an auto rule sees the auto rule apply. To re-pin their previous manual choice, they re-issue `/style <name>` (which sets `manualOverride = true` again).
+- Rationale: persisting `manualOverride` would carry stale per-model stickiness across sessions in ways the user can't observe or invalidate. Auto re-evaluation on resume matches the "Option B" spirit (auto is a smart default; users override deliberately).
+
+**On `manualName` representing "off":** the existing `setActive(null, ...)` already persists `{ name: null }`. The resolver treats `manualOverride && manualName === null` as "explicitly off" — no auto-config evaluation, no injection.
 
 ### 9. Caching
 
@@ -233,43 +326,62 @@ extensions/styles/
 
 ### `resolver.ts` (new)
 
-Single responsibility: given the current model and the manual selection state, return the final injectable content (or `null`). The injector never sees a dispatcher or a regex.
+Single responsibility: given the current model and the manual selection state, return the final injectable content (or signal no-injection), plus any diagnostic warnings. The injector never sees a dispatcher or a regex.
 
 ```ts
 export interface ResolveInput {
-  manualName: string | null;     // persisted manual baseline
-  manualOverride: boolean;       // true → manual selection wins, skip auto-config
+  manualName: string | null;     // persisted manual baseline (null = "off")
+  manualOverride: boolean;       // true → manual wins, skip auto-config entirely
   modelId: string | undefined;
   stylesDir: string;
 }
 
-export interface ResolveOutput {
+export interface ResolvedStyle {
   name: string;                  // for footer + notification
-  isAuto: boolean;                // drives "(auto)" suffix
-  content: string;                // already wrapped in <userStyle>…</userStyle>
+  isAuto: boolean;               // drives "(auto)" suffix and autoFired transition logic
+  content: string;               // already wrapped in <userStyle>…</userStyle>
 }
 
-// Pure function. Returns null when no style should apply.
-export function resolveStyle(input: ResolveInput): ResolveOutput | null;
+export interface Warning {
+  key: string;                   // stable dedup key (e.g. "auto:missing:thought-catalyst")
+  message: string;               // user-facing message for ctx.ui.notify
+}
+
+export interface ResolveOutput {
+  result: ResolvedStyle | null;  // null → no injection this request
+  warnings: Warning[];           // index.ts dedupes by key against session-scoped set
+}
+
+export function resolveStyle(input: ResolveInput): ResolveOutput;
 ```
 
-Model-change detection, `manualOverride` lifecycle, and the `autoFired` diff that drives one-shot TUI notification all live in `index.ts`. The resolver does no `ctx` access and no UI calls — it can be unit-tested with synthetic inputs and a temp `stylesDir`.
+The resolver is **ctx-free and UI-free** (it does not import or accept `ctx`, does not call `ui.notify`/`ui.setStatus`). It is *not* pure in the strict sense — it reads the filesystem and uses internal mtime caches — but it has no side effects on `ctx` or external state and can be unit-tested with synthetic inputs and a temp `stylesDir`.
 
-Plus small internal helpers:
+Diagnostics flow exclusively through the returned `warnings` array; `index.ts` is responsible for deduping (via the `warnedKeys` set) and surfacing via `ctx.ui.notify`.
 
-- `compileMatcher(spec: string): (modelId: string) => boolean`
-- `loadAutoConfig(dir: string): Rule[]` (mtime-cached)
-- `loadDispatcher(styleDir: string): Dispatcher` (mtime-cached)
-- `readContent(file: string): string` (mtime-cached)
+Internal helpers:
+
+- `compileMatcher(spec: string): { test(modelId: string): boolean } | null` (null = invalid spec)
+- `loadAutoConfig(dir: string): { rules: CompiledRule[]; warnings: Warning[] }` (mtime-cached)
+- `loadDispatcher(styleDir: string): { dispatcher: Dispatcher; warnings: Warning[] }` (mtime-cached)
+- `readContent(file: string): string | null` (mtime-cached; `null` on missing/unreadable)
+- `validateStyleName(name: string): boolean` (rejects path-traversal, slashes, leading dot)
+- `styleExists(stylesDir: string, name: string): "simple" | "complex" | "both" | "none"`
 
 ### `index.ts` (slimmed)
 
 Responsibilities reduce to:
 
-- Register `/style` command (slightly updated: picker iterates simple + complex)
-- Maintain per-request state (`manualName`, `manualOverride`, `lastModelId`, `lastResult`)
-- Persist manual selections via session entries (existing mechanism)
-- On `before_provider_request`: detect `modelId` change (reset `manualOverride` if so), call `resolveStyle`, diff against the previous result to determine whether to emit the `autoFired` one-shot notification, update the footer, then pass `result.content` to the injector dispatch (the existing `INJECTORS[api]` block in `injectors.ts:105`)
+- Register `/style` command. Picker enumerates simple `.md` and complex directories uniformly.
+- Maintain per-request state: `manualName`, `manualOverride`, `lastModelId`, `lastResult`, `warnedKeys`.
+- Funnel **every** user-initiated activation through `setActiveManual(name | null)`, which:
+  - updates `manualName`
+  - sets `manualOverride := true`
+  - persists via `pi.appendEntry(ACTIVE_ENTRY, { name })` (existing format, unchanged)
+  Required call sites: `/style <name>`, `/style off`, picker selection, and the post-save handoff in the create-new-style flow.
+- On `session_start`: load persisted `manualName` from the latest `styles:active` entry; initialise `manualOverride := false` (see §8); clear `lastModelId`, `lastResult`, `warnedKeys`.
+- On `before_provider_request`: run the 9-step flow from §5 — detect model change with the precise predicate, reset `manualOverride` on change, call `resolveStyle`, dedup+surface warnings, compute `autoFired` from result-transition, notify if fired, update footer, dispatch injection through the existing `INJECTORS[ctx.model.api]` block in `injectors.ts:105`, update `lastModelId`/`lastResult`.
+- Defensive access: `ctx.model?.id` and `ctx.model?.api` (matches current code style).
 
 ### `injectors.ts`
 
@@ -286,15 +398,27 @@ No changes. The `INJECTORS` registry remains the sole place new api shapes are w
 
 | Case | Behaviour |
 | --- | --- |
-| `_config.json` references a non-existent style | One-time warning naming the rule; rule is skipped; evaluation continues. |
-| `dispatcher.json` references a non-existent variant or preamble file | One-time warning per missing file; fall back to `default` (for variants) or skip prepend (for preamble). |
-| `dispatcher.json` has no `default` | Treated as malformed; one-time warning; style behaves as inactive. |
-| Variant regex is invalid | One-time warning; rule is skipped. |
-| `modelId` is `undefined` (e.g. transient before-first-request state) | Auto-config not evaluated; current manual selection (if any) used. |
-| Two consecutive requests with same `modelId` | Resolver still runs (cheap), result is identical; `autoFired` is `false` (no name change) so no re-notification. |
-| Manual `/style off` after auto fired | `manualName := null`, `manualOverride := true`, footer clears, no injection. Next `modelId` change resets `manualOverride` and re-evaluates auto-config. |
-| `_config.json` edited mid-session | Picked up on next cache-miss check (mtime changes); new rules take effect on next `modelChanged` event. |
-| Complex style directory missing `dispatcher.json` | Not listed in picker; one-time warning if referenced (e.g. as a session-restored manual selection). |
+| `_config.json` references a non-existent style | Resolver walks past this rule with a one-time warning (`key: auto:missing:<name>`) and continues to the next rule. First *resolvable* match wins. |
+| `_config.json` rule has an invalid `style` name (path traversal, slashes, leading dot) | One-time warning (`key: auto:badname:<name>`); rule skipped. |
+| `_config.json` rule has an invalid regex (bad pattern, disallowed `g`/`y` flag) | One-time warning at config load; rule skipped; rest of config still active. |
+| `dispatcher.json` references a non-existent variant file | One-time warning; fall through to `default`. |
+| `dispatcher.json` references a non-existent preamble file | One-time warning; treated as empty preamble (no prepend). |
+| `dispatcher.json` has no `default` field, or `default` points to a missing/unreadable file | Style is treated as inactive for this request; one-time warning; no injection. |
+| Preamble file exists but is empty (after trim) | No prepend, no blank-line join. Variant content used as-is. |
+| Variant content (or simple-style content) is empty after trim | No injection (matches current `readStyleText` behaviour). |
+| Variant `match` regex is invalid or uses disallowed flags | One-time warning at dispatcher load; variant skipped; ordering of remaining variants preserved. |
+| `modelId` is `undefined` | Auto-config not evaluated for this request. If `manualOverride` is `true`, manual selection (including `null`/off) wins. Otherwise `manualName` baseline applies. **Crucially, `manualOverride` is NOT reset on an `undefined` transition** (see model-change predicate in §5). |
+| `modelId` transitions `defined → undefined → defined` (same value) | Not a model change; `manualOverride` not reset. |
+| `modelId` transitions `defined → undefined → different defined` | Counted as a model change at the moment `defined → different defined`; `manualOverride` resets then. |
+| Two consecutive requests with same `modelId` | Resolver runs (cheap, mtime cache); result is identical; `autoFired` false (no transition); no re-notification. |
+| Two consecutive requests with different `modelId` but same resolved auto style | `modelChanged` true so `manualOverride` resets; resolver returns same name; `autoFired` false (no transition); no re-notification. Footer unchanged. |
+| Manual `/style off` after auto fired | `manualName := null`, `manualOverride := true`, footer clears, no injection. Sticks until next model change. |
+| `_config.json` edited mid-session | mtime cache picks up the change. Takes effect on the next request where `manualOverride` is `false` (i.e. immediately if no manual override is in force; otherwise after the next model change resets the override). |
+| Complex style directory missing `dispatcher.json` | Not listed in picker. If referenced by name (auto-config or session-restored manual), one-time warning; treated as missing. |
+| Both `foo.md` and `foo/dispatcher.json` exist under `styles/` | Simple `.md` wins. One-time warning (`key: collision:foo`) naming the conflict. Picker shows the name once. |
+| Session resume under a model that matches an auto rule, after prior manual override in last session | `manualOverride` initialises `false` on resume (§8); auto rule fires; `(auto)` notification appears. User re-pins by re-running `/style`. |
+| Session resume with previously persisted `manualName` and no matching auto rule | `manualOverride` is `false` but `manualName` is non-null; resolver falls through to manual baseline; footer shows `style: <name>` (no `(auto)`). |
+| `lastResult` is null on first request of a session | Transition check trivially fires for any auto result → one notification on the first auto activation, as intended. |
 
 ## Concrete Example
 
@@ -349,10 +473,9 @@ Session timeline:
 
 ## Open Implementation Questions (Resolve During Planning)
 
-- **Model-change detection:** confirm the cleanest way to read `modelId` per request — `ctx.model.id` inside the hook is the obvious answer; verify it is always populated by the time `before_provider_request` fires.
-- **Notification API:** confirm `ctx.ui.notify(message, "info")` is the right surface for the auto-fire announcement (consistent with existing usage in `index.ts`).
-- **`/style` picker rendering for complex styles:** decide whether to indicate variant count or current-model variant in the picker label (e.g. `thought-catalyst (3 variants)`). Probably YAGNI for v1 — keep the label clean.
-- **Validation command:** consider a `/style validate` (or `--check` flag) that lints `_config.json` and all dispatchers and reports unresolved references. Useful for power users; defer to a follow-up if it adds scope.
+- **`ctx.model` availability timing:** the design uses `ctx.model?.id` defensively, but verify whether `model` is always populated by the time `before_provider_request` fires across all supported providers. If there is a known transient `undefined` window, the model-change predicate in §5 already protects state, but document the actual provider behaviour observed.
+- **`/style` picker rendering for complex styles:** decide whether to indicate variant count or current-model variant in the picker label (e.g. `thought-catalyst (3 variants)`). Likely YAGNI for v1 — keep the label clean.
+- **`/style validate` command:** consider a subcommand that lints `_config.json` and every dispatcher and reports unresolved references / invalid regex / disallowed flags / name collisions. The warning channel already surfaces these at runtime, but a one-shot lint is friendlier for power users. Defer to a follow-up unless trivial.
 
 ## Out of Scope / Future Considerations
 
@@ -363,7 +486,43 @@ Session timeline:
 
 ## Testing Strategy (To Detail in Plan)
 
-- Unit-test `compileMatcher` for exact strings, regex with flags, and invalid input.
-- Unit-test `resolveStyle` across the matrix: {no style, simple style, complex style} × {auto-config absent, auto-config matches, auto-config doesn't match} × {manual override absent/present} × {model changed/unchanged}.
-- Integration: dry-run `before_provider_request` against each `api` in `INJECTORS` with a complex style active, verifying the content reaches the payload in the expected slot (cache-correct).
-- Backwards-compat: existing `concise.md`/`thought-catalyst.md`/`test-style.md` behaviour must be byte-identical with no `_config.json` present.
+**`compileMatcher` unit tests:**
+
+- Plain string → exact equality, case-sensitive (`"claude-sonnet-4-5"` matches itself, not `"Claude-Sonnet-4-5"`).
+- Slash-delimited regex with allowed flags (`/^claude-/`, `/gpt-5/i`, `/foo/imsu`).
+- Disallowed flags `g`, `y` → returns `null` (invalid).
+- Malformed regex pattern → returns `null`.
+- Pathological literal `/foo/` → documented to parse as regex (limitation case).
+
+**`validateStyleName` / path-safety unit tests:**
+
+- Accept: `concise`, `thought-catalyst`, `style.v2`, `_internal-debug`.
+- Reject: `../foo`, `foo/bar`, `.hidden`, `/abs`, empty string.
+
+**`resolveStyle` matrix unit tests (synthetic `stylesDir` per case):**
+
+- {no style baseline, simple style, complex style} × {auto absent, auto matches, auto matches but target missing, auto matches a later resolvable rule} × {`manualOverride` false/true} × {`manualName` null/non-null} × {`modelId` defined/undefined}.
+- Trim/empty: empty file, whitespace-only file, preamble that trims empty, variant that trims empty.
+- Name collision: simple and complex with same name → simple wins, collision warning emitted.
+- Dispatcher with missing `default` file → no injection, warning.
+- Dispatcher with missing variant → fall through to default, warning.
+- Warnings dedup via stable `key` fields across repeated calls.
+
+**`index.ts` state-machine tests (with mocked `ctx`):**
+
+- First request: `lastModelId === undefined`, `lastResult === null` → auto activation produces `autoFired === true`.
+- Second request, same `modelId`, same auto result → `autoFired === false`.
+- Second request, different `modelId`, same auto-resolved name → `autoFired === false` (transition-only).
+- Second request, different `modelId`, different auto-resolved name → `autoFired === true`.
+- Model-change predicate: `undefined → defined` does NOT reset `manualOverride`; `defined → different defined` DOES; `defined → undefined → same defined` does NOT (net).
+- `/style off` after auto fired → `manualOverride = true`, `manualName = null`, no injection, sticks until model change.
+- Warning dedup: same `key` emitted by resolver across N requests → `ctx.ui.notify` called once.
+
+**Injector integration:**
+
+- Dry-run `before_provider_request` against each `api` in `INJECTORS` (`anthropic-messages`, `openai-responses`, `openai-completions`, `openai-codex-*`) with a complex style active, verifying the content reaches the payload in the expected slot (cache-breakpoint correctness preserved).
+
+**Backwards-compatibility:**
+
+- Existing `concise.md` / `thought-catalyst.md` / `test-style.md` byte-identical injection result with no `_config.json` and no complex styles — verify by snapshotting the payload mutation for each existing style under each `api`.
+- Existing `styles:active` session entries round-trip unchanged (including `{ name: null }` for off).
