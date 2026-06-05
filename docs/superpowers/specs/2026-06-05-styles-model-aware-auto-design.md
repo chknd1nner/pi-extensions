@@ -136,6 +136,8 @@ modelChanged(prev: string | undefined, curr: string | undefined): boolean
 
 Only transitions between two **defined and different** `modelId` values count as a model change. Transitions involving `undefined` (e.g. the very first request of a session, transient missing model info) do **not** reset `manualOverride`. This protects manual override stickiness against providers that may briefly report `undefined`.
 
+**`manualOverride` reset rule (refined):** even on a real model change, `manualOverride` is only reset when `manualName !== null`. The combination `manualName === null && manualOverride === true` represents an explicit `/style off` — a deliberate system-level disable — and is treated as persistent: model changes do not silently re-engage auto-config. The user re-enables styling by manually picking a style.
+
 **`index.ts` per-request flow (stateful):**
 
 ```
@@ -148,8 +150,9 @@ State held across requests:
 
 On before_provider_request:
   1. currentModelId := ctx.model?.id
-  2. If modelChanged(lastModelId, currentModelId):
-         manualOverride := false        // reset stickiness on real model switch
+  2. If modelChanged(lastModelId, currentModelId) AND manualName !== null:
+         manualOverride := false        // reset per-model stickiness on model switch
+     // /style off (manualName === null && manualOverride === true) survives the switch.
   3. output := resolveStyle({ manualName, manualOverride,
                               modelId: currentModelId, stylesDir })
      result := output.result            // ResolvedStyle | null
@@ -255,8 +258,9 @@ The resolver returns a `(result, warnings)` pair. The injector receives `result.
 
 **Trigger model:** auto-config is **evaluated on every request**, but only in the branch where `manualOverride` is `false`. The flag is what gates auto vs manual; the request loop is what re-checks.
 
-- `manualOverride := true` is set by any user-initiated `/style` action (see §5 manual-selection mutation).
-- `manualOverride := false` is set by the model-change detector (§5: only between two defined, different `modelId`s).
+- `manualOverride := true` is set by any user-initiated `/style` action (see §5 manual-selection mutation), including `/style off`.
+- `manualOverride := false` is set by the model-change detector (§5) **only when `manualName !== null`** — i.e. a previously-named manual pick reverts to "auto if available, else manual baseline" on model switch.
+- `/style off` (`manualName === null && manualOverride === true`) is treated as a **persistent system-level disable**: it survives model changes; the resolver returns no injection; the user re-engages styling by manually picking any style.
 - Whenever `manualOverride` is `false` and `modelId` is defined, the resolver walks auto rules and picks the first resolvable match.
 
 **Notification (one-shot per *transition*, not per model change):**
@@ -286,15 +290,34 @@ Unchanged in shape: a single `styles:active` session entry holds `{ name }` for 
 - Auto-applied styles are **not** persisted as `styles:active` entries — they are derived state, recomputed from `_config.json` + current `modelId` on every session resume. Avoids stale persistence if the user edits `_config.json` between sessions.
 - Manual selections are persisted exactly as today (`setActiveManual` writes the entry; that's the only writer).
 
-**Session resume semantics (clarifying I2):**
+**Session resume semantics (refined):**
 
-- On `session_start`, we scan the branch for the latest `styles:active` entry; its `name` becomes the in-memory `manualName` (may be `null`).
-- `manualOverride` is initialised to **`false`** on resume. The persisted manual selection is treated as a *baseline fallback*, not as an active override.
-- This means on the first request after resume, if an auto rule matches the current model, **auto wins** and a one-shot notification fires (because `lastResult` is null → transition condition holds). The persisted `manualName` only applies when no auto rule matches.
-- The deliberate UX consequence: a user who resumes a session under a model that has an auto rule sees the auto rule apply. To re-pin their previous manual choice, they re-issue `/style <name>` (which sets `manualOverride = true` again).
-- Rationale: persisting `manualOverride` would carry stale per-model stickiness across sessions in ways the user can't observe or invalidate. Auto re-evaluation on resume matches the "Option B" spirit (auto is a smart default; users override deliberately).
+Resume defers to the user's last explicit choice. The presence of any `styles:active` entry in the session history is treated as evidence of deliberate user intent and is restored as an active override.
 
-**On `manualName` representing "off":** the existing `setActive(null, ...)` already persists `{ name: null }`. The resolver treats `manualOverride && manualName === null` as "explicitly off" — no auto-config evaluation, no injection.
+- On `session_start`, scan the branch for the latest `styles:active` entry.
+- If found:
+  - `manualName := entry.name` (may be `"foo"` or `null`)
+  - `manualOverride := true` — the user has made an explicit choice; honor it.
+- If no entry exists:
+  - `manualName := null`
+  - `manualOverride := false` — no choice ever made; auto-config has full agency.
+
+In both cases, `lastModelId := undefined` and `lastResult := null`, so the first request triggers normal resolution.
+
+**Concrete consequences of the refined rule:**
+
+| Persisted | First request after resume |
+| --- | --- |
+| `{ name: "foo" }` | `foo` is applied. No auto-config evaluation. Footer: `style: foo`. No `(auto)` badge. |
+| `{ name: null }` | Styles disabled. No injection. Footer cleared. Survives subsequent model changes. |
+| (none) | Auto-config evaluated normally; first auto activation notifies as today. |
+
+**Within the resumed session:**
+
+- If the user resumed with persisted `foo` and then switches `modelId`, `manualName !== null` so `manualOverride` resets to `false`. From that point, auto-config has agency again, with `foo` as fallback baseline if no rule matches. (`foo` may still apply via fallback, but with no `(auto)` badge.)
+- If the user resumed with persisted `null` (off), model changes do **not** lift the disable.
+
+**Rationale:** the persisted entry IS the user's expressed preference. Treating it as a baseline-only fallback (the previous draft's behaviour) silently demoted that choice. Treating it as an active override matches the "explicit user choice is sacrosanct" principle that already governs `/style off` persistence.
 
 ### 9. Caching
 
@@ -379,7 +402,7 @@ Responsibilities reduce to:
   - sets `manualOverride := true`
   - persists via `pi.appendEntry(ACTIVE_ENTRY, { name })` (existing format, unchanged)
   Required call sites: `/style <name>`, `/style off`, picker selection, and the post-save handoff in the create-new-style flow.
-- On `session_start`: load persisted `manualName` from the latest `styles:active` entry; initialise `manualOverride := false` (see §8); clear `lastModelId`, `lastResult`, `warnedKeys`.
+- On `session_start`: scan the branch for the latest `styles:active` entry; if found, set `manualName := entry.name` and `manualOverride := true`; if not, `manualName := null` and `manualOverride := false` (see §8). Always clear `lastModelId`, `lastResult`, `warnedKeys`.
 - On `before_provider_request`: run the 9-step flow from §5 — detect model change with the precise predicate, reset `manualOverride` on change, call `resolveStyle`, dedup+surface warnings, compute `autoFired` from result-transition, notify if fired, update footer, dispatch injection through the existing `INJECTORS[ctx.model.api]` block in `injectors.ts:105`, update `lastModelId`/`lastResult`.
 - Defensive access: `ctx.model?.id` and `ctx.model?.api` (matches current code style).
 
@@ -412,12 +435,15 @@ No changes. The `INJECTORS` registry remains the sole place new api shapes are w
 | `modelId` transitions `defined → undefined → different defined` | Counted as a model change at the moment `defined → different defined`; `manualOverride` resets then. |
 | Two consecutive requests with same `modelId` | Resolver runs (cheap, mtime cache); result is identical; `autoFired` false (no transition); no re-notification. |
 | Two consecutive requests with different `modelId` but same resolved auto style | `modelChanged` true so `manualOverride` resets; resolver returns same name; `autoFired` false (no transition); no re-notification. Footer unchanged. |
-| Manual `/style off` after auto fired | `manualName := null`, `manualOverride := true`, footer clears, no injection. Sticks until next model change. |
+| Manual `/style off` after auto fired | `manualName := null`, `manualOverride := true`, footer clears, no injection. **Persistent**: survives model changes; user re-engages by manually picking a style. |
 | `_config.json` edited mid-session | mtime cache picks up the change. Takes effect on the next request where `manualOverride` is `false` (i.e. immediately if no manual override is in force; otherwise after the next model change resets the override). |
 | Complex style directory missing `dispatcher.json` | Not listed in picker. If referenced by name (auto-config or session-restored manual), one-time warning; treated as missing. |
 | Both `foo.md` and `foo/dispatcher.json` exist under `styles/` | Simple `.md` wins. One-time warning (`key: collision:foo`) naming the conflict. Picker shows the name once. |
-| Session resume under a model that matches an auto rule, after prior manual override in last session | `manualOverride` initialises `false` on resume (§8); auto rule fires; `(auto)` notification appears. User re-pins by re-running `/style`. |
-| Session resume with previously persisted `manualName` and no matching auto rule | `manualOverride` is `false` but `manualName` is non-null; resolver falls through to manual baseline; footer shows `style: <name>` (no `(auto)`). |
+| Session resume with persisted `{ name: "foo" }` | `manualOverride := true` on resume (§8); `foo` is the active style; no auto evaluation; footer `style: foo` with no `(auto)` badge. |
+| Session resume with persisted `{ name: null }` (explicit off) | `manualOverride := true`, `manualName := null`; styles disabled; survives subsequent model changes. |
+| Session resume with no `styles:active` entry in history | `manualOverride := false`; auto-config has full agency from the first request, as if it were a fresh session. |
+| After resume with persisted `foo`, user switches `modelId` | `modelChanged` true and `manualName !== null` → `manualOverride` resets. Auto-config evaluates for the new model; `foo` becomes a fallback baseline if no rule matches. |
+| After `/style off`, user switches `modelId` | `modelChanged` true but `manualName === null` → `manualOverride` does NOT reset. Off persists. |
 | `lastResult` is null on first request of a session | Transition check trivially fires for any auto result → one notification on the first auto activation, as intended. |
 
 ## Concrete Example
@@ -476,6 +502,7 @@ Session timeline:
 - **`ctx.model` availability timing:** the design uses `ctx.model?.id` defensively, but verify whether `model` is always populated by the time `before_provider_request` fires across all supported providers. If there is a known transient `undefined` window, the model-change predicate in §5 already protects state, but document the actual provider behaviour observed.
 - **`/style` picker rendering for complex styles:** decide whether to indicate variant count or current-model variant in the picker label (e.g. `thought-catalyst (3 variants)`). Likely YAGNI for v1 — keep the label clean.
 - **`/style validate` command:** consider a subcommand that lints `_config.json` and every dispatcher and reports unresolved references / invalid regex / disallowed flags / name collisions. The warning channel already surfaces these at runtime, but a one-shot lint is friendlier for power users. Defer to a follow-up unless trivial.
+- **Re-engaging auto-config after `/style off`:** the spec defines `/style <name>` as the way to lift the persistent disable. Consider whether a dedicated `/style auto` command would improve UX — it would remove the manual override entirely (clearing both `manualName` and `manualOverride`, ideally by writing a distinguishing sentinel entry or by issuing a session entry that the scanner interprets as "reset"). Defer to a follow-up; the current single-command surface stays minimal.
 
 ## Out of Scope / Future Considerations
 
@@ -514,8 +541,10 @@ Session timeline:
 - Second request, same `modelId`, same auto result → `autoFired === false`.
 - Second request, different `modelId`, same auto-resolved name → `autoFired === false` (transition-only).
 - Second request, different `modelId`, different auto-resolved name → `autoFired === true`.
-- Model-change predicate: `undefined → defined` does NOT reset `manualOverride`; `defined → different defined` DOES; `defined → undefined → same defined` does NOT (net).
-- `/style off` after auto fired → `manualOverride = true`, `manualName = null`, no injection, sticks until model change.
+- Model-change predicate: `undefined → defined` does NOT reset `manualOverride`; `defined → different defined` DOES (when `manualName !== null`); `defined → undefined → same defined` does NOT (net).
+- `manualName === null && manualOverride === true` (i.e. `/style off`) survives model changes: cycle through several `modelId`s and verify `manualOverride` stays `true`, no injection occurs, no auto notification fires.
+- `/style off` after auto fired → `manualOverride = true`, `manualName = null`, no injection, **persistent across subsequent model changes**.
+- Session resume tests: (a) persisted `{ name: "foo" }` → on first request, `foo` applies, no auto evaluation, no `(auto)` badge; (b) persisted `{ name: null }` → styles disabled, persists across simulated model changes; (c) no persisted entry → auto-config has full agency from first request.
 - Warning dedup: same `key` emitted by resolver across N requests → `ctx.ui.notify` called once.
 
 **Injector integration:**
