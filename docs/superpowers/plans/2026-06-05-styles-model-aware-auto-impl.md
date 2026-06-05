@@ -219,11 +219,17 @@ describe("compileMatcher", () => {
   });
 
   describe("documented limitation: literal looks like regex", () => {
-    it("parses /foo/ as regex even if caller meant a literal model id", () => {
+    it("parses /foo/ as regex (cannot exact-match a literal '/foo/' model id)", () => {
       const m = compileMatcher("/foo/");
-      // This is the documented limitation. /foo/ is treated as regex matching 'foo' anywhere.
+      // This is the documented limitation. A spec of '/foo/' is parsed as a
+      // RegExp matching 'foo' as a substring — not as an exact match against
+      // the literal string '/foo/'. The latter is unreachable from this
+      // serialization. Real-world model IDs from supported providers never
+      // contain leading/trailing slashes, so this is accepted as YAGNI.
       expect(m!.test("foo")).toBe(true);
-      expect(m!.test("/foo/")).toBe(false);
+      expect(m!.test("foobar")).toBe(true);
+      expect(m!.test("/foo/")).toBe(true); // because '/foo/' contains 'foo'
+      expect(m!.test("xyz")).toBe(false);
     });
   });
 });
