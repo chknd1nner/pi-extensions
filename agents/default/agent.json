@@ -1,9 +1,0 @@
-{
-  "id": "default",
-  "displayName": "FamilyOS Assistant",
-  "capabilities": {
-    "tools": ["read", "grep", "find", "ls"],
-    "readRoots": ["Inbox", "Workspace", "Exports"],
-    "writeRoots": ["Workspace", "Exports"]
-  }
-}
