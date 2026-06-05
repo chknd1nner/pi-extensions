@@ -1,3 +1,7 @@
+> **ARCHIVED / SUPERSEDED (2026-06-05).** This design grew an on-disk dispatcher/variant file format and a manual-override state machine — both unnecessary scope creep. Replaced by the leaner auto-switch design: routing lives only in `_config.json`, "variants" are just separate style files, and manual selection stays sticky (no override machinery). See `../../specs/2026-06-05-styles-auto-switch-design.md` and `../../plans/2026-06-05-styles-auto-switch-impl.md`. Kept for the reasoning trail.
+
+---
+
 # Model-Aware Auto Styles Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
