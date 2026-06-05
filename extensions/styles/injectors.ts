@@ -107,6 +107,8 @@ export const INJECTORS: Record<string, StyleInjector> = {
   "anthropic-messages": injectAnthropic,
   "openai-responses": injectOpenAIResponses,
   "openai-completions": injectOpenAICompletions,
+  "openai-codex-responses": injectOpenAIResponses,
+  "openai-codex-completions": injectOpenAICompletions,
 
   // TODO: Claude over Bedrock/Vertex serializes as `amazon-bedrock` /
   // `google-vertex` and wants the SAME explicit-breakpoint treatment as
