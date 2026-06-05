@@ -254,8 +254,15 @@ Create `extensions/styles/resolver.ts`:
  * See docs/superpowers/specs/2026-06-05-styles-model-aware-auto-design.md.
  */
 
-/** Detects slash-delimited regex form. Allows only [imsu] flags. */
-const REGEX_FORM = /^\/(.+)\/([imsu]*)$/;
+/**
+ * Detects slash-delimited regex form. Captures any letters in the flags
+ * position; flag validity is checked separately so that disallowed flags
+ * cause the matcher to be REJECTED rather than misinterpreted as a literal
+ * string. (If this regex itself required `[imsu]*`, '/foo/g' would fail the
+ * match and silently fall through to exact-string mode — a critical bug.)
+ */
+const REGEX_FORM = /^\/(.+)\/([A-Za-z]*)$/;
+const ALLOWED_FLAGS = /^[imsu]*$/;
 
 export interface Matcher {
   test(modelId: string): boolean;
@@ -270,6 +277,7 @@ export function compileMatcher(spec: string): Matcher | null {
   const regex = REGEX_FORM.exec(spec);
   if (regex) {
     const [, pattern, flags] = regex;
+    if (!ALLOWED_FLAGS.test(flags)) return null;
     try {
       const re = new RegExp(pattern, flags);
       return { test: (id) => re.test(id) };
@@ -573,8 +581,9 @@ describe("readContent", () => {
     const f = path.join(tmp, "a.md");
     fs.writeFileSync(f, "v1");
     expect(readContent(f)).toBe("v1");
-    // Advance mtime by 10ms to guarantee different stat.
-    const future = new Date(Date.now() + 10);
+    // Advance mtime by 2 seconds to survive filesystems with 1-second mtime
+    // resolution (some Linux ext4, some network filesystems).
+    const future = new Date(Date.now() + 2000);
     fs.writeFileSync(f, "v2");
     fs.utimesSync(f, future, future);
     expect(readContent(f)).toBe("v2");
@@ -656,6 +665,33 @@ describe("loadAutoConfig", () => {
     const out = loadAutoConfig(tmp);
     expect(out.warnings[0].key).toBe("auto:shape");
   });
+
+  it("reflects mtime-based edits to _config.json", () => {
+    const f = path.join(tmp, "_config.json");
+    fs.writeFileSync(f, JSON.stringify({ auto: [{ match: "a", style: "concise" }] }));
+    // Seed cache by exercising once.
+    expect(loadAutoConfig(tmp).rules).toHaveLength(1);
+    // Rewrite with a different rule and advance mtime well past any fs resolution.
+    const future = new Date(Date.now() + 2000);
+    fs.writeFileSync(f, JSON.stringify({ auto: [{ match: "b", style: "thought-catalyst" }] }));
+    fs.utimesSync(f, future, future);
+    const out = loadAutoConfig(tmp);
+    expect(out.rules).toHaveLength(1);
+    expect(out.rules[0].style).toBe("thought-catalyst");
+  });
+
+  it("invalidates auto cache when _config.json is deleted and re-created", () => {
+    const f = path.join(tmp, "_config.json");
+    fs.writeFileSync(f, JSON.stringify({ auto: [{ match: "a", style: "concise" }] }));
+    expect(loadAutoConfig(tmp).rules).toHaveLength(1);
+    fs.rmSync(f);
+    expect(loadAutoConfig(tmp).rules).toEqual([]);
+    // Recreate with a different rule and verify the cache picks it up.
+    fs.writeFileSync(f, JSON.stringify({ auto: [{ match: "b", style: "thought-catalyst" }] }));
+    const out = loadAutoConfig(tmp);
+    expect(out.rules).toHaveLength(1);
+    expect(out.rules[0].style).toBe("thought-catalyst");
+  });
 });
 
 describe("loadDispatcher", () => {
@@ -735,6 +771,35 @@ describe("loadDispatcher", () => {
     expect(out.warnings[0].key).toMatch(/^variant:badfile:/);
   });
 
+  it("rejects variant files with an internal '..' segment (sub/../default.md)", () => {
+    const dir = path.join(tmp, "tc");
+    fs.mkdirSync(dir);
+    fs.writeFileSync(
+      path.join(dir, "dispatcher.json"),
+      JSON.stringify({
+        default: "default.md",
+        variants: [{ match: "x", file: "sub/../default.md" }],
+      }),
+    );
+    const out = loadDispatcher(dir);
+    expect(out.dispatcher!.variants).toHaveLength(0);
+    expect(out.warnings[0].key).toMatch(/^variant:badfile:/);
+  });
+
+  it("scopes warning keys by dispatcher directory so two broken styles don't dedup together", () => {
+    const dirA = path.join(tmp, "a");
+    const dirB = path.join(tmp, "b");
+    fs.mkdirSync(dirA);
+    fs.mkdirSync(dirB);
+    fs.writeFileSync(path.join(dirA, "dispatcher.json"), "{ not json");
+    fs.writeFileSync(path.join(dirB, "dispatcher.json"), "{ also broken");
+    const outA = loadDispatcher(dirA);
+    const outB = loadDispatcher(dirB);
+    expect(outA.warnings[0].key).not.toBe(outB.warnings[0].key);
+    expect(outA.warnings[0].key).toMatch(/^dispatcher:parse:/);
+    expect(outB.warnings[0].key).toMatch(/^dispatcher:parse:/);
+  });
+
   it("rejects an escaping default path", () => {
     const dir = path.join(tmp, "tc");
     fs.mkdirSync(dir);
@@ -753,16 +818,16 @@ describe("loadDispatcher", () => {
     fs.writeFileSync(path.join(dir, "dispatcher.json"), JSON.stringify({ variants: [] }));
     const out = loadDispatcher(dir);
     expect(out.dispatcher).toBeNull();
-    expect(out.warnings[0].key).toBe("dispatcher:nodefault");
+    expect(out.warnings[0].key).toBe("dispatcher:nodefault:tc");
   });
 
-  it("warns on malformed JSON", () => {
+  it("warns on malformed JSON (key scoped by style directory)", () => {
     const dir = path.join(tmp, "tc");
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, "dispatcher.json"), "{");
     const out = loadDispatcher(dir);
     expect(out.dispatcher).toBeNull();
-    expect(out.warnings[0].key).toBe("dispatcher:parse");
+    expect(out.warnings[0].key).toBe("dispatcher:parse:tc");
   });
 });
 ```
@@ -780,14 +845,17 @@ Expected: FAIL — `readContent`, `loadAutoConfig`, `loadDispatcher` not exporte
 Append to `extensions/styles/resolver.ts`:
 
 ```ts
-/** Reject a relative path that escapes its base directory. */
+/**
+ * Reject a relative path that contains any '..' segment or that is absolute.
+ * Checks raw segments BEFORE normalization, so 'sub/../default.md' is
+ * rejected even though it normalizes to 'default.md' (which doesn't escape).
+ * This matches the spec contract: "paths containing '..' are rejected".
+ */
 function isSafeRelative(rel: string): boolean {
   if (typeof rel !== "string" || rel.length === 0) return false;
   if (path.isAbsolute(rel)) return false;
-  // Normalize and check it does not climb above ".".
-  const norm = path.normalize(rel);
-  if (norm.startsWith("..")) return false;
-  if (norm.split(path.sep).includes("..")) return false;
+  const segments = rel.split(/[/\\]/);
+  if (segments.includes("..")) return false;
   return true;
 }
 
@@ -946,8 +1014,8 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
       dispatcher: null,
       warnings: [
         {
-          key: `dispatcher:missing:${styleDir}`,
-          message: `styles: dispatcher.json not found under '${styleDir}'.`,
+          key: `dispatcher:missing:${path.basename(styleDir)}`,
+          message: `styles: dispatcher.json not found under '${path.basename(styleDir)}'.`,
         },
       ],
     };
@@ -963,14 +1031,18 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
       dispatcher: null,
       warnings: [
         {
-          key: `dispatcher:read:${styleDir}`,
-          message: `styles: failed to read dispatcher.json: ${(e as Error).message}`,
+          key: `dispatcher:read:${path.basename(styleDir)}`,
+          message: `styles: failed to read dispatcher.json under '${path.basename(styleDir)}': ${(e as Error).message}`,
         },
       ],
     };
     dispatcherCache.set(file, { mtimeMs: st.mtimeMs, result });
     return result;
   }
+
+  // Style-name scoped suffix for warning keys: prevents two broken styles
+  // from collapsing into a single ctx.ui.notify call via index.ts's dedup.
+  const styleTag = path.basename(styleDir);
 
   let parsed: unknown;
   try {
@@ -980,8 +1052,8 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
       dispatcher: null,
       warnings: [
         {
-          key: "dispatcher:parse",
-          message: `styles: dispatcher.json is not valid JSON: ${(e as Error).message}`,
+          key: `dispatcher:parse:${styleTag}`,
+          message: `styles: dispatcher.json under '${styleTag}' is not valid JSON: ${(e as Error).message}`,
         },
       ],
     };
@@ -999,8 +1071,8 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
   const defaultFile = typeof obj.default === "string" ? obj.default : "";
   if (!defaultFile) {
     warnings.push({
-      key: "dispatcher:nodefault",
-      message: `styles: dispatcher.json under '${styleDir}' missing 'default' field.`,
+      key: `dispatcher:nodefault:${styleTag}`,
+      message: `styles: dispatcher.json under '${styleTag}' missing 'default' field.`,
     });
     const result: DispatcherResult = { dispatcher: null, warnings };
     dispatcherCache.set(file, { mtimeMs: st.mtimeMs, result });
@@ -1008,8 +1080,8 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
   }
   if (!isSafeRelative(defaultFile)) {
     warnings.push({
-      key: `dispatcher:baddefault:${defaultFile}`,
-      message: `styles: dispatcher 'default' path '${defaultFile}' must be a safe relative path.`,
+      key: `dispatcher:baddefault:${styleTag}:${defaultFile}`,
+      message: `styles: dispatcher 'default' path '${defaultFile}' under '${styleTag}' must be a safe relative path.`,
     });
     const result: DispatcherResult = { dispatcher: null, warnings };
     dispatcherCache.set(file, { mtimeMs: st.mtimeMs, result });
@@ -1022,8 +1094,8 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
       preamble = obj.preamble;
     } else {
       warnings.push({
-        key: `dispatcher:badpreamble:${obj.preamble}`,
-        message: `styles: dispatcher 'preamble' path '${obj.preamble}' must be a safe relative path; ignored.`,
+        key: `dispatcher:badpreamble:${styleTag}:${obj.preamble}`,
+        message: `styles: dispatcher 'preamble' path '${obj.preamble}' under '${styleTag}' must be a safe relative path; ignored.`,
       });
     }
   }
@@ -1037,23 +1109,23 @@ export function loadDispatcher(styleDir: string): DispatcherResult {
     const vfile = typeof vv.file === "string" ? vv.file : "";
     if (!spec || !vfile) {
       warnings.push({
-        key: `variant:badshape:${spec || "(empty)"}`,
-        message: `styles: skipped variant with missing match or file in '${styleDir}'.`,
+        key: `variant:badshape:${styleTag}:${spec || "(empty)"}`,
+        message: `styles: skipped variant with missing match or file under '${styleTag}'.`,
       });
       continue;
     }
     const matcher = compileMatcher(spec);
     if (!matcher) {
       warnings.push({
-        key: `variant:badmatch:${spec}`,
-        message: `styles: skipped variant — invalid match '${spec}' in '${styleDir}'.`,
+        key: `variant:badmatch:${styleTag}:${spec}`,
+        message: `styles: skipped variant — invalid match '${spec}' under '${styleTag}'.`,
       });
       continue;
     }
     if (!isSafeRelative(vfile)) {
       warnings.push({
-        key: `variant:badfile:${vfile}`,
-        message: `styles: skipped variant — file '${vfile}' must be a safe relative path.`,
+        key: `variant:badfile:${styleTag}:${vfile}`,
+        message: `styles: skipped variant — file '${vfile}' under '${styleTag}' must be a safe relative path.`,
       });
       continue;
     }
@@ -1430,7 +1502,7 @@ describe("resolveStyle: complex style content", () => {
       stylesDir: tmp,
     });
     expect(out.result).toBeNull();
-    expect(out.warnings.some((w) => w.key === "dispatcher:parse")).toBe(true);
+    expect(out.warnings.some((w) => w.key.startsWith("dispatcher:parse:"))).toBe(true);
   });
 });
 
@@ -1461,7 +1533,7 @@ describe("resolveStyle: edge cases", () => {
     expect(out.warnings.some((w) => w.key === "style:badname:../escape")).toBe(true);
   });
 
-  it("includes loadAutoConfig warnings even when manual override wins", () => {
+  it("does NOT surface loadAutoConfig warnings when manual override wins", () => {
     writeSimple("concise", "x");
     fs.writeFileSync(path.join(tmp, "_config.json"), "{ not json");
     const out = resolveStyle({
@@ -1470,10 +1542,49 @@ describe("resolveStyle: edge cases", () => {
       modelId: "claude-sonnet-4-5",
       stylesDir: tmp,
     });
-    // The resolver only consults auto when manualOverride is false, so we should
+    // The resolver only consults auto when manualOverride is false, so it must
     // NOT surface auto-config parse warnings on this path.
     expect(out.warnings.some((w) => w.key === "auto:parse")).toBe(false);
     expect(out.result?.name).toBe("concise");
+  });
+
+  it("falls through to default when matched variant content trims empty (with non-empty preamble)", () => {
+    writeComplex(
+      "tc",
+      {
+        preamble: "preamble.md",
+        default: "default.md",
+        variants: [{ match: "/^claude-/", file: "anthropic.md" }],
+      },
+      { "preamble.md": "PRE", "default.md": "DEF", "anthropic.md": "   \n  " },
+    );
+    const out = resolveStyle({
+      manualName: "tc",
+      manualOverride: true,
+      modelId: "claude-sonnet-4-5",
+      stylesDir: tmp,
+    });
+    expect(out.result?.content).toBe("<userStyle>\nPRE\n\nDEF\n</userStyle>");
+    expect(out.warnings.some((w) => w.key.startsWith("variant:empty:"))).toBe(true);
+  });
+
+  it("returns null when both variant and default content trim empty", () => {
+    writeComplex(
+      "tc",
+      {
+        preamble: "preamble.md",
+        default: "default.md",
+        variants: [{ match: "/^claude-/", file: "anthropic.md" }],
+      },
+      { "preamble.md": "PRE", "default.md": "   ", "anthropic.md": "   " },
+    );
+    const out = resolveStyle({
+      manualName: "tc",
+      manualOverride: true,
+      modelId: "claude-sonnet-4-5",
+      stylesDir: tmp,
+    });
+    expect(out.result).toBeNull();
   });
 });
 ```
@@ -1629,20 +1740,32 @@ export function resolveStyle(input: ResolveInput): ResolveOutput {
           key: `variant:missing:${chosenName}:${variantFile}`,
           message: `styles: variant file '${variantFile}' missing under '${chosenName}'; falling back to default.`,
         });
+      } else if (candidate.trim().length === 0) {
+        // Treat an empty-after-trim variant as a soft miss — fall through to
+        // the default rather than rendering preamble alone or an empty body.
+        warnings.push({
+          key: `variant:empty:${chosenName}:${variantFile}`,
+          message: `styles: variant file '${variantFile}' under '${chosenName}' is empty; falling back to default.`,
+        });
       } else {
         body = candidate;
       }
     }
 
     if (body === null) {
-      body = readContent(path.join(styleDir, dispatcher.default));
-      if (body === null) {
+      const defaultBody = readContent(path.join(styleDir, dispatcher.default));
+      if (defaultBody === null) {
         warnings.push({
           key: `default:missing:${chosenName}`,
           message: `styles: default file '${dispatcher.default}' missing under '${chosenName}'.`,
         });
         return NO_RESULT(warnings);
       }
+      if (defaultBody.trim().length === 0) {
+        // Both variant and default empty — no useful content. Drop injection.
+        return NO_RESULT(warnings);
+      }
+      body = defaultBody;
     }
 
     if (dispatcher.preamble) {
@@ -1717,50 +1840,151 @@ This task updates only the picker enumeration so that both flat `.md` files and 
 
 **Files:**
 - Modify: `extensions/styles/index.ts`
+- Create: `extensions/styles/tests/list-styles.test.ts`
 
-- [ ] **Step 1: Update the `listStyles` function**
+- [ ] **Step 1: Write the failing test first**
+
+Create `extensions/styles/tests/list-styles.test.ts`. (`listStyles` will be exported from `index.ts` in Step 2 so the test can target it directly with a synthetic directory.)
+
+```ts
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { listStyles } from "../index";
+
+let tmp: string;
+
+beforeEach(() => {
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "styles-list-"));
+});
+
+afterEach(() => {
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+function writeSimple(name: string, body = "x") {
+  fs.writeFileSync(path.join(tmp, `${name}.md`), body);
+}
+
+function writeComplex(name: string) {
+  const dir = path.join(tmp, name);
+  fs.mkdirSync(dir);
+  fs.writeFileSync(
+    path.join(dir, "dispatcher.json"),
+    JSON.stringify({ default: "default.md", variants: [] }),
+  );
+  fs.writeFileSync(path.join(dir, "default.md"), "d");
+}
+
+describe("listStyles", () => {
+  it("returns an empty array when the directory has no styles", () => {
+    expect(listStyles(tmp)).toEqual([]);
+  });
+
+  it("enumerates simple .md files", () => {
+    writeSimple("concise");
+    writeSimple("thought-catalyst");
+    expect(listStyles(tmp)).toEqual(["concise", "thought-catalyst"]);
+  });
+
+  it("enumerates complex style directories containing dispatcher.json", () => {
+    writeComplex("tc");
+    expect(listStyles(tmp)).toEqual(["tc"]);
+  });
+
+  it("mixes simple and complex styles, sorted by name", () => {
+    writeSimple("zeta");
+    writeComplex("alpha");
+    writeSimple("mu");
+    expect(listStyles(tmp)).toEqual(["alpha", "mu", "zeta"]);
+  });
+
+  it("skips directories without dispatcher.json", () => {
+    fs.mkdirSync(path.join(tmp, "incomplete"));
+    fs.writeFileSync(path.join(tmp, "incomplete", "notes.md"), "x");
+    expect(listStyles(tmp)).toEqual([]);
+  });
+
+  it("excludes underscore- and dot-prefixed directories from the picker", () => {
+    // _config.json sits at the top level. Directories starting with _ or .
+    // are reserved for internal use and never shown in the picker even if
+    // they contain a dispatcher.json.
+    fs.writeFileSync(path.join(tmp, "_config.json"), JSON.stringify({ auto: [] }));
+    writeComplex("_internal");
+    writeComplex(".hidden");
+    writeSimple("public");
+    expect(listStyles(tmp)).toEqual(["public"]);
+  });
+
+  it("de-duplicates when both forms exist for the same name (simple listed first)", () => {
+    writeSimple("foo");
+    writeComplex("foo");
+    // The picker lists each name once; the collision is surfaced as a warning
+    // by the resolver, not by the picker.
+    expect(listStyles(tmp)).toEqual(["foo"]);
+  });
+
+  it("returns [] when the directory does not exist", () => {
+    expect(listStyles(path.join(tmp, "nonexistent"))).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+npm test -w pi-styles -- list-styles
+```
+
+Expected: FAIL — `listStyles` not exported, or signature mismatch.
+
+- [ ] **Step 3: Refactor `listStyles` to take a directory argument and export it**
 
 Replace the existing `listStyles` function in `extensions/styles/index.ts` (currently around line 53) with:
 
 ```ts
-function listStyles(): string[] {
-  ensureDir();
+export function listStyles(dir: string = STYLE_DIR): string[] {
+  let entries: fs.Dirent[];
   try {
-    const entries = fs.readdirSync(STYLE_DIR, { withFileTypes: true });
-    const seen = new Set<string>();
-    const names: string[] = [];
-    // Simple .md files.
-    for (const e of entries) {
-      if (!e.isFile()) continue;
-      const lower = e.name.toLowerCase();
-      if (!lower.endsWith(".md")) continue;
-      const name = e.name.slice(0, -3);
-      if (!seen.has(name)) {
-        seen.add(name);
-        names.push(name);
-      }
-    }
-    // Complex style directories (must contain dispatcher.json).
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (e.name.startsWith("_") || e.name.startsWith(".")) continue;
-      try {
-        const st = fs.statSync(path.join(STYLE_DIR, e.name, "dispatcher.json"));
-        if (!st.isFile()) continue;
-      } catch {
-        continue;
-      }
-      if (!seen.has(e.name)) {
-        seen.add(e.name);
-        names.push(e.name);
-      }
-    }
-    return names.sort((a, b) => a.localeCompare(b));
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }
+  const seen = new Set<string>();
+  const names: string[] = [];
+  // Simple .md files.
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    const lower = e.name.toLowerCase();
+    if (!lower.endsWith(".md")) continue;
+    const name = e.name.slice(0, -3);
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  // Complex style directories (must contain dispatcher.json).
+  // Underscore- and dot-prefixed directories are reserved for internal use.
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (e.name.startsWith("_") || e.name.startsWith(".")) continue;
+    try {
+      const st = fs.statSync(path.join(dir, e.name, "dispatcher.json"));
+      if (!st.isFile()) continue;
+    } catch {
+      continue;
+    }
+    if (!seen.has(e.name)) {
+      seen.add(e.name);
+      names.push(e.name);
+    }
+  }
+  return names.sort((a, b) => a.localeCompare(b));
 }
 ```
+
+Note: `listStyles()` (no args) still works because `dir` defaults to `STYLE_DIR`. Existing callers inside the default export do not need to change. The `ensureDir()` side effect from the previous version is dropped — callers that need it (`runCreate`) already call `ensureDir()` directly.
 
 Also delete the now-unused helper `styleFile` (currently around line 49):
 
@@ -1792,51 +2016,28 @@ function styleFile(name: string): string {
 
 Inlining these keeps the diff smaller now; Task 8 will replace `readStyleText` and the session-start existence check entirely.
 
-- [ ] **Step 2: Manually verify by adding a complex style fixture and running the existing extension**
-
-Write `extensions/styles/styles/_smoke-complex/dispatcher.json`:
-
-```json
-{ "default": "default.md", "variants": [] }
-```
-
-And `extensions/styles/styles/_smoke-complex/default.md`:
-
-```
-smoke complex body
-```
-
-(The underscore prefix in the parent style would normally be excluded. Use a non-underscored name `smoke-complex` instead — adjust the two paths above accordingly.)
-
-Then in a quick scratch script or REPL:
+- [ ] **Step 4: Run the list-styles test to verify it passes**
 
 ```bash
-cd extensions/styles
-node --experimental-strip-types -e "import('./index.ts').then(()=>{}); console.log(require('fs').readdirSync('./styles'));"
+npm test -w pi-styles -- list-styles
 ```
 
-(Or, more pragmatically, defer manual verification to Task 9's integration test, which exercises `listStyles` through the picker code path. Skip this step if running tests is sufficient confidence.)
+Expected: PASS — all 8 `listStyles` tests passing.
 
-- [ ] **Step 3: Run all tests and typecheck**
+- [ ] **Step 5: Run the full test suite and typecheck**
 
 ```bash
 npm test -w pi-styles
 npm run typecheck -w pi-styles
 ```
 
-Expected: every existing test still passes; no type errors.
+Expected: every test from Tasks 1–6 passing; typecheck clean.
 
-- [ ] **Step 4: Delete the scratch complex style fixture**
-
-```bash
-rm -rf extensions/styles/styles/smoke-complex
-```
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add extensions/styles/index.ts
-git commit -m "refactor(styles): enumerate both simple and complex styles in the picker"
+git add extensions/styles/index.ts extensions/styles/tests/list-styles.test.ts
+git commit -m "refactor(styles): enumerate both simple and complex styles via testable listStyles(dir)"
 ```
 
 ---
@@ -1848,9 +2049,11 @@ Introduce the new state model: `manualName`, `manualOverride`, `lastModelId`, `l
 **Files:**
 - Modify: `extensions/styles/index.ts`
 
-- [ ] **Step 1: Replace the entire body of the default export**
+- [ ] **Step 1: Replace the entire default-export function**
 
-Find the start of the default export (currently `export default function styles(pi: ExtensionAPI) {`) and the closing `}` for the whole function. Replace the inner body with the following. Sections marked `// (unchanged in this task)` are preserved as-is from the current code — Task 8 will revise them.
+Locate the existing `export default function styles(pi: ExtensionAPI) { ... }` block (the whole function, including signature and closing brace) and replace it with the block below. **Do not touch** the module-level helpers above it (`HERE`, `STYLE_DIR`, `ACTIVE_ENTRY`, `DEBUG`, `ACT_CREATE`, `ACT_OFF`, `debug`, `ensureDir`, `slugify`, and the now-exported `listStyles` from Task 6) — those stay as-is.
+
+The replacement keeps the same function signature (`export default function styles(pi: ExtensionAPI)`) but rewrites the inner closure to introduce the new state and the `setActiveManual` mutation helper. Sections in the body marked `// (unchanged in this task)` carry over verbatim from the current code; Task 8 will revise them.
 
 ```ts
 export default function styles(pi: ExtensionAPI) {
@@ -2102,64 +2305,148 @@ Replace the legacy `readStyleText` path with `resolveStyle`. Implement the `mode
 import { resolveStyle, type ResolvedStyle } from "./resolver";
 ```
 
-- [ ] **Step 2: Replace `before_provider_request` handler and remove dead code**
+- [ ] **Step 2: Extract a shared per-request transition function**
+
+The state-machine integration tests in Task 9 must exercise the **same** transition logic that runs at request time — a hand-rolled copy would silently drift. Extract the pure state transition (the resolver call, the `manualOverride` reset rule, the autoFired diff, the lastModelId tracking) into a top-level exported helper. The `before_provider_request` handler becomes a thin wrapper that performs the transition and then does the ctx-side effects.
+
+Add these exports at the **module level** of `extensions/styles/index.ts`, above the default export:
+
+```ts
+export interface RequestState {
+  manualName: string | null;
+  manualOverride: boolean;
+  /** Last DEFINED modelId we've seen. Undefined transitions do NOT update this. */
+  lastModelId: string | undefined;
+  lastResultName: string | null;
+  lastResultIsAuto: boolean;
+}
+
+export function modelChanged(
+  prev: string | undefined,
+  curr: string | undefined,
+): boolean {
+  return prev !== undefined && curr !== undefined && prev !== curr;
+}
+
+export interface TransitionOutput {
+  state: RequestState;
+  result: ResolvedStyle | null;
+  autoFired: boolean;
+  warnings: Warning[];
+}
+
+/**
+ * Compute the next RequestState and resolved style for an incoming model id.
+ * Pure: no ctx, no UI, no persistence. The caller is responsible for
+ * surfacing warnings, notifying on autoFired, updating the footer, and
+ * dispatching the injection.
+ *
+ * `state` is treated as immutable input; a new state is returned.
+ */
+export function processModelRequest(
+  state: RequestState,
+  modelId: string | undefined,
+  stylesDir: string,
+): TransitionOutput {
+  // 1. Reset per-model stickiness only on defined→different-defined AND a
+  //    non-`/style off` previous choice.
+  let nextManualOverride = state.manualOverride;
+  if (modelChanged(state.lastModelId, modelId) && state.manualName !== null) {
+    nextManualOverride = false;
+  }
+
+  // 2. Resolve.
+  const out = resolveStyle({
+    manualName: state.manualName,
+    manualOverride: nextManualOverride,
+    modelId,
+    stylesDir,
+  });
+  const result = out.result;
+
+  // 3. autoFired purely from result transition.
+  const autoFired =
+    !!result &&
+    result.isAuto &&
+    (state.lastResultName !== result.name || !state.lastResultIsAuto);
+
+  // 4. lastModelId tracks the last DEFINED model id only. Transient undefined
+  //    requests do not erase the last known model — essential for the
+  //    edge case 'defined → undefined → different defined' to correctly
+  //    trigger a reset on the third step.
+  const nextLastModelId = modelId === undefined ? state.lastModelId : modelId;
+
+  return {
+    state: {
+      manualName: state.manualName,
+      manualOverride: nextManualOverride,
+      lastModelId: nextLastModelId,
+      lastResultName: result ? result.name : null,
+      lastResultIsAuto: result ? result.isAuto : false,
+    },
+    result,
+    autoFired,
+    warnings: out.warnings,
+  };
+}
+```
+
+Also import `Warning` from the resolver at the top of `index.ts`:
+
+```ts
+import { resolveStyle, type ResolvedStyle, type Warning } from "./resolver";
+```
+
+(Supersedes the import added in Step 1.)
+
+- [ ] **Step 3: Replace `before_provider_request` handler and remove dead code**
 
 Find the existing `before_provider_request` handler (the block from Task 7 marked `// ---- ephemeral payload-layer injection (unchanged in this task — Task 8 replaces this block) ----`) and replace it with:
 
 ```ts
   // ---- ephemeral payload-layer injection (resolver-driven) ----
-  function modelChanged(prev: string | undefined, curr: string | undefined): boolean {
-    return prev !== undefined && curr !== undefined && prev !== curr;
-  }
-
   pi.on("before_provider_request", (event, ctx) => {
-    const currentModelId = (ctx as any).model?.id as string | undefined;
+    const currentModelId = ctx.model?.id;
 
-    // Reset per-model stickiness only when:
-    //   - the model actually changed (defined → different defined), AND
-    //   - the user's choice wasn't an explicit /style off (manualName === null + override=true).
-    if (modelChanged(lastModelId, currentModelId) && manualName !== null) {
-      manualOverride = false;
-    }
+    const transition = processModelRequest(
+      {
+        manualName,
+        manualOverride,
+        lastModelId,
+        lastResultName,
+        lastResultIsAuto,
+      },
+      currentModelId,
+      STYLE_DIR,
+    );
 
-    const out = resolveStyle({
-      manualName,
-      manualOverride,
-      modelId: currentModelId,
-      stylesDir: STYLE_DIR,
-    });
+    // Commit state updates.
+    manualOverride = transition.state.manualOverride;
+    lastModelId = transition.state.lastModelId;
+    lastResultName = transition.state.lastResultName;
+    lastResultIsAuto = transition.state.lastResultIsAuto;
 
     // Surface deduped warnings.
-    for (const w of out.warnings) {
+    for (const w of transition.warnings) {
       if (warnedKeys.has(w.key)) continue;
       warnedKeys.add(w.key);
       ctx.ui?.notify?.(w.message, "warning");
     }
 
-    const result = out.result;
+    const result = transition.result;
 
-    // Detect auto-fire transition based on (name, isAuto) change.
-    const autoFired =
-      !!result &&
-      result.isAuto &&
-      (lastResultName !== result.name || !lastResultIsAuto);
-
-    if (autoFired) {
+    if (transition.autoFired && result) {
       ctx.ui?.notify?.(
         `Auto-applied style '${result.name}' for model '${currentModelId}'.`,
         "info",
       );
     }
 
-    // Update footer + last-* state regardless of injection outcome below.
-    lastResultName = result ? result.name : null;
-    lastResultIsAuto = result ? result.isAuto : false;
-    lastModelId = currentModelId;
     renderFooter(ctx, result);
 
     if (!result) return;
 
-    const api = (ctx as any).model?.api as string | undefined;
+    const api = ctx.model?.api;
     try {
       const inject = api ? INJECTORS[api] : undefined;
       if (inject) {
@@ -2187,7 +2474,9 @@ Find the existing `before_provider_request` handler (the block from Task 7 marke
   });
 ```
 
-- [ ] **Step 3: Replace the old `updateFooter` with the result-aware `renderFooter`**
+If the TypeScript compiler reports that `ctx.model` is `unknown` or `any` (i.e. the installed SDK types don't expose `model`), fall back to `(ctx as any).model?.id` and `(ctx as any).model?.api` and add a TODO to revisit when SDK types catch up. Run `npm run typecheck -w pi-styles` after this step to confirm.
+
+- [ ] **Step 4: Replace the old `updateFooter` with the result-aware `renderFooter`, and fix the picker checkmark**
 
 Delete the existing `updateFooter` introduced in Task 7 and replace it with:
 
@@ -2214,7 +2503,22 @@ Delete the existing `updateFooter` introduced in Task 7 and replace it with:
 
 Update the two existing callers in `setActiveManual` and `session_start` to call `renderFooter(ctx, null)` instead of `updateFooter(ctx)`. After this change, every footer update flows through `renderFooter`, so the rendering is single-sourced.
 
-- [ ] **Step 4: Remove the now-dead `readStyleText` function and `cache` variable**
+**Fix the picker active-marker (spec §7):** an auto-applied style must show `✓` in the picker too, not only manual picks. Find the picker handler's `options` construction:
+
+```ts
+      const options = [
+        ...names.map((n) => (n === manualName ? `✓ ${n}` : `  ${n}`)),
+```
+
+…and replace the comparand with the most recently *resolved* name, falling back to `manualName` for the case where the user opens the picker before any request has fired (so `lastResultName` is still null):
+
+```ts
+      const activeForPicker = lastResultName ?? manualName;
+      const options = [
+        ...names.map((n) => (n === activeForPicker ? `✓ ${n}` : `  ${n}`)),
+```
+
+- [ ] **Step 5: Remove the now-dead `readStyleText` function and `cache` variable**
 
 Delete:
 
@@ -2224,7 +2528,7 @@ Delete:
 
 …and the entire `readStyleText` function. Remove the `cache = null;` lines in `setActiveManual` and `session_start`.
 
-- [ ] **Step 5: Remove the now-stale `manualName` existence check from `session_start`**
+- [ ] **Step 6: Remove the now-stale `manualName` existence check from `session_start`**
 
 The post-restore block:
 
@@ -2239,7 +2543,7 @@ The post-restore block:
 
 …is no longer required: the resolver will surface a `style:missing:<name>` warning on the first request if the persisted name does not exist. Keeping the persisted `manualName` in place preserves the user's choice if the file is temporarily missing (e.g. unsynced project), matching the "explicit user choice is sacrosanct" axiom from the spec. **Delete this block.**
 
-- [ ] **Step 6: Run all tests and typecheck**
+- [ ] **Step 7: Run all tests and typecheck**
 
 ```bash
 npm test -w pi-styles
@@ -2248,7 +2552,7 @@ npm run typecheck -w pi-styles
 
 Expected: every prior test still passes; smoke test still passes; typecheck clean.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add extensions/styles/index.ts
@@ -2257,25 +2561,15 @@ git commit -m "feat(styles): drive injection through resolver with autoFired tra
 
 ---
 
-## Task 9: Integration tests — end-to-end state machine
+## Task 9: Integration tests — state machine lifecycle
 
-This task adds tests that exercise the **state machine in `index.ts`** indirectly by extracting the model-change detector and the auto-fire transition logic into a unit-testable form. We test the lifecycle (auto fires → user overrides → model change → new auto fires; `/style off` persists across model changes; resume defers to persisted manualName) without spinning up a real Pi session.
+This task verifies the lifecycle invariants from §5–§8 of the spec by calling **the same `processModelRequest` function** that the production handler calls (exported in Task 8). Because the test and the handler share one transition function, they cannot drift. We also add a fake-`ExtensionAPI` harness test that exercises the actual registered handlers end-to-end — covering plumbing the unit tests can't (UI calls, warning dedup, session_start scan, picker active-marker, payload mutation).
 
 **Files:**
-- Modify: `extensions/styles/index.ts` (extract `modelChanged` as exported helper)
 - Create: `extensions/styles/tests/integration.test.ts`
+- Create: `extensions/styles/tests/harness.test.ts`
 
-- [ ] **Step 1: Export the `modelChanged` helper**
-
-In `extensions/styles/index.ts`, move `modelChanged` out of the default export's body and turn it into a module-level exported function (keep the in-handler call site referring to it):
-
-```ts
-export function modelChanged(prev: string | undefined, curr: string | undefined): boolean {
-  return prev !== undefined && curr !== undefined && prev !== curr;
-}
-```
-
-- [ ] **Step 2: Write the failing integration tests**
+- [ ] **Step 1: Write the failing state-machine integration tests**
 
 Create `extensions/styles/tests/integration.test.ts`:
 
@@ -2284,13 +2578,12 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveStyle, type ResolvedStyle } from "../resolver";
-import { modelChanged } from "../index";
+import { processModelRequest, type RequestState } from "../index";
 
 /**
- * These tests model the index.ts state machine over a sequence of requests,
- * using the resolver directly. They verify the lifecycle invariants from the
- * spec (§5–§8) without spinning up a full Pi session.
+ * These tests verify the lifecycle invariants from spec §5–§8 by calling the
+ * SAME processModelRequest function that the production handler calls. They
+ * cannot drift from the handler.
  */
 
 let tmp: string;
@@ -2303,15 +2596,7 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-interface State {
-  manualName: string | null;
-  manualOverride: boolean;
-  lastModelId: string | undefined;
-  lastResultName: string | null;
-  lastResultIsAuto: boolean;
-}
-
-function freshState(): State {
+function freshState(): RequestState {
   return {
     manualName: null,
     manualOverride: false,
@@ -2321,33 +2606,13 @@ function freshState(): State {
   };
 }
 
-function step(
-  state: State,
-  modelId: string | undefined,
-): { state: State; result: ResolvedStyle | null; autoFired: boolean } {
-  if (modelChanged(state.lastModelId, modelId) && state.manualName !== null) {
-    state.manualOverride = false;
-  }
-  const out = resolveStyle({
-    manualName: state.manualName,
-    manualOverride: state.manualOverride,
-    modelId,
-    stylesDir: tmp,
-  });
-  const result = out.result;
-  const autoFired =
-    !!result &&
-    result.isAuto &&
-    (state.lastResultName !== result.name || !state.lastResultIsAuto);
-  state.lastResultName = result ? result.name : null;
-  state.lastResultIsAuto = result ? result.isAuto : false;
-  state.lastModelId = modelId;
-  return { state, result, autoFired };
+function step(state: RequestState, modelId: string | undefined) {
+  const out = processModelRequest(state, modelId, tmp);
+  return { ...out };
 }
 
-function setManual(state: State, name: string | null) {
-  state.manualName = name;
-  state.manualOverride = true;
+function setManual(state: RequestState, name: string | null): RequestState {
+  return { ...state, manualName: name, manualOverride: true };
 }
 
 function writeStyles() {
@@ -2367,8 +2632,9 @@ function writeStyles() {
 describe("state machine: auto-fire transitions", () => {
   it("fires on first request when auto rule matches", () => {
     writeStyles();
-    const s = freshState();
+    let s = freshState();
     const r = step(s, "claude-sonnet-4-5");
+    s = r.state;
     expect(r.autoFired).toBe(true);
     expect(r.result?.name).toBe("thought-catalyst");
     expect(r.result?.isAuto).toBe(true);
@@ -2376,8 +2642,8 @@ describe("state machine: auto-fire transitions", () => {
 
   it("does not re-fire on same model + same result", () => {
     writeStyles();
-    const s = freshState();
-    step(s, "claude-sonnet-4-5");
+    let s = freshState();
+    s = step(s, "claude-sonnet-4-5").state;
     const r = step(s, "claude-sonnet-4-5");
     expect(r.autoFired).toBe(false);
   });
@@ -2388,8 +2654,8 @@ describe("state machine: auto-fire transitions", () => {
       path.join(tmp, "_config.json"),
       JSON.stringify({ auto: [{ match: "/.*/", style: "concise" }] }),
     );
-    const s = freshState();
-    step(s, "claude-sonnet-4-5");
+    let s = freshState();
+    s = step(s, "claude-sonnet-4-5").state;
     const r = step(s, "gpt-5");
     expect(r.autoFired).toBe(false);
     expect(r.result?.name).toBe("concise");
@@ -2397,8 +2663,8 @@ describe("state machine: auto-fire transitions", () => {
 
   it("re-fires when switching to a model that resolves to a different style", () => {
     writeStyles();
-    const s = freshState();
-    step(s, "claude-sonnet-4-5");
+    let s = freshState();
+    s = step(s, "claude-sonnet-4-5").state;
     const r = step(s, "gpt-5");
     expect(r.autoFired).toBe(true);
     expect(r.result?.name).toBe("concise");
@@ -2408,53 +2674,83 @@ describe("state machine: auto-fire transitions", () => {
 describe("state machine: manual override lifecycle", () => {
   it("manual /style <name> sticks until model change", () => {
     writeStyles();
-    const s = freshState();
-    step(s, "claude-sonnet-4-5"); // auto → thought-catalyst
-    setManual(s, "concise");
+    let s = freshState();
+    s = step(s, "claude-sonnet-4-5").state; // auto → thought-catalyst
+    s = setManual(s, "concise");
     const r1 = step(s, "claude-sonnet-4-5");
+    s = r1.state;
     expect(r1.result?.name).toBe("concise");
     expect(r1.result?.isAuto).toBe(false);
     // Model change resets override; auto evaluates for the new model.
     const r2 = step(s, "gpt-5");
+    expect(r2.state.manualOverride).toBe(false);
     expect(r2.result?.name).toBe("concise");
     expect(r2.result?.isAuto).toBe(true);
   });
 
   it("/style off persists across model changes", () => {
     writeStyles();
-    const s = freshState();
-    step(s, "claude-sonnet-4-5");
-    setManual(s, null); // /style off
+    let s = freshState();
+    s = step(s, "claude-sonnet-4-5").state;
+    s = setManual(s, null); // /style off
     const r1 = step(s, "claude-sonnet-4-5");
+    s = r1.state;
     expect(r1.result).toBeNull();
     const r2 = step(s, "gpt-5");
+    s = r2.state;
     expect(r2.result).toBeNull();
     const r3 = step(s, "claude-opus-4-5");
+    s = r3.state;
     expect(r3.result).toBeNull();
     expect(s.manualOverride).toBe(true);
   });
+});
 
-  it("model change is not triggered by undefined transitions", () => {
+describe("state machine: modelId undefined transitions", () => {
+  it("undefined → defined does NOT reset manualOverride", () => {
     writeStyles();
-    const s = freshState();
-    setManual(s, "concise");
+    let s = setManual(freshState(), "concise");
     const r1 = step(s, undefined);
+    s = r1.state;
     expect(r1.result?.name).toBe("concise");
-    const r2 = step(s, "claude-sonnet-4-5");
-    expect(r2.result?.name).toBe("concise"); // override survived undefined→defined
     expect(s.manualOverride).toBe(true);
-    const r3 = step(s, "gpt-5"); // now defined→different-defined
+    const r2 = step(s, "claude-sonnet-4-5");
+    s = r2.state;
+    expect(r2.result?.name).toBe("concise"); // override survived
+    expect(s.manualOverride).toBe(true);
+  });
+
+  it("defined → undefined → same defined does NOT reset manualOverride", () => {
+    writeStyles();
+    let s = setManual(freshState(), "concise");
+    s = step(s, "claude-sonnet-4-5").state;
+    s = step(s, undefined).state;
+    const r = step(s, "claude-sonnet-4-5");
+    s = r.state;
+    expect(s.manualOverride).toBe(true);
+    expect(r.result?.name).toBe("concise");
+  });
+
+  it("defined → undefined → DIFFERENT defined DOES reset manualOverride", () => {
+    // This is the bug-prone case: a transient undefined between two distinct
+    // defined models must NOT erase the model-change signal.
+    writeStyles();
+    let s = setManual(freshState(), "concise");
+    s = step(s, "claude-sonnet-4-5").state;
+    s = step(s, undefined).state;
+    expect(s.lastModelId).toBe("claude-sonnet-4-5"); // last DEFINED preserved
+    const r = step(s, "gpt-5");
+    s = r.state;
     expect(s.manualOverride).toBe(false);
-    expect(r3.result?.name).toBe("concise"); // gpt-5 maps to concise via auto
-    expect(r3.result?.isAuto).toBe(true);
+    expect(r.result?.isAuto).toBe(true);
+    expect(r.result?.name).toBe("concise"); // gpt-5 → concise via auto
   });
 });
 
 describe("state machine: resume semantics", () => {
   it("persisted manualName applies on first request after resume (no auto eval)", () => {
     writeStyles();
-    // Simulate resume by hand-constructing the post-session_start state.
-    const s: State = {
+    const s: RequestState = {
       manualName: "concise",
       manualOverride: true, // restored because an entry was found
       lastModelId: undefined,
@@ -2469,59 +2765,226 @@ describe("state machine: resume semantics", () => {
 
   it("persisted off survives resume and subsequent model changes", () => {
     writeStyles();
-    const s: State = {
+    let s: RequestState = {
       manualName: null,
-      manualOverride: true, // /style off persisted
+      manualOverride: true,
       lastModelId: undefined,
       lastResultName: null,
       lastResultIsAuto: false,
     };
-    const r1 = step(s, "claude-sonnet-4-5");
-    expect(r1.result).toBeNull();
-    const r2 = step(s, "gpt-5");
-    expect(r2.result).toBeNull();
+    s = step(s, "claude-sonnet-4-5").state;
+    s = step(s, "gpt-5").state;
     expect(s.manualOverride).toBe(true);
   });
 
   it("no persisted entry → auto evaluates from first request", () => {
     writeStyles();
-    const s = freshState();
-    const r = step(s, "claude-sonnet-4-5");
+    const r = step(freshState(), "claude-sonnet-4-5");
     expect(r.result?.name).toBe("thought-catalyst");
     expect(r.result?.isAuto).toBe(true);
   });
 });
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
 npm test -w pi-styles -- integration
 ```
 
-Expected: FAIL — `modelChanged` not exported from `../index`.
+Expected: FAIL — either `processModelRequest` not exported (if Task 8 wasn't completed properly) or actual assertion failures.
 
-- [ ] **Step 4: Confirm `modelChanged` is exported** (per Step 1)
+- [ ] **Step 3: Verify `processModelRequest` is exported from `index.ts`** (per Task 8 Step 2)
 
-If you haven't already, ensure the function declaration in `extensions/styles/index.ts` reads:
+If the tests fail with an import error, return to Task 8 Step 2 and confirm the helper was exported at the module level above the default export. If they fail with an assertion error, that's a real bug — fix it before continuing.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+npm test -w pi-styles -- integration
+```
+
+Expected: PASS — all 12 state-machine integration tests passing.
+
+- [ ] **Step 5: Write the fake-`pi` harness test**
+
+This test wires up a minimal fake `ExtensionAPI` + `ctx` to drive the **actual registered handlers** in `index.ts` end-to-end. It covers ground the pure transition tests can't: warning dedup against `ctx.ui.notify`, session_start scan of `ctx.sessionManager` entries, picker active-marker for auto-applied styles, and payload mutation through `INJECTORS`.
+
+Create `extensions/styles/tests/harness.test.ts`:
 
 ```ts
-export function modelChanged(prev: string | undefined, curr: string | undefined): boolean {
-  return prev !== undefined && curr !== undefined && prev !== curr;
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import styles from "../index";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const STYLE_DIR = path.resolve(HERE, "..", "styles");
+
+/**
+ * Minimal fake of the Pi ExtensionAPI / context surface that the styles
+ * extension touches. Captures handler registrations, notify/setStatus calls,
+ * and session entries so tests can assert on them.
+ */
+function makeFakePi() {
+  const handlers = new Map<string, Function>();
+  const commands = new Map<string, any>();
+  const sessionEntries: any[] = [];
+  return {
+    handlers,
+    commands,
+    sessionEntries,
+    pi: {
+      on(event: string, handler: Function) {
+        handlers.set(event, handler);
+      },
+      registerCommand(name: string, def: any) {
+        commands.set(name, def);
+      },
+      appendEntry(customType: string, data: any) {
+        sessionEntries.push({ type: "custom", customType, data });
+      },
+    },
+  };
 }
+
+function makeFakeCtx(opts: {
+  modelId?: string;
+  api?: string;
+  branchEntries?: any[];
+}) {
+  const notifyCalls: Array<{ message: string; level?: string }> = [];
+  const statusCalls: Array<{ key: string; value: string | undefined }> = [];
+  const ctx: any = {
+    model: opts.modelId ? { id: opts.modelId, api: opts.api ?? "anthropic-messages" } : undefined,
+    sessionManager: {
+      getBranch() {
+        return opts.branchEntries ?? [];
+      },
+    },
+    ui: {
+      notify(message: string, level?: string) {
+        notifyCalls.push({ message, level });
+      },
+      setStatus(key: string, value: string | undefined) {
+        statusCalls.push({ key, value });
+      },
+      async select(_label: string, options: string[]) {
+        return options[0] ?? null;
+      },
+      async input() {
+        return null;
+      },
+      async confirm() {
+        return false;
+      },
+      async editor() {
+        return null;
+      },
+    },
+    notifyCalls,
+    statusCalls,
+  };
+  return ctx;
+}
+
+describe("harness: registered handlers fire correctly", () => {
+  it("registers session_start, before_provider_request, and the /style command", () => {
+    const { pi, handlers, commands } = makeFakePi();
+    styles(pi as any);
+    expect(handlers.has("session_start")).toBe(true);
+    expect(handlers.has("before_provider_request")).toBe(true);
+    expect(commands.has("style")).toBe(true);
+  });
+
+  it("session_start restores manualName and manualOverride from a persisted entry", async () => {
+    const { pi, handlers } = makeFakePi();
+    styles(pi as any);
+    const ctx = makeFakeCtx({
+      branchEntries: [
+        { type: "custom", customType: "styles:active", data: { name: "concise" } },
+      ],
+    });
+    await handlers.get("session_start")!({}, ctx);
+    // Footer reflects the restored manual choice.
+    const lastStatus = ctx.statusCalls.at(-1);
+    expect(lastStatus?.key).toBe("style");
+    expect(lastStatus?.value).toBe("style: concise");
+  });
+
+  it("session_start restores /style off (persisted { name: null })", async () => {
+    const { pi, handlers } = makeFakePi();
+    styles(pi as any);
+    const ctx = makeFakeCtx({
+      branchEntries: [
+        { type: "custom", customType: "styles:active", data: { name: null } },
+      ],
+    });
+    await handlers.get("session_start")!({}, ctx);
+    // Footer cleared.
+    const lastStatus = ctx.statusCalls.at(-1);
+    expect(lastStatus?.value).toBeUndefined();
+  });
+
+  it("warning is surfaced exactly once across many requests (dedup)", async () => {
+    const { pi, handlers } = makeFakePi();
+    styles(pi as any);
+    const ctxStart = makeFakeCtx({
+      branchEntries: [
+        // Reference a style that does not exist in the shipped styles dir.
+        { type: "custom", customType: "styles:active", data: { name: "ghost-style" } },
+      ],
+    });
+    await handlers.get("session_start")!({}, ctxStart);
+
+    const handler = handlers.get("before_provider_request")!;
+    let totalMissingWarnings = 0;
+    for (let i = 0; i < 5; i++) {
+      const ctx = makeFakeCtx({ modelId: "claude-sonnet-4-5" });
+      await handler({ payload: {} }, ctx);
+      totalMissingWarnings += ctx.notifyCalls.filter((c) =>
+        c.message.includes("ghost-style"),
+      ).length;
+    }
+    // Warning must fire exactly once across the session, regardless of how
+    // many requests reference the missing style.
+    expect(totalMissingWarnings).toBe(1);
+  });
+
+  it("before_provider_request mutates the payload for an existing shipped style", async () => {
+    const { pi, handlers } = makeFakePi();
+    styles(pi as any);
+    // Restore a known shipped manual style.
+    const ctxStart = makeFakeCtx({
+      branchEntries: [
+        { type: "custom", customType: "styles:active", data: { name: "concise" } },
+      ],
+    });
+    await handlers.get("session_start")!({}, ctxStart);
+
+    const ctx = makeFakeCtx({ modelId: "claude-sonnet-4-5", api: "anthropic-messages" });
+    // Minimum payload shape required by the anthropic injector.
+    const payload: any = { messages: [{ role: "user", content: "hi" }] };
+    await handlers.get("before_provider_request")!({ payload }, ctx);
+
+    // The injector should have appended a <userStyle> block somewhere in the
+    // payload. We assert that the wrapped concise.md content reaches the wire.
+    const conciseBody = fs.readFileSync(path.join(STYLE_DIR, "concise.md"), "utf8").trim();
+    expect(JSON.stringify(payload)).toContain(`<userStyle>\n${conciseBody}\n</userStyle>`);
+  });
+});
 ```
 
-…and is referenced as `modelChanged(lastModelId, currentModelId)` inside the `before_provider_request` handler.
-
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run the harness tests**
 
 ```bash
-npm test -w pi-styles -- integration
+npm test -w pi-styles -- harness
 ```
 
-Expected: PASS — all 10 integration tests passing.
+Expected: PASS — 5 tests passing. If the payload-mutation test fails because the anthropic injector requires a different shape than `{ messages: [...] }`, inspect `extensions/styles/injectors.ts` to determine the minimal required shape and update the test fixture. Do **not** modify `injectors.ts` itself — the spec mandates it stays unchanged.
 
-- [ ] **Step 6: Run full test suite + typecheck**
+- [ ] **Step 7: Run full test suite + typecheck**
 
 ```bash
 npm test -w pi-styles
@@ -2530,18 +2993,18 @@ npm run typecheck -w pi-styles
 
 Expected: every test from Tasks 1–9 passing; no type errors.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add extensions/styles/index.ts extensions/styles/tests/integration.test.ts
-git commit -m "test(styles): integration tests for state machine lifecycle and resume semantics"
+git add extensions/styles/tests/integration.test.ts extensions/styles/tests/harness.test.ts
+git commit -m "test(styles): state machine integration + fake-pi handler harness"
 ```
 
 ---
 
-## Task 10: Backwards-compatibility regression
+## Task 10: Backwards-compatibility regression and cross-injector coverage
 
-Verify the three shipped styles (`concise.md`, `thought-catalyst.md`, `test-style.md`) produce byte-identical injected content via the resolver as they did via the legacy `readStyleText` path.
+Verify the three shipped styles (`concise.md`, `thought-catalyst.md`, `test-style.md`) produce byte-identical injected content via the resolver as they did via the legacy `readStyleText` path. Then verify the wrapped content reaches the payload through **each** `INJECTORS[api]` (the spec's testing strategy explicitly asks for cross-api coverage). Because `injectors.ts` is unchanged and the content is byte-identical, the cross-injector test is technically transitive — but the explicit assertion guards against future regressions if someone *does* edit `injectors.ts`.
 
 **Files:**
 - Create: `extensions/styles/tests/backwards-compat.test.ts`
@@ -2556,6 +3019,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveStyle } from "../resolver";
+import { INJECTORS } from "../injectors";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STYLE_DIR = path.resolve(HERE, "..", "styles");
@@ -2567,6 +3031,19 @@ const STYLE_DIR = path.resolve(HERE, "..", "styles");
 function legacyWrap(name: string): string {
   const raw = fs.readFileSync(path.join(STYLE_DIR, `${name}.md`), "utf8").trim();
   return raw ? `<userStyle>\n${raw}\n</userStyle>` : "";
+}
+
+/**
+ * Minimal payload fixtures sufficient to exercise each INJECTORS branch.
+ * Inspect `extensions/styles/injectors.ts` if any of these need adjustment
+ * for the local SDK version; do NOT modify injectors.ts itself.
+ */
+function emptyPayloadFor(api: string): any {
+  if (api === "anthropic-messages") return { messages: [{ role: "user", content: "hi" }] };
+  if (api === "openai-responses") return { input: [{ role: "user", content: "hi" }] };
+  if (api === "openai-completions") return { messages: [{ role: "user", content: "hi" }] };
+  // Fall back to a generic shape; the injector may decline to mutate it.
+  return { messages: [{ role: "user", content: "hi" }] };
 }
 
 describe("backwards compatibility: shipped styles", () => {
@@ -2585,7 +3062,6 @@ describe("backwards compatibility: shipped styles", () => {
   }
 
   it("no _config.json present → no auto-config warnings", () => {
-    // Assert the shipped extension has no _config.json yet.
     expect(fs.existsSync(path.join(STYLE_DIR, "_config.json"))).toBe(false);
     const out = resolveStyle({
       manualName: "concise",
@@ -2593,11 +3069,32 @@ describe("backwards compatibility: shipped styles", () => {
       modelId: "claude-sonnet-4-5",
       stylesDir: STYLE_DIR,
     });
-    // Should fall back to manual baseline with no warnings.
     expect(out.warnings).toEqual([]);
     expect(out.result?.name).toBe("concise");
     expect(out.result?.isAuto).toBe(false);
   });
+});
+
+describe("backwards compatibility: every INJECTORS api propagates the wrapped content", () => {
+  const out = resolveStyle({
+    manualName: "concise",
+    manualOverride: true,
+    modelId: undefined,
+    stylesDir: STYLE_DIR,
+  });
+  const wrapped = out.result!.content;
+
+  for (const api of Object.keys(INJECTORS)) {
+    it(`'${api}' embeds the wrapped <userStyle> block in the payload`, () => {
+      const payload = emptyPayloadFor(api);
+      INJECTORS[api](payload, wrapped);
+      // The wrapped block must appear somewhere in the mutated payload. We
+      // don't assert WHERE — that's the injector's job, and the unchanged
+      // injector code is the source of truth.
+      expect(JSON.stringify(payload)).toContain("<userStyle>");
+      expect(JSON.stringify(payload)).toContain("</userStyle>");
+    });
+  }
 });
 ```
 
@@ -2607,13 +3104,13 @@ describe("backwards compatibility: shipped styles", () => {
 npm test -w pi-styles -- backwards-compat
 ```
 
-Expected: PASS — all 4 regression tests passing on first run. If any fail, the resolver has drifted from the spec's backwards-compat guarantee and must be fixed before continuing.
+Expected: PASS — 4 regression tests plus one per `INJECTORS` api. If any payload-mutation case fails, inspect `extensions/styles/injectors.ts` to discover the minimal required payload shape for that api and update `emptyPayloadFor`; do **not** modify `injectors.ts`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add extensions/styles/tests/backwards-compat.test.ts
-git commit -m "test(styles): backwards-compat regression for shipped flat styles"
+git commit -m "test(styles): backwards-compat regression for shipped styles + cross-injector coverage"
 ```
 
 ---
@@ -2798,29 +3295,52 @@ If smoke testing revealed an issue, fix it in a new task by going back to the mo
 ## Self-Review Notes
 
 **Spec coverage:**
-- §1 two-tier layout → Tasks 3, 6 (`styleExists`, picker enumeration).
+- §1 two-tier layout → Tasks 3 (`styleExists`), 6 (picker enumeration + unit test).
 - §2 dispatcher format → Task 4 (`loadDispatcher`).
 - §3 auto-config format → Task 4 (`loadAutoConfig`).
-- §4 matching primitive → Task 2 (`compileMatcher`).
+- §4 matching primitive → Task 2 (`compileMatcher`; flag-rejection bug from C1 review fixed).
 - §5 resolution algorithm → Task 5 (`resolveStyle`).
-- §6 auto-firing semantics → Tasks 8, 9 (autoFired transition logic + integration tests).
-- §7 UX surfaces → Tasks 7, 8 (footer + warnings + notifications).
-- §8 session persistence → Tasks 7, 9 (resume restores `manualOverride := true`; tested in integration).
-- §9 caching → Tasks 4, 5 (mtime caches in loaders).
+- §6 auto-firing semantics → Tasks 8 (`processModelRequest`), 9 (integration tests).
+- §7 UX surfaces → Tasks 7, 8 (footer + warnings + notifications + picker `✓` covers auto styles too).
+- §8 session persistence → Tasks 7, 9 (resume restores `manualOverride := true`; tested in integration and harness).
+- §9 caching → Tasks 4, 5 (mtime caches; delete-and-reappear invalidation covered in Task 4 tests).
 - Module structure (`resolver.ts`, `index.ts` slim, `injectors.ts` untouched) → Tasks 2–8.
-- Backwards compatibility → Task 10.
-- Edge cases (all 20 rows in the spec's table) → covered across Tasks 5 (resolver tests), 9 (integration), 12 (manual).
-- Testing strategy → Tasks 2 (matcher), 3 (validators), 4 (loaders), 5 (resolver), 9 (state machine integration), 10 (backwards-compat), 12 (manual e2e).
+- Backwards compatibility → Task 10 (byte-identical content + cross-injector payload propagation).
+- Edge cases (all 20 rows in the spec's table) → covered across Tasks 5 (resolver edge cases), 9 (state machine including defined→undefined→different-defined), 12 (manual).
+- Testing strategy → Tasks 2 (matcher), 3 (validators), 4 (loaders), 5 (resolver), 9 (state machine integration + fake-pi harness for warning dedup, session_start scan, payload mutation), 10 (backwards-compat + every-api propagation), 12 (manual e2e).
 
 **Placeholder scan:** none.
 
 **Type consistency:**
 - `Matcher` (Task 2) referenced by `CompiledAutoRule`, `CompiledVariant` (Task 4), and `resolveStyle` (Task 5).
-- `Warning` (Task 4) used by all `*Result` types and `ResolveOutput`.
-- `ResolvedStyle` (Task 5) imported in `index.ts` Task 8 and integration test Task 9.
+- `Warning` (Task 4) used by all `*Result` types, `ResolveOutput`, and `TransitionOutput` (Task 8). Re-exported through `index.ts` for the integration test.
+- `ResolvedStyle` (Task 5) imported in `index.ts` Task 8, used in `renderFooter`, `processModelRequest`, and `TransitionOutput`.
+- `RequestState` and `TransitionOutput` (Task 8) consumed by integration test (Task 9) directly via `processModelRequest`.
 - `compileMatcher` returns `Matcher | null`; callers check for null and emit warnings — consistent across Tasks 4–5.
 - `setActiveManual(name: string | null, ctx: any)` signature is identical at all five call sites in Task 7.
-- `modelChanged(prev: string | undefined, curr: string | undefined): boolean` signature consistent between in-handler use (Task 8) and exported form (Task 9).
+- `modelChanged(prev: string | undefined, curr: string | undefined): boolean` exported from `index.ts` in Task 8, used by both `processModelRequest` and exposed for any external test.
+- `listStyles(dir?: string): string[]` (Task 6 refactor) is callable with or without the explicit dir argument; in-extension callers omit it; tests pass a tmp dir.
+
+**Review responses (Pi gpt-5.5/xhigh review of the plan):**
+- **C1 (compileMatcher flag rejection):** fixed in Task 2 Step 3 by widening the slash-form detection regex to `[A-Za-z]*` and validating the flag set separately against `^[imsu]*$`. Previously the regex itself required `[imsu]*`, causing `/foo/g` to fall through to literal exact-match.
+- **C2 (lastModelId erased by undefined transition):** fixed in Task 8 Step 2 by tracking `lastModelId` as "last DEFINED model id only" inside `processModelRequest`. Verified by the new `defined → undefined → different-defined DOES reset manualOverride` test in Task 9 Step 1.
+- **I1 (handler/test drift risk):** addressed by extracting `processModelRequest` (Task 8 Step 2) used by both the production handler and the integration tests — they cannot drift. Additionally, the fake-pi harness in Task 9 Step 5 covers the side-effect surface (notify/setStatus/payload).
+- **I2 (TDD ordering inversion):** dissolved by the Task 8 restructure; `processModelRequest` is exported as part of Task 8 (the handler refactor), so Task 9 is purely test-writing.
+- **I3 (picker enumeration untested):** Task 6 Step 1 adds a dedicated `list-styles.test.ts` exercising 8 cases.
+- **I4 (picker `✓` for auto styles):** fixed in Task 8 Step 4 (`activeForPicker = lastResultName ?? manualName`).
+- **I5 (`isSafeRelative` accepts internal `..`):** fixed in Task 4 Step 4 by checking raw segments before normalization. New test in Task 4 Step 2 covers `sub/../default.md`.
+- **I6 (warning keys not style-scoped):** fixed in Task 4 Step 4 by suffixing dispatcher/variant keys with `path.basename(styleDir)`. New test in Task 4 Step 2 verifies two broken styles produce distinct keys.
+- **I7 (mtime test flakiness):** mtime delta changed from `+10ms` to `+2000ms` in Task 4 Step 2.
+- **M1 (Task 7 wording ambiguity):** clarified to "replace the entire default-export function" with explicit list of preserved module-level helpers.
+- **M2 (Task 6 Step 2 confusing scratch step):** removed; replaced by the proper `list-styles.test.ts` unit test.
+- **M3 (misleading test name):** renamed to "does NOT surface loadAutoConfig warnings when manual override wins".
+- **M5 (`ctx.model` typed):** Task 8 Step 3 drops `as any` casts; fallback instruction added if the local SDK version lacks the typed surface.
+- **SG2 (defined→undefined→different-defined test):** added explicitly in Task 9 Step 1 alongside two related transitions.
+- **SG4/SG5 (warning dedup + session_start scan tests):** covered by the fake-pi harness in Task 9 Step 5.
+- **SG6 (`_config.json` delete/reappear cache test):** added in Task 4 Step 2.
+- **SG7 / I8 (cross-injector matrix):** partially addressed in Task 10 Step 1 with an automated loop over `Object.keys(INJECTORS)` asserting `<userStyle>` propagation. Pushed back on the full "verify exact payload mutation byte-for-byte across every api" because `injectors.ts` is unchanged and content is byte-identical (Task 10's other tests), making the rest transitive.
+- **M4 (`foo..bar` accepted by `validateStyleName`):** pushed back. `foo..bar` is a legitimate basename; `path.join(stylesDir, "foo..bar")` does not escape `stylesDir`. The spec's "no `..`" applies to path segments, not arbitrary substrings, and the explicit `name === ".."` guard plus the `STYLE_NAME_RE` regex are sufficient.
+- **SG1 (malformed complex directories silently ignored in picker):** pushed back. The spec's Edge Cases table reads: "Complex style directory missing `dispatcher.json` | Not listed in picker. If referenced by name, one-time warning; treated as missing." The picker silence is the **specified** behavior. The warning fires (via the resolver) only when the malformed style is referenced.
 
 ---
 
