@@ -5,11 +5,12 @@
   "keywords": ["pi-package", "pi-extension", "styles", "userStyle", "prompt"],
   "license": "MIT",
   "type": "module",
-  "files": ["*.ts", "styles", "README.md"],
+  "files": ["index.ts", "injectors.ts", "styles", "README.md"],
   "pi": {
     "extensions": ["./index.ts"]
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "latest",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   }
 }
