@@ -5,7 +5,7 @@
   "keywords": ["pi-package", "pi-extension", "styles", "userStyle", "prompt"],
   "license": "MIT",
   "type": "module",
-  "files": ["index.ts", "injectors.ts", "styles", "README.md"],
+  "files": ["index.ts", "injectors.ts", "styleResolver.ts", "styles", "README.md"],
   "pi": {
     "extensions": ["./index.ts"]
   },
