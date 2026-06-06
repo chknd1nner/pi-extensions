@@ -1,14 +1,15 @@
 /**
  * styles — claude.ai-style output styles for Pi.
  *
- * A `/style` command lists the styles in ./styles/*.md, lets you create a new
- * one, or turn styling off. The active style is injected EPHEMERALLY into every
- * provider request as a trailing <userStyle> block — never persisted to the
- * session, never accumulating, only ever the last thing the model sees.
+ * A `/style` command selects a sticky style mode:
  *
- * Injection happens in `before_provider_request` (after serialization, after
- * cache_control is locked) and is dispatched per `model.api`, so switching
- * models mid-session is handled automatically. See ./injectors.ts.
+ *   - off: inject nothing
+ *   - manual: inject one named style, with optional per-model variants
+ *   - auto: choose a style from styles/_config.json by exact model ID
+ *
+ * The resolved style text is injected EPHEMERALLY into every provider request as
+ * a trailing <userStyle> block. It is never persisted to the session and never
+ * accumulates in conversation history.
  */
 
 import fs from "node:fs";
@@ -16,25 +17,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { INJECTORS, genericFallback } from "./injectors";
+import { RESERVED_STYLE_ARGS, StyleResolver, type ListedStyle } from "./styleResolver";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const STYLE_DIR = path.join(HERE, "styles");
+export const DEFAULT_STYLE_DIR = path.join(HERE, "styles");
 const ACTIVE_ENTRY = "styles:active";
 const DEBUG = !!process.env.PI_STYLES_DEBUG;
 
 const ACT_CREATE = "➕  Create new style…";
-const ACT_OFF = "⊘  None (turn off styles)";
+const ACT_AUTO = "Auto (choose style by model)";
+const ACT_OFF = "None (turn off styles)";
+
+type StyleMode =
+  | { kind: "off" }
+  | { kind: "manual"; name: string }
+  | { kind: "auto" };
+
+export interface StylesExtensionOptions {
+  styleDir?: string;
+}
 
 function debug(...args: unknown[]) {
   if (DEBUG) console.error("[styles]", ...args);
-}
-
-function ensureDir() {
-  try {
-    fs.mkdirSync(STYLE_DIR, { recursive: true });
-  } catch {
-    /* ignore */
-  }
 }
 
 function slugify(s: string): string {
@@ -47,100 +51,189 @@ function slugify(s: string): string {
   );
 }
 
-function styleFile(name: string): string {
-  return path.join(STYLE_DIR, `${name}.md`);
+function modeEntry(mode: StyleMode): unknown {
+  if (mode.kind === "auto") return { auto: true };
+  if (mode.kind === "manual") return { name: mode.name };
+  return { name: null };
 }
 
-function listStyles(): string[] {
-  ensureDir();
-  try {
-    return fs
-      .readdirSync(STYLE_DIR)
-      .filter((f) => f.toLowerCase().endsWith(".md"))
-      .map((f) => f.replace(/\.md$/i, ""))
-      .sort((a, b) => a.localeCompare(b));
-  } catch {
-    return [];
+function restoreModeFromEntries(entries: any[]): StyleMode {
+  let mode: StyleMode = { kind: "off" };
+  for (const entry of entries) {
+    if (entry?.type !== "custom" || entry?.customType !== ACTIVE_ENTRY) continue;
+    const data = entry.data;
+    if (data?.auto === true) {
+      mode = { kind: "auto" };
+    } else if (data && Object.prototype.hasOwnProperty.call(data, "name")) {
+      mode = typeof data.name === "string" ? { kind: "manual", name: data.name } : { kind: "off" };
+    }
   }
+  return mode;
 }
 
-export default function styles(pi: ExtensionAPI) {
-  let activeName: string | null = null;
-  let cache: { name: string; mtimeMs: number; text: string } | null = null;
+function styleChoiceLabel(style: ListedStyle, currentMode: StyleMode): string {
+  const mark = currentMode.kind === "manual" && currentMode.name === style.name ? "✓" : " ";
+  return `${mark} ${style.label}`;
+}
+
+function actionChoiceLabel(active: boolean, label: string): string {
+  return `${active ? "✓" : " "} ${label}`;
+}
+
+function directStyleNames(styles: ListedStyle[]): string[] {
+  return styles.filter((style) => !style.reserved).map((style) => style.name);
+}
+
+export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions = {}): void {
+  const resolver = new StyleResolver(options.styleDir ?? DEFAULT_STYLE_DIR);
+  let mode: StyleMode = { kind: "off" };
+  let lastAutoResolved: string | null = null;
   const warnedApis = new Set<string>();
 
-  /** Read + wrap a style file, cached by mtime so manual edits are picked up. */
-  function readStyleText(name: string): string | null {
-    const file = styleFile(name);
-    try {
-      const st = fs.statSync(file);
-      if (cache && cache.name === name && cache.mtimeMs === st.mtimeMs) return cache.text;
-      const raw = fs.readFileSync(file, "utf8").trim();
-      const text = raw ? `<userStyle>\n${raw}\n</userStyle>` : "";
-      cache = { name, mtimeMs: st.mtimeMs, text };
-      return text;
-    } catch {
-      return null;
+  function attachWarnings(ctx: any): void {
+    resolver.setWarningSink((_id, message) => ctx?.ui?.notify?.(message, "warning"));
+  }
+
+  function updateFooter(ctx: any): void {
+    if (mode.kind === "off") {
+      ctx?.ui?.setStatus?.("style", undefined);
+    } else if (mode.kind === "manual") {
+      ctx?.ui?.setStatus?.("style", `style: ${mode.name}`);
+    } else {
+      ctx?.ui?.setStatus?.("style", lastAutoResolved ? `style: ${lastAutoResolved} (auto)` : "style: auto");
     }
   }
 
-  function updateFooter(ctx: any) {
-    ctx?.ui?.setStatus?.("style", activeName ? `style: ${activeName}` : undefined);
-  }
-
-  function setActive(name: string | null, ctx: any, persist = true) {
-    activeName = name;
-    cache = null;
+  function setMode(nextMode: StyleMode, ctx: any, persist = true): void {
+    attachWarnings(ctx);
+    mode = nextMode;
+    lastAutoResolved = null;
     if (persist) {
       try {
-        pi.appendEntry(ACTIVE_ENTRY, { name });
+        pi.appendEntry(ACTIVE_ENTRY, modeEntry(mode));
       } catch {
         /* ephemeral session: in-memory only */
       }
     }
     updateFooter(ctx);
-    debug("setActive", name);
+    debug("setMode", mode);
   }
 
-  // ---- restore active style on session start / reload / resume ----
+  async function runCreate(ctx: any): Promise<void> {
+    attachWarnings(ctx);
+    const rawName = await ctx.ui.input("New style name:", "e.g. concise, socratic, code-only");
+    if (!rawName) return;
+
+    let name = slugify(rawName);
+    if (RESERVED_STYLE_ARGS.has(name)) {
+      const renamed = `${name}-style`;
+      ctx.ui.notify(`'${name}' is reserved for /style commands; creating '${renamed}' instead.`, "warning");
+      name = renamed;
+    }
+
+    const file = path.join(options.styleDir ?? DEFAULT_STYLE_DIR, `${name}.md`);
+    if (fs.existsSync(file) || resolver.styleExists(name)) {
+      const ok = await ctx.ui.confirm("Overwrite?", `Style '${name}' already exists. Create or overwrite '${name}.md'?`);
+      if (!ok) return;
+    }
+
+    const seed =
+      "Write the instructions that should shape responses here.\n\n" +
+      "- Tone and voice\n- Length and structure\n- Formatting preferences\n";
+    const content = await ctx.ui.editor(`Style: ${name}`, seed);
+    if (content == null) return;
+
+    resolver.ensureDir();
+    fs.writeFileSync(file, `${content.trim()}\n`, "utf8");
+    resolver.clearCaches();
+    setMode({ kind: "manual", name }, ctx);
+    ctx.ui.notify(`Created and activated style '${name}'.`, "info");
+  }
+
+  function activateByName(arg: string, ctx: any): boolean {
+    attachWarnings(ctx);
+    const a = arg.trim();
+    if (!a) return false;
+
+    const lower = a.toLowerCase();
+    if (lower === "auto") {
+      setMode({ kind: "auto" }, ctx);
+      ctx.ui.notify("Auto style mode enabled.", "info");
+      return true;
+    }
+
+    if (lower === "off" || lower === "none" || lower === "clear") {
+      setMode({ kind: "off" }, ctx);
+      ctx.ui.notify("Styles turned off.", "info");
+      return true;
+    }
+
+    const names = directStyleNames(resolver.listStyles());
+    const slug = slugify(a);
+    const match =
+      names.find((n) => n === a) ??
+      names.find((n) => n === slug) ??
+      names.find((n) => n.toLowerCase() === a.toLowerCase());
+
+    if (!match) {
+      ctx.ui.notify(`No style named '${a}'.`, "warning");
+      return true;
+    }
+
+    setMode({ kind: "manual", name: match }, ctx);
+    ctx.ui.notify(`Style '${match}' activated.`, "info");
+    return true;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
-    activeName = null;
-    cache = null;
+    attachWarnings(ctx);
+    lastAutoResolved = null;
     try {
       const sm: any = ctx.sessionManager;
       const entries = sm.getBranch?.() ?? sm.getEntries?.() ?? [];
-      for (const entry of entries) {
-        if (entry?.type === "custom" && entry?.customType === ACTIVE_ENTRY) {
-          const n = entry?.data?.name;
-          activeName = typeof n === "string" ? n : null;
-        }
-      }
+      mode = restoreModeFromEntries(entries);
     } catch {
-      /* ignore */
+      mode = { kind: "off" };
     }
-    if (activeName && !fs.existsSync(styleFile(activeName))) activeName = null;
     updateFooter(ctx);
-    debug("session_start active=", activeName);
+    debug("session_start mode=", mode);
   });
 
-  // ---- ephemeral payload-layer injection ----
   pi.on("before_provider_request", (event, ctx) => {
-    if (!activeName) return;
-    const text = readStyleText(activeName);
-    if (!text) return; // missing or empty -> no-op
+    attachWarnings(ctx);
+    if (mode.kind === "off") return;
+
+    const modelId = typeof (ctx as any).model?.id === "string" ? (ctx as any).model.id : undefined;
+    let styleName: string | null = null;
+
+    if (mode.kind === "manual") {
+      styleName = mode.name;
+    } else {
+      const previousAutoResolved = lastAutoResolved;
+      styleName = resolver.resolveAutoStyleName(modelId);
+      lastAutoResolved = styleName;
+      updateFooter(ctx);
+      if (styleName && styleName !== previousAutoResolved) {
+        ctx.ui?.notify?.(`Auto style resolved to '${styleName}'.`, "info");
+      }
+    }
+
+    if (!styleName) return;
+
+    const resolved = resolver.resolveStyleContent(styleName, modelId);
+    if (!resolved) return;
 
     const api = (ctx as any).model?.api as string | undefined;
     try {
       const inject = api ? INJECTORS[api] : undefined;
       if (inject) {
-        inject(event.payload, text);
-        debug("injected", { api, style: activeName });
+        inject(event.payload, resolved.wrappedText);
+        debug("injected", { api, style: styleName, file: resolved.file });
         return event.payload;
       }
 
-      // Unknown api: generic best-effort + one-time warning.
       const key = api ?? "unknown";
-      const ok = genericFallback(event.payload, text);
+      const ok = genericFallback(event.payload, resolved.wrappedText);
       if (!warnedApis.has(key)) {
         warnedApis.add(key);
         ctx.ui?.notify?.(
@@ -156,90 +249,68 @@ export default function styles(pi: ExtensionAPI) {
         "warning",
       );
       debug("inject error", e);
-      return; // leave payload unchanged
+      return;
     }
   });
 
-  // ---- create-new-style flow ----
-  async function runCreate(ctx: any) {
-    const rawName = await ctx.ui.input("New style name:", "e.g. concise, socratic, code-only");
-    if (!rawName) return;
-    const name = slugify(rawName);
-    const file = styleFile(name);
-    if (fs.existsSync(file)) {
-      const ok = await ctx.ui.confirm("Overwrite?", `Style '${name}' already exists. Overwrite it?`);
-      if (!ok) return;
-    }
-    const seed =
-      "Write the instructions that should shape responses here.\n\n" +
-      "- Tone and voice\n- Length and structure\n- Formatting preferences\n";
-    const content = await ctx.ui.editor(`Style: ${name}`, seed);
-    if (content == null) return;
-    ensureDir();
-    fs.writeFileSync(file, `${content.trim()}\n`, "utf8");
-    setActive(name, ctx);
-    ctx.ui.notify(`Created and activated style '${name}'.`, "info");
-  }
-
-  /** Direct activation via `/style <name|off>`. Returns true if it consumed the arg. */
-  function activateByName(arg: string, ctx: any): boolean {
-    const a = arg.trim();
-    if (!a) return false;
-    if (/^(off|none|clear)$/i.test(a)) {
-      setActive(null, ctx);
-      ctx.ui.notify("Styles turned off.", "info");
-      return true;
-    }
-    const names = listStyles();
-    const slug = slugify(a);
-    const match =
-      names.find((n) => n === a) ??
-      names.find((n) => n === slug) ??
-      names.find((n) => n.toLowerCase() === a.toLowerCase());
-    if (!match) {
-      ctx.ui.notify(`No style named '${a}'.`, "warning");
-      return true;
-    }
-    setActive(match, ctx);
-    ctx.ui.notify(`Style '${match}' activated.`, "info");
-    return true;
-  }
-
   pi.registerCommand("style", {
-    description: "Select, create, or turn off an output style (ephemeral <userStyle> injection)",
+    description: "Select, create, auto-route, or turn off an output style (ephemeral <userStyle> injection)",
     getArgumentCompletions: (prefix: string) => {
+      resolver.setWarningSink(null);
       const items = [
-        ...listStyles().map((n) => ({ value: n, label: n })),
+        ...directStyleNames(resolver.listStyles()).map((n) => ({ value: n, label: n })),
+        { value: "auto", label: "auto (choose style by model)" },
         { value: "off", label: "off (turn off)" },
       ];
       const filtered = items.filter((i) => i.value.startsWith(prefix));
       return filtered.length ? filtered : null;
     },
     handler: async (args: string, ctx: any) => {
+      attachWarnings(ctx);
       if (args && args.trim()) {
         activateByName(args, ctx);
         return;
       }
-      const names = listStyles();
-      const options = [
-        ...names.map((n) => (n === activeName ? `✓ ${n}` : `  ${n}`)),
-        ACT_OFF,
-        ACT_CREATE,
-      ];
-      const choice = await ctx.ui.select("Output style", options);
+
+      const styles = resolver.listStyles();
+      const optionToName = new Map<string, string>();
+      const styleOptions = styles.map((style) => {
+        const label = styleChoiceLabel(style, mode);
+        optionToName.set(label, style.name);
+        return label;
+      });
+      const autoChoice = actionChoiceLabel(mode.kind === "auto", ACT_AUTO);
+      const offChoice = actionChoiceLabel(mode.kind === "off", ACT_OFF);
+      const optionsForPicker = [...styleOptions, autoChoice, offChoice, ACT_CREATE];
+
+      const choice = await ctx.ui.select("Output style", optionsForPicker);
       if (!choice) return;
+
       if (choice === ACT_CREATE) {
         await runCreate(ctx);
         return;
       }
-      if (choice === ACT_OFF) {
-        setActive(null, ctx);
+
+      if (choice === autoChoice) {
+        setMode({ kind: "auto" }, ctx);
+        ctx.ui.notify("Auto style mode enabled.", "info");
+        return;
+      }
+
+      if (choice === offChoice) {
+        setMode({ kind: "off" }, ctx);
         ctx.ui.notify("Styles turned off.", "info");
         return;
       }
-      const name = choice.replace(/^(✓ |  )/, "");
-      setActive(name, ctx);
+
+      const name = optionToName.get(choice);
+      if (!name) return;
+      setMode({ kind: "manual", name }, ctx);
       ctx.ui.notify(`Style '${name}' activated.`, "info");
     },
   });
+}
+
+export default function styles(pi: ExtensionAPI) {
+  registerStyles(pi);
 }
