@@ -6,10 +6,17 @@ export const RESERVED_STYLE_ARGS = new Set<string>(["auto", "off", "none", "clea
 
 export type WarningSink = (id: string, message: string) => void;
 export type StyleSource = "file" | "folder";
+export type StyleScope = "project" | "home" | "bundled";
+
+export interface StyleRoot {
+  dir: string;
+  scope: StyleScope;
+}
 
 export interface ListedStyle {
   name: string;
   source: StyleSource;
+  scope: StyleScope;
   reserved: boolean;
   label: string;
 }
@@ -23,11 +30,12 @@ export interface ResolvedStyleContent {
 
 interface ParsedAutoRule {
   index: number;
+  scope: StyleScope;
   models: string[];
   style: string;
 }
 
-interface ConfigCache {
+interface ConfigFileCacheEntry {
   mtimeMs: number;
   rules: ParsedAutoRule[];
 }
@@ -93,16 +101,26 @@ function labelForStyle(name: string): string {
   return isReservedName(name) ? `${name} (style; direct /style ${name} is a command)` : name;
 }
 
+export type StyleResolverRootsInput = string | StyleRoot[] | (() => StyleRoot[]);
+
+function normalizeRootsInput(input: StyleResolverRootsInput): () => StyleRoot[] {
+  if (typeof input === "string") {
+    const roots: StyleRoot[] = [{ dir: input, scope: "project" }];
+    return () => roots;
+  }
+  if (typeof input === "function") return input;
+  return () => input;
+}
+
 export class StyleResolver {
-  private configCache: ConfigCache | null = null;
+  private readonly configFileCache = new Map<string, ConfigFileCacheEntry>();
   private readonly contentCache = new Map<string, TextCacheEntry>();
   private readonly warned = new Set<string>();
   private warningSink: WarningSink | null;
+  private readonly rootsProvider: () => StyleRoot[];
 
-  constructor(
-    public readonly styleDir: string,
-    warningSink?: WarningSink | null,
-  ) {
+  constructor(roots: StyleResolverRootsInput, warningSink?: WarningSink | null) {
+    this.rootsProvider = normalizeRootsInput(roots);
     this.warningSink = warningSink ?? null;
   }
 
@@ -111,13 +129,44 @@ export class StyleResolver {
   }
 
   clearCaches(): void {
-    this.configCache = null;
+    this.configFileCache.clear();
     this.contentCache.clear();
   }
 
-  ensureDir(): void {
+  /**
+   * Roots in lookup order: project → home → bundled.
+   * Deduplicated by resolved absolute path so that configurations where two
+   * scopes happen to point at the same directory (e.g. the home-installed
+   * extension's own bundled dir IS the home scope dir) don't get scanned
+   * twice. First occurrence wins, preserving scope precedence.
+   */
+  roots(): StyleRoot[] {
+    const seen = new Set<string>();
+    const out: StyleRoot[] = [];
+    for (const root of this.rootsProvider()) {
+      const key = path.resolve(root.dir);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(root);
+    }
+    return out;
+  }
+
+  /**
+   * Directory new styles should be written to. Project wins; otherwise the
+   * first declared root. Treats "closest to user intent" as project-scoped.
+   */
+  writableDir(): string {
+    const roots = this.roots();
+    const project = roots.find((r) => r.scope === "project");
+    if (project) return project.dir;
+    if (roots[0]) return roots[0].dir;
+    throw new Error("styles: no roots configured");
+  }
+
+  ensureWritableDir(): void {
     try {
-      fs.mkdirSync(this.styleDir, { recursive: true });
+      fs.mkdirSync(this.writableDir(), { recursive: true });
     } catch {
       /* ignore directory creation errors; later reads/writes report their own failures */
     }
@@ -125,51 +174,85 @@ export class StyleResolver {
 
   styleExists(name: string): boolean {
     if (!isStyleBasename(name)) return false;
-    return isFile(safeStat(this.simpleFile(name))) || isFile(safeStat(this.defaultFile(name)));
+    for (const root of this.roots()) {
+      if (isFile(safeStat(this.simpleFile(root.dir, name)))) return true;
+      if (isFile(safeStat(this.defaultFile(root.dir, name)))) return true;
+    }
+    return false;
   }
 
   listStyles(): ListedStyle[] {
-    this.ensureDir();
+    const styles = new Map<string, ListedStyle>(); // first-write wins → project shadows home shadows bundled
 
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(this.styleDir, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-
-    const styles = new Map<string, ListedStyle>();
-
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      if (entry.name.startsWith("_")) continue;
-      if (!entry.name.toLowerCase().endsWith(".md")) continue;
-
-      const name = stripMarkdownSuffix(entry.name);
-      if (!isStyleBasename(name)) continue;
-      const reserved = isReservedName(name);
-      if (reserved) this.warnOnce(`style:reserved:${name}`, `styles: '${name}' is a reserved /style command word; direct activation selects the command, not the style.`);
-      styles.set(name, { name, source: "file", reserved, label: labelForStyle(name) });
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const name = entry.name;
-      if (!isStyleBasename(name)) continue;
-      if (!isFile(safeStat(this.defaultFile(name)))) continue;
-
-      const reserved = isReservedName(name);
-      if (reserved) this.warnOnce(`style:reserved:${name}`, `styles: '${name}' is a reserved /style command word; direct activation selects the command, not the style.`);
-
-      if (styles.has(name)) {
-        this.warnOnce(
-          `style:collision:${name}`,
-          `styles: both '${name}.md' and '${name}/default.md' exist; using '${name}.md'.`,
-        );
-        continue;
+    for (const root of this.roots()) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(root.dir, { withFileTypes: true });
+      } catch {
+        continue; // missing root is fine — layered discovery
       }
 
-      styles.set(name, { name, source: "folder", reserved, label: labelForStyle(name) });
+      const localFiles = new Set<string>();
+
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        if (entry.name.startsWith("_")) continue;
+        if (!entry.name.toLowerCase().endsWith(".md")) continue;
+
+        const name = stripMarkdownSuffix(entry.name);
+        if (!isStyleBasename(name)) continue;
+        localFiles.add(name);
+
+        const reserved = isReservedName(name);
+        if (reserved) {
+          this.warnOnce(
+            `style:reserved:${root.scope}:${name}`,
+            `styles: '${name}' is a reserved /style command word; direct activation selects the command, not the style.`,
+          );
+        }
+        if (!styles.has(name)) {
+          styles.set(name, {
+            name,
+            source: "file",
+            scope: root.scope,
+            reserved,
+            label: labelForStyle(name),
+          });
+        }
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const name = entry.name;
+        if (!isStyleBasename(name)) continue;
+        if (!isFile(safeStat(this.defaultFile(root.dir, name)))) continue;
+
+        if (localFiles.has(name)) {
+          // collision is per-root — name.md beats name/default.md in the same root
+          this.warnOnce(
+            `style:collision:${root.scope}:${name}`,
+            `styles: both '${name}.md' and '${name}/default.md' exist in ${root.scope} styles dir; using '${name}.md'.`,
+          );
+          continue;
+        }
+
+        const reserved = isReservedName(name);
+        if (reserved) {
+          this.warnOnce(
+            `style:reserved:${root.scope}:${name}`,
+            `styles: '${name}' is a reserved /style command word; direct activation selects the command, not the style.`,
+          );
+        }
+        if (!styles.has(name)) {
+          styles.set(name, {
+            name,
+            source: "folder",
+            scope: root.scope,
+            reserved,
+            label: labelForStyle(name),
+          });
+        }
+      }
     }
 
     return sortedByName([...styles.values()]);
@@ -182,8 +265,8 @@ export class StyleResolver {
       if (!rule.models.includes(modelId)) continue;
       if (this.styleExists(rule.style)) return rule.style;
       this.warnOnce(
-        `config:missing-style:${rule.index}:${rule.style}`,
-        `styles: auto rule ${rule.index} matched '${modelId}' but style '${rule.style}' does not exist.`,
+        `config:missing-style:${rule.scope}:${rule.index}:${rule.style}`,
+        `styles: auto rule ${rule.index} in ${rule.scope} _config.json matched '${modelId}' but style '${rule.style}' does not exist.`,
       );
     }
 
@@ -192,75 +275,108 @@ export class StyleResolver {
 
   resolveStyleContent(name: unknown, modelId: unknown): ResolvedStyleContent | null {
     if (!isStyleBasename(name)) {
-      this.warnOnce("style:invalid", `styles: invalid style name '${String(name)}'; expected a top-level style basename.`);
+      this.warnOnce(
+        "style:invalid",
+        `styles: invalid style name '${String(name)}'; expected a top-level style basename.`,
+      );
       return null;
     }
 
-    const simplePath = this.simpleFile(name);
-    const defaultPath = this.defaultFile(name);
-    const simpleStat = safeStat(simplePath);
-    const defaultStat = safeStat(defaultPath);
-    const hasSimple = isFile(simpleStat);
-    const hasDefault = isFile(defaultStat);
+    for (const root of this.roots()) {
+      const simplePath = this.simpleFile(root.dir, name);
+      const defaultPath = this.defaultFile(root.dir, name);
+      const simpleStat = safeStat(simplePath);
+      const defaultStat = safeStat(defaultPath);
+      const hasSimple = isFile(simpleStat);
+      const hasDefault = isFile(defaultStat);
 
-    if (hasSimple && hasDefault) {
-      this.warnOnce(
-        `style:collision:${name}`,
-        `styles: both '${name}.md' and '${name}/default.md' exist; using '${name}.md'.`,
-      );
-    }
-
-    if (hasSimple) return this.readMarkdown(name, simplePath, simpleStat);
-
-    if (hasDefault) {
-      let selectedPath = defaultPath;
-      let selectedStat = defaultStat;
-      if (isSafeVariantBasename(modelId)) {
-        const variantPath = this.variantFile(name, modelId);
-        const variantStat = safeStat(variantPath);
-        if (isFile(variantStat)) {
-          selectedPath = variantPath;
-          selectedStat = variantStat;
-        }
+      if (hasSimple && hasDefault) {
+        this.warnOnce(
+          `style:collision:${root.scope}:${name}`,
+          `styles: both '${name}.md' and '${name}/default.md' exist in ${root.scope} styles dir; using '${name}.md'.`,
+        );
       }
-      return this.readMarkdown(name, selectedPath, selectedStat);
+
+      if (hasSimple) return this.readMarkdown(name, simplePath, simpleStat);
+
+      if (hasDefault) {
+        let selectedPath = defaultPath;
+        let selectedStat = defaultStat;
+        if (isSafeVariantBasename(modelId)) {
+          const variantPath = this.variantFile(root.dir, name, modelId);
+          const variantStat = safeStat(variantPath);
+          if (isFile(variantStat)) {
+            selectedPath = variantPath;
+            selectedStat = variantStat;
+          }
+        }
+        return this.readMarkdown(name, selectedPath, selectedStat);
+      }
+      // else: try next root
     }
 
-    if (isDirectory(safeStat(this.styleFolder(name)))) {
-      this.warnOnce(
-        `style:variant-missing-default:${name}`,
-        `styles: '${name}' is a folder style but is missing default.md; no style injected.`,
-      );
-      return null;
+    // No root resolved the name — give the most useful warning we can.
+    for (const root of this.roots()) {
+      if (isDirectory(safeStat(this.styleFolder(root.dir, name)))) {
+        this.warnOnce(
+          `style:variant-missing-default:${root.scope}:${name}`,
+          `styles: '${name}' is a folder style in ${root.scope} styles dir but is missing default.md; no style injected.`,
+        );
+        return null;
+      }
     }
 
-    this.warnOnce(`style:missing:${name}`, `styles: selected style '${name}' does not exist; no style injected.`);
+    this.warnOnce(
+      `style:missing:${name}`,
+      `styles: selected style '${name}' does not exist; no style injected.`,
+    );
     return null;
   }
 
   private readAutoRules(): ParsedAutoRule[] {
-    const file = path.join(this.styleDir, CONFIG_FILE);
-    const st = safeStat(file);
-    if (!isFile(st)) {
-      this.configCache = null;
-      return [];
+    // Concatenate rules from every existing _config.json in root order.
+    // First-match-wins during lookup means project rules override home rules
+    // for the same model, but home rules for other models still apply.
+    const all: ParsedAutoRule[] = [];
+    for (const root of this.roots()) {
+      const file = path.join(root.dir, CONFIG_FILE);
+      const st = safeStat(file);
+      if (!isFile(st)) {
+        this.configFileCache.delete(file);
+        continue;
+      }
+
+      const cached = this.configFileCache.get(file);
+      if (cached && cached.mtimeMs === st.mtimeMs) {
+        all.push(...cached.rules);
+        continue;
+      }
+
+      const rules = this.parseConfigFile(file, root.scope);
+      this.configFileCache.set(file, { mtimeMs: st.mtimeMs, rules });
+      all.push(...rules);
     }
+    return all;
+  }
 
-    if (this.configCache && this.configCache.mtimeMs === st.mtimeMs) return this.configCache.rules;
-
+  private parseConfigFile(file: string, scope: StyleScope): ParsedAutoRule[] {
     let parsed: unknown;
     try {
       parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch (error) {
-      this.warnOnce("config:parse", `styles: could not parse _config.json: ${(error as Error).message}`);
-      this.configCache = { mtimeMs: st.mtimeMs, rules: [] };
+      this.warnOnce(
+        `config:parse:${scope}`,
+        `styles: could not parse ${scope} _config.json: ${(error as Error).message}`,
+      );
       return [];
     }
 
     const auto = (parsed as { auto?: unknown } | null)?.auto;
     if (!Array.isArray(auto)) {
-      this.warnOnce("config:auto", "styles: _config.json must contain an 'auto' array.");
-      this.configCache = { mtimeMs: st.mtimeMs, rules: [] };
+      this.warnOnce(
+        `config:auto:${scope}`,
+        `styles: ${scope} _config.json must contain an 'auto' array.`,
+      );
       return [];
     }
 
@@ -276,20 +392,25 @@ export class StyleResolver {
       }
 
       if (!models) {
-        this.warnOnce(`config:rule:${index}:model`, `styles: _config.json auto rule ${index} has invalid 'model'; expected string or string array.`);
+        this.warnOnce(
+          `config:rule:${scope}:${index}:model`,
+          `styles: ${scope} _config.json auto rule ${index} has invalid 'model'; expected string or string array.`,
+        );
         return;
       }
 
       const style = (rule as { style?: unknown } | null)?.style;
       if (typeof style !== "string" || !isStyleBasename(style)) {
-        this.warnOnce(`config:rule:${index}:style`, `styles: _config.json auto rule ${index} has invalid 'style'; expected a top-level style name.`);
+        this.warnOnce(
+          `config:rule:${scope}:${index}:style`,
+          `styles: ${scope} _config.json auto rule ${index} has invalid 'style'; expected a top-level style name.`,
+        );
         return;
       }
 
-      rules.push({ index, models, style });
+      rules.push({ index, scope, models, style });
     });
 
-    this.configCache = { mtimeMs: st.mtimeMs, rules };
     return rules;
   }
 
@@ -316,19 +437,19 @@ export class StyleResolver {
     this.warningSink(id, message);
   }
 
-  private simpleFile(name: string): string {
-    return path.join(this.styleDir, `${name}.md`);
+  private simpleFile(dir: string, name: string): string {
+    return path.join(dir, `${name}.md`);
   }
 
-  private styleFolder(name: string): string {
-    return path.join(this.styleDir, name);
+  private styleFolder(dir: string, name: string): string {
+    return path.join(dir, name);
   }
 
-  private defaultFile(name: string): string {
-    return path.join(this.styleFolder(name), "default.md");
+  private defaultFile(dir: string, name: string): string {
+    return path.join(this.styleFolder(dir, name), "default.md");
   }
 
-  private variantFile(name: string, modelId: string): string {
-    return path.join(this.styleFolder(name), `${modelId}.md`);
+  private variantFile(dir: string, name: string, modelId: string): string {
+    return path.join(this.styleFolder(dir, name), `${modelId}.md`);
   }
 }

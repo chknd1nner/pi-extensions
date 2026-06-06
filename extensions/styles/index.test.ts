@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { registerStyles } from "./index";
+import { registerStyles, defaultStyleRoots, BUNDLED_STYLE_DIR } from "./index";
 
 type Notification = { message: string; type?: string };
 type SelectCall = { title: string; options: string[] };
@@ -208,6 +208,77 @@ describe("styles extension commands", () => {
     expect(fs.existsSync(path.join(h.dir, "new-style.md"))).toBe(true);
     expect(h.entries.at(-1)).toEqual({ type: "custom", customType: "styles:active", data: { name: "new-style" } });
     expect(h.statuses.get("style")).toBe("style: new-style");
+  });
+});
+
+describe("defaultStyleRoots", () => {
+  it("returns project, home, and bundled in priority order", () => {
+    const roots = defaultStyleRoots("/repo", "/home/u");
+    expect(roots).toEqual([
+      { dir: path.join("/repo", ".pi", "extensions", "styles", "styles"), scope: "project" },
+      { dir: path.join("/home/u", ".pi", "agent", "extensions", "styles", "styles"), scope: "home" },
+      { dir: BUNDLED_STYLE_DIR, scope: "bundled" },
+    ]);
+  });
+});
+
+describe("styles extension layered discovery via styleRoots option", () => {
+  it("discovers project and home styles together, with project shadowing same name", async () => {
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-styles-proj-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-styles-home-"));
+    tempDirs.push(projectDir, homeDir);
+
+    fs.writeFileSync(path.join(projectDir, "concise.md"), "PROJECT", "utf8");
+    fs.writeFileSync(path.join(homeDir, "concise.md"), "HOME", "utf8");
+    fs.writeFileSync(path.join(homeDir, "verbose.md"), "HOME verbose", "utf8");
+
+    const entries: any[] = [];
+    const notifications: any[] = [];
+    const statuses = new Map<string, string | undefined>();
+    const handlers = new Map<string, any>();
+    const commands = new Map<string, any>();
+    const selectCalls: { title: string; options: string[] }[] = [];
+
+    const ctx: any = {
+      model: { id: "claude-sonnet-4-5", api: "anthropic-messages" },
+      sessionManager: { getBranch: () => entries },
+      ui: {
+        setStatus: (k: string, v: string | undefined) => statuses.set(k, v),
+        notify: (m: string, t?: string) => notifications.push({ message: m, type: t }),
+        select: async (title: string, options: string[]) => {
+          selectCalls.push({ title, options });
+          return options[0];
+        },
+      },
+    };
+    const pi: any = {
+      on: (n: string, h: any) => handlers.set(n, h),
+      registerCommand: (n: string, c: any) => commands.set(n, c),
+      appendEntry: (t: string, d: unknown) => entries.push({ type: "custom", customType: t, data: d }),
+    };
+
+    registerStyles(pi, {
+      styleRoots: [
+        { dir: projectDir, scope: "project" },
+        { dir: homeDir, scope: "home" },
+      ],
+    });
+
+    // Project /style concise must resolve to PROJECT (not HOME).
+    await commands.get("style").handler("concise", ctx);
+    const payload: any = {
+      messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
+    };
+    await handlers.get("before_provider_request")({ payload }, ctx);
+    expect(payload.messages[0].content.at(-1).text).toBe("<userStyle>\nPROJECT\n</userStyle>");
+
+    // Picker must show both project's concise (winning) and home's verbose, tagged with scope.
+    await commands.get("style").handler("", ctx);
+    const opts = selectCalls.at(-1)!.options;
+    expect(opts.some((o) => /concise.*\(project\)/.test(o))).toBe(true);
+    expect(opts.some((o) => /verbose.*\(home\)/.test(o))).toBe(true);
+    // 'concise' from home must NOT also appear as a separate entry.
+    expect(opts.filter((o) => /\bconcise\b/.test(o))).toHaveLength(1);
   });
 });
 

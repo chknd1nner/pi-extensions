@@ -13,14 +13,38 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { INJECTORS, genericFallback } from "./injectors";
-import { RESERVED_STYLE_ARGS, StyleResolver, type ListedStyle } from "./styleResolver";
+import {
+  RESERVED_STYLE_ARGS,
+  StyleResolver,
+  type ListedStyle,
+  type StyleRoot,
+  type StyleScope,
+} from "./styleResolver";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_STYLE_DIR = path.join(HERE, "styles");
+/** Read-only bundled styles that ship with the extension package. */
+export const BUNDLED_STYLE_DIR = path.join(HERE, "styles");
+/** @deprecated Use BUNDLED_STYLE_DIR; kept for callers that imported the old name. */
+export const DEFAULT_STYLE_DIR = BUNDLED_STYLE_DIR;
+
+/**
+ * Layered style roots, ordered project → home → bundled. Lookups walk in
+ * order so project entries shadow home, which shadow bundled. Auto rules are
+ * concatenated and matched first-wins, giving the same precedence without
+ * losing home-defined rules for models the project doesn't override.
+ */
+export function defaultStyleRoots(cwd: string, home: string = os.homedir()): StyleRoot[] {
+  return [
+    { dir: path.join(cwd, ".pi", "extensions", "styles", "styles"), scope: "project" },
+    { dir: path.join(home, ".pi", "agent", "extensions", "styles", "styles"), scope: "home" },
+    { dir: BUNDLED_STYLE_DIR, scope: "bundled" },
+  ];
+}
 const ACTIVE_ENTRY = "styles:active";
 const DEBUG = !!process.env.PI_STYLES_DEBUG;
 
@@ -34,7 +58,10 @@ type StyleMode =
   | { kind: "auto" };
 
 export interface StylesExtensionOptions {
+  /** Legacy/test override: treat a single directory as the sole project root. */
   styleDir?: string;
+  /** Explicit root list (overrides default discovery entirely). For tests/embedders. */
+  styleRoots?: StyleRoot[];
 }
 
 function debug(...args: unknown[]) {
@@ -71,9 +98,16 @@ function restoreModeFromEntries(entries: any[]): StyleMode {
   return mode;
 }
 
-function styleChoiceLabel(style: ListedStyle, currentMode: StyleMode): string {
+function styleChoiceLabel(
+  style: ListedStyle,
+  currentMode: StyleMode,
+  showScope: boolean,
+): string {
   const mark = currentMode.kind === "manual" && currentMode.name === style.name ? "✓" : " ";
-  return `${mark} ${style.label}`;
+  // Only show scope when multiple scopes are present so single-root setups
+  // (and existing tests) keep the clean "  concise" form.
+  if (!showScope) return `${mark} ${style.label}`;
+  return `${mark} ${style.label} (${scopeText(style.scope)})`;
 }
 
 function actionChoiceLabel(active: boolean, label: string): string {
@@ -84,8 +118,20 @@ function directStyleNames(styles: ListedStyle[]): string[] {
   return styles.filter((style) => !style.reserved).map((style) => style.name);
 }
 
+function scopeText(scope: StyleScope): string {
+  return scope === "bundled" ? "built-in" : scope;
+}
+
 export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions = {}): void {
-  const resolver = new StyleResolver(options.styleDir ?? DEFAULT_STYLE_DIR);
+  let currentCwd = process.cwd();
+
+  function resolveRoots(): StyleRoot[] {
+    if (options.styleRoots) return options.styleRoots;
+    if (options.styleDir) return [{ dir: options.styleDir, scope: "project" }];
+    return defaultStyleRoots(currentCwd);
+  }
+
+  const resolver = new StyleResolver(() => resolveRoots());
   let mode: StyleMode = { kind: "off" };
   let lastAutoResolved: string | null = null;
   const warnedApis = new Set<string>();
@@ -131,7 +177,9 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
       name = renamed;
     }
 
-    const file = path.join(options.styleDir ?? DEFAULT_STYLE_DIR, `${name}.md`);
+    // Always write to the project-scoped dir — "create" expresses intent.
+    const targetDir = resolver.writableDir();
+    const file = path.join(targetDir, `${name}.md`);
     if (fs.existsSync(file) || resolver.styleExists(name)) {
       const ok = await ctx.ui.confirm("Overwrite?", `Style '${name}' already exists. Create or overwrite '${name}.md'?`);
       if (!ok) return;
@@ -143,7 +191,7 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
     const content = await ctx.ui.editor(`Style: ${name}`, seed);
     if (content == null) return;
 
-    resolver.ensureDir();
+    resolver.ensureWritableDir();
     fs.writeFileSync(file, `${content.trim()}\n`, "utf8");
     resolver.clearCaches();
     setMode({ kind: "manual", name }, ctx);
@@ -188,6 +236,10 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
 
   pi.on("session_start", async (_event, ctx) => {
     attachWarnings(ctx);
+    if (typeof (ctx as any).cwd === "string" && (ctx as any).cwd) {
+      currentCwd = (ctx as any).cwd;
+      resolver.clearCaches();
+    }
     lastAutoResolved = null;
     try {
       const sm: any = ctx.sessionManager;
@@ -197,7 +249,7 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
       mode = { kind: "off" };
     }
     updateFooter(ctx);
-    debug("session_start mode=", mode);
+    debug("session_start mode=", mode, "cwd=", currentCwd);
   });
 
   pi.on("before_provider_request", (event, ctx) => {
@@ -274,9 +326,10 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
       }
 
       const styles = resolver.listStyles();
+      const showScope = new Set(styles.map((s) => s.scope)).size > 1;
       const optionToName = new Map<string, string>();
       const styleOptions = styles.map((style) => {
-        const label = styleChoiceLabel(style, mode);
+        const label = styleChoiceLabel(style, mode, showScope);
         optionToName.set(label, style.name);
         return label;
       });

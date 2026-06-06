@@ -90,10 +90,11 @@ describe("StyleResolver.listStyles", () => {
     h.write("_config.json", "{\"auto\":[]}");
 
     expect(h.resolver.listStyles()).toEqual([
-      { name: "concise", source: "file", reserved: false, label: "concise" },
+      { name: "concise", source: "file", scope: "project", reserved: false, label: "concise" },
       {
         name: "thought-catalyst",
         source: "folder",
+        scope: "project",
         reserved: false,
         label: "thought-catalyst",
       },
@@ -106,12 +107,12 @@ describe("StyleResolver.listStyles", () => {
     h.write("foo/default.md", "Folder loses");
 
     expect(h.resolver.listStyles()).toEqual([
-      { name: "foo", source: "file", reserved: false, label: "foo" },
+      { name: "foo", source: "file", scope: "project", reserved: false, label: "foo" },
     ]);
-    expect(h.warnings.map((w) => w.id)).toEqual(["style:collision:foo"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["style:collision:project:foo"]);
 
     h.resolver.listStyles();
-    expect(h.warnings.map((w) => w.id)).toEqual(["style:collision:foo"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["style:collision:project:foo"]);
   });
 
   it("labels reserved style filenames without making them direct command targets", () => {
@@ -122,11 +123,12 @@ describe("StyleResolver.listStyles", () => {
       {
         name: "auto",
         source: "file",
+        scope: "project",
         reserved: true,
         label: "auto (style; direct /style auto is a command)",
       },
     ]);
-    expect(h.warnings.map((w) => w.id)).toEqual(["style:reserved:auto"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["style:reserved:project:auto"]);
   });
 });
 
@@ -193,7 +195,7 @@ describe("StyleResolver.resolveAutoStyleName", () => {
     );
 
     expect(h.resolver.resolveAutoStyleName("claude-sonnet-4-5")).toBe("fallback");
-    expect(h.warnings.map((w) => w.id)).toContain("config:missing-style:0:missing");
+    expect(h.warnings.map((w) => w.id)).toContain("config:missing-style:project:0:missing");
   });
 
   it("warns for invalid config rules without throwing", () => {
@@ -202,8 +204,8 @@ describe("StyleResolver.resolveAutoStyleName", () => {
 
     expect(h.resolver.resolveAutoStyleName("m")).toBeNull();
     expect(h.warnings.map((w) => w.id)).toEqual([
-      "config:rule:0:model",
-      "config:rule:1:style",
+      "config:rule:project:0:model",
+      "config:rule:project:1:style",
     ]);
   });
 
@@ -213,7 +215,7 @@ describe("StyleResolver.resolveAutoStyleName", () => {
 
     expect(h.resolver.resolveAutoStyleName("claude-sonnet-4-5")).toBeNull();
     expect(h.resolver.resolveAutoStyleName("claude-sonnet-4-5")).toBeNull();
-    expect(h.warnings.map((w) => w.id)).toEqual(["config:parse"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["config:parse:project"]);
   });
 
   it("warns when _config.json exists without an auto array", () => {
@@ -221,7 +223,7 @@ describe("StyleResolver.resolveAutoStyleName", () => {
     h.write("_config.json", JSON.stringify({ styles: [] }));
 
     expect(h.resolver.resolveAutoStyleName("claude-sonnet-4-5")).toBeNull();
-    expect(h.warnings.map((w) => w.id)).toEqual(["config:auto"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["config:auto:project"]);
   });
 
   it("matches config model IDs that are unsafe as variant filenames", () => {
@@ -289,7 +291,7 @@ describe("StyleResolver.resolveStyleContent", () => {
     h.write("broken/claude-sonnet-4-5.md", "Ignored");
 
     expect(h.resolver.resolveStyleContent("broken", "claude-sonnet-4-5")).toBeNull();
-    expect(h.warnings.map((w) => w.id)).toEqual(["style:variant-missing-default:broken"]);
+    expect(h.warnings.map((w) => w.id)).toEqual(["style:variant-missing-default:project:broken"]);
   });
 
   it("warns and no-ops for invalid style names", () => {
