@@ -1,0 +1,29 @@
+{
+  "name": "pi-agent-switcher",
+  "version": "0.1.0",
+  "description": "Pi extension: /agent command to swap the persona backing .pi/SYSTEM.md.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "agent",
+    "persona"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "*.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
