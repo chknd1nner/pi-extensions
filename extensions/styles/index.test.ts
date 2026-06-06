@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { registerStyles, defaultStyleRoots, BUNDLED_STYLE_DIR } from "./index";
+import { registerStyles, defaultStyleRoots } from "./index";
 
 type Notification = { message: string; type?: string };
 type SelectCall = { title: string; options: string[] };
@@ -212,12 +212,10 @@ describe("styles extension commands", () => {
 });
 
 describe("defaultStyleRoots", () => {
-  it("returns project, home, and bundled in priority order", () => {
-    const roots = defaultStyleRoots("/repo", "/home/u");
-    expect(roots).toEqual([
-      { dir: path.join("/repo", ".pi", "extensions", "styles", "styles"), scope: "project" },
-      { dir: path.join("/home/u", ".pi", "agent", "extensions", "styles", "styles"), scope: "home" },
-      { dir: BUNDLED_STYLE_DIR, scope: "bundled" },
+  it("returns project and home in priority order at the canonical paths", () => {
+    expect(defaultStyleRoots("/repo", "/home/u")).toEqual([
+      { dir: path.join("/repo", ".pi", "styles"), scope: "project" },
+      { dir: path.join("/home/u", ".pi", "agent", "styles"), scope: "home" },
     ]);
   });
 });

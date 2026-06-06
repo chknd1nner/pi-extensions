@@ -6,7 +6,7 @@ export const RESERVED_STYLE_ARGS = new Set<string>(["auto", "off", "none", "clea
 
 export type WarningSink = (id: string, message: string) => void;
 export type StyleSource = "file" | "folder";
-export type StyleScope = "project" | "home" | "bundled";
+export type StyleScope = "project" | "home";
 
 export interface StyleRoot {
   dir: string;
@@ -134,11 +134,10 @@ export class StyleResolver {
   }
 
   /**
-   * Roots in lookup order: project → home → bundled.
-   * Deduplicated by resolved absolute path so that configurations where two
-   * scopes happen to point at the same directory (e.g. the home-installed
-   * extension's own bundled dir IS the home scope dir) don't get scanned
-   * twice. First occurrence wins, preserving scope precedence.
+   * Roots in lookup order: project → home.
+   * Deduplicated by resolved absolute path so configurations that accidentally
+   * point two scopes at the same directory don't get scanned twice. First
+   * occurrence wins, preserving scope precedence.
    */
   roots(): StyleRoot[] {
     const seen = new Set<string>();

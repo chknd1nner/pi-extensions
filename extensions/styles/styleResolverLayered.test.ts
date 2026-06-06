@@ -9,13 +9,11 @@ type Warning = { id: string; message: string };
 interface LayeredHarness {
   projectDir: string;
   homeDir: string;
-  bundledDir: string;
   roots: StyleRoot[];
   warnings: Warning[];
   resolver: StyleResolver;
   writeProject(rel: string, text: string): void;
   writeHome(rel: string, text: string): void;
-  writeBundled(rel: string, text: string): void;
 }
 
 const tempDirs: string[] = [];
@@ -35,24 +33,20 @@ function writeUnder(dir: string, rel: string, text: string): void {
 function createLayered(): LayeredHarness {
   const projectDir = tempDir("pi-styles-project-");
   const homeDir = tempDir("pi-styles-home-");
-  const bundledDir = tempDir("pi-styles-bundled-");
   const roots: StyleRoot[] = [
     { dir: projectDir, scope: "project" },
     { dir: homeDir, scope: "home" },
-    { dir: bundledDir, scope: "bundled" },
   ];
   const warnings: Warning[] = [];
   const resolver = new StyleResolver(roots, (id, message) => warnings.push({ id, message }));
   return {
     projectDir,
     homeDir,
-    bundledDir,
     roots,
     warnings,
     resolver,
     writeProject: (rel, text) => writeUnder(projectDir, rel, text),
     writeHome: (rel, text) => writeUnder(homeDir, rel, text),
-    writeBundled: (rel, text) => writeUnder(bundledDir, rel, text),
   };
 }
 
@@ -64,39 +58,26 @@ afterEach(() => {
 });
 
 describe("StyleResolver layered discovery", () => {
-  it("lists styles from all roots tagged with their scope", () => {
+  it("lists styles from both roots tagged with their scope", () => {
     const h = createLayered();
     h.writeProject("a.md", "project a");
     h.writeHome("b.md", "home b");
-    h.writeBundled("c.md", "bundled c");
 
     expect(h.resolver.listStyles()).toEqual([
       { name: "a", source: "file", scope: "project", reserved: false, label: "a" },
       { name: "b", source: "file", scope: "home", reserved: false, label: "b" },
-      { name: "c", source: "file", scope: "bundled", reserved: false, label: "c" },
     ]);
   });
 
-  it("project entries silently shadow same-named home and bundled entries", () => {
+  it("project entries silently shadow same-named home entries", () => {
     const h = createLayered();
     h.writeProject("concise.md", "project concise");
     h.writeHome("concise.md", "home concise");
-    h.writeBundled("concise.md", "bundled concise");
 
     const list = h.resolver.listStyles();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ name: "concise", scope: "project" });
     expect(h.warnings).toEqual([]); // shadowing is the whole point — no warning
-  });
-
-  it("home shadows bundled when no project entry exists", () => {
-    const h = createLayered();
-    h.writeHome("concise.md", "home concise");
-    h.writeBundled("concise.md", "bundled concise");
-
-    const list = h.resolver.listStyles();
-    expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ name: "concise", scope: "home" });
   });
 
   it("resolveStyleContent returns the first root's file (project wins)", () => {
@@ -175,7 +156,7 @@ describe("StyleResolver layered discovery", () => {
     expect(h.resolver.resolveAutoStyleName("claude-sonnet-4-5")).toBe("home-only");
   });
 
-  it("collision between name.md and name/default.md is reported per-root", () => {
+  it("collision between name.md and name/default.md is reported per-root, not suppressed by shadowing", () => {
     const h = createLayered();
     h.writeProject("dup.md", "P file");
     h.writeProject("dup/default.md", "P folder");
@@ -184,9 +165,8 @@ describe("StyleResolver layered discovery", () => {
 
     h.resolver.listStyles();
     const ids = h.warnings.map((w) => w.id).sort();
-    // Each root's own internal name.md vs name/default.md inconsistency is
-    // surfaced independently — shadowing doesn't suppress local file hygiene
-    // warnings, which would otherwise hide problems users want to see.
+    // Each root's own internal name.md vs name/default.md inconsistency is surfaced
+    // independently — shadowing doesn't suppress local file hygiene warnings.
     expect(ids).toEqual(["style:collision:home:dup", "style:collision:project:dup"]);
   });
 
@@ -195,28 +175,39 @@ describe("StyleResolver layered discovery", () => {
     expect(h.resolver.writableDir()).toBe(h.projectDir);
   });
 
-  it("writableDir falls back to first root if no project scope is configured", () => {
+  it("writableDir falls back to first root when no project scope is configured", () => {
     const homeDir = tempDir("pi-styles-home-only-");
-    const bundledDir = tempDir("pi-styles-bundled-only-");
-    const resolver = new StyleResolver([
-      { dir: homeDir, scope: "home" },
-      { dir: bundledDir, scope: "bundled" },
-    ]);
+    const resolver = new StyleResolver([{ dir: homeDir, scope: "home" }]);
     expect(resolver.writableDir()).toBe(homeDir);
   });
 
-  it("missing project/home dirs are ignored — bundled-only setup still works", () => {
+  it("missing project dir is ignored — home-only setup still works", () => {
     const projectDir = path.join(tempDir("pi-styles-missing-"), "does-not-exist");
-    const homeDir = path.join(tempDir("pi-styles-missing-"), "does-not-exist");
-    const bundledDir = tempDir("pi-styles-bundled-fallback-");
-    writeUnder(bundledDir, "fallback.md", "BUNDLED");
+    const homeDir = tempDir("pi-styles-home-fallback-");
+    writeUnder(homeDir, "fallback.md", "HOME");
     const resolver = new StyleResolver([
       { dir: projectDir, scope: "project" },
       { dir: homeDir, scope: "home" },
-      { dir: bundledDir, scope: "bundled" },
     ]);
 
     expect(resolver.listStyles().map((s) => s.name)).toEqual(["fallback"]);
-    expect(resolver.resolveStyleContent("fallback", "claude-sonnet-4-5")?.rawText).toBe("BUNDLED");
+    expect(resolver.resolveStyleContent("fallback", "claude-sonnet-4-5")?.rawText).toBe("HOME");
+  });
+
+  it("dedupes roots that resolve to the same absolute path", () => {
+    const dir = tempDir("pi-styles-dup-root-");
+    writeUnder(dir, "only.md", "ONE");
+    // Same dir registered under two scopes — second occurrence dropped.
+    const resolver = new StyleResolver(
+      [
+        { dir, scope: "project" },
+        { dir, scope: "home" },
+      ],
+      (_id, _msg) => {
+        /* swallow */
+      },
+    );
+    expect(resolver.roots().map((r) => r.scope)).toEqual(["project"]);
+    expect(resolver.listStyles().map((s) => s.scope)).toEqual(["project"]);
   });
 });

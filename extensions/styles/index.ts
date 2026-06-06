@@ -15,7 +15,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { INJECTORS, genericFallback } from "./injectors";
 import {
@@ -23,26 +22,20 @@ import {
   StyleResolver,
   type ListedStyle,
   type StyleRoot,
-  type StyleScope,
 } from "./styleResolver";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-/** Read-only bundled styles that ship with the extension package. */
-export const BUNDLED_STYLE_DIR = path.join(HERE, "styles");
-/** @deprecated Use BUNDLED_STYLE_DIR; kept for callers that imported the old name. */
-export const DEFAULT_STYLE_DIR = BUNDLED_STYLE_DIR;
-
 /**
- * Layered style roots, ordered project → home → bundled. Lookups walk in
- * order so project entries shadow home, which shadow bundled. Auto rules are
- * concatenated and matched first-wins, giving the same precedence without
- * losing home-defined rules for models the project doesn't override.
+ * Layered style roots, ordered project → home. Lookups walk in order so project
+ * entries shadow home of the same name. Auto rules are concatenated and matched
+ * first-wins, so a project rule overrides home for the same model without losing
+ * home rules for other models. User content lives outside the extension package
+ * (mirroring agent-switcher) so installing/upgrading the extension never touches
+ * styles you created.
  */
 export function defaultStyleRoots(cwd: string, home: string = os.homedir()): StyleRoot[] {
   return [
-    { dir: path.join(cwd, ".pi", "extensions", "styles", "styles"), scope: "project" },
-    { dir: path.join(home, ".pi", "agent", "extensions", "styles", "styles"), scope: "home" },
-    { dir: BUNDLED_STYLE_DIR, scope: "bundled" },
+    { dir: path.join(cwd, ".pi", "styles"), scope: "project" },
+    { dir: path.join(home, ".pi", "agent", "styles"), scope: "home" },
   ];
 }
 const ACTIVE_ENTRY = "styles:active";
@@ -107,7 +100,7 @@ function styleChoiceLabel(
   // Only show scope when multiple scopes are present so single-root setups
   // (and existing tests) keep the clean "  concise" form.
   if (!showScope) return `${mark} ${style.label}`;
-  return `${mark} ${style.label} (${scopeText(style.scope)})`;
+  return `${mark} ${style.label} (${style.scope})`;
 }
 
 function actionChoiceLabel(active: boolean, label: string): string {
@@ -116,10 +109,6 @@ function actionChoiceLabel(active: boolean, label: string): string {
 
 function directStyleNames(styles: ListedStyle[]): string[] {
   return styles.filter((style) => !style.reserved).map((style) => style.name);
-}
-
-function scopeText(scope: StyleScope): string {
-  return scope === "bundled" ? "built-in" : scope;
 }
 
 export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions = {}): void {

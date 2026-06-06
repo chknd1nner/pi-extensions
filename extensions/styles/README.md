@@ -10,7 +10,7 @@ the provider payload layer immediately before the request is sent.
 - `/style` — open a picker: choose a style, choose **Auto**, choose **None**, or
   **Create new style…**.
 - `/style <name>` — activate a style directly by name.
-- `/style auto` — choose a style from `styles/_config.json` by exact current
+- `/style auto` — choose a style from `_config.json` by exact current
   model ID on each request.
 - `/style off` — turn styling off (`off` / `none` / `clear` all work).
 
@@ -26,12 +26,27 @@ The footer reports the selected/resolved style name. If a style file exists but
 is empty after trimming, the footer may still show that style while injection
 no-ops.
 
-## Simple styles
+## Where styles live
 
-A simple style is a top-level Markdown file:
+Styles are discovered in two scopes, project first, then home:
 
 ```text
-styles/
+<cwd>/.pi/styles/              — project (commit alongside the repo)
+~/.pi/agent/styles/            — home (your personal styles, available everywhere)
+```
+
+Project entries shadow home entries of the same name. The extension ships **no**
+styles — user content lives outside the extension package so installing or
+upgrading the extension never touches anything you created. `Create new style…`
+always writes to the project dir; the picker shows a `(project)` / `(home)` tag
+on each entry when both scopes are populated.
+
+## Simple styles
+
+A simple style is a top-level Markdown file inside a styles root:
+
+```text
+~/.pi/agent/styles/
   concise.md
 ```
 
@@ -43,7 +58,7 @@ the next request after the file mtime changes.
 A variant style is a folder with `default.md` plus optional exact model-ID files:
 
 ```text
-styles/
+~/.pi/agent/styles/
   thought-catalyst/
     default.md
     claude-haiku-4-5.md
@@ -53,9 +68,12 @@ styles/
 
 When the active style is `thought-catalyst`, the extension reads:
 
-1. `styles/thought-catalyst/<ctx.model.id>.md` when the model ID is safe as a
+1. `<root>/thought-catalyst/<ctx.model.id>.md` when the model ID is safe as a
    filename and that file exists;
-2. otherwise `styles/thought-catalyst/default.md`.
+2. otherwise `<root>/thought-catalyst/default.md`.
+
+Variant lookup stays inside the root that won the name — a project `default.md`
+is never paired with a home variant file.
 
 `default.md` is required. A folder without `default.md` is not shown in the
 picker and injects nothing if referenced by session state or config.
@@ -65,8 +83,8 @@ variables, or router rules. Model IDs containing `/`, `\\`, `:`, whitespace, or 
 leading `.` cannot be used as variant filenames and fall back to `default.md`.
 They can still be matched in `_config.json` auto rules.
 
-If both `foo.md` and `foo/default.md` exist, `foo.md` wins and the picker lists
-`foo` once.
+If both `foo.md` and `foo/default.md` exist in the same root, `foo.md` wins and
+the picker lists `foo` once (with a one-time warning).
 
 ## Auto mode
 
@@ -76,13 +94,14 @@ Auto mode is explicit and sticky:
 /style auto
 ```
 
-Auto mode reads optional JSON config from:
+Auto mode reads an optional `_config.json` from each styles root:
 
 ```text
-styles/_config.json
+<cwd>/.pi/styles/_config.json     — project rules
+~/.pi/agent/styles/_config.json   — home rules
 ```
 
-Bundled example:
+Example:
 
 ```json
 {
@@ -103,23 +122,24 @@ Bundled example:
 }
 ```
 
-The bundled `thought-catalyst` style demonstrates variants: `default.md` uses
-`<think>` terminology, while each listed Anthropic model ID has an exact
-same-named `.md` variant using `<antml:thinking>` terminology.
-
-Rules are evaluated in order. `model` is either a string or an array of strings.
+Rules are **concatenated** across roots in project-then-home order and
+evaluated in that order. `model` is either a string or an array of strings.
 Matching is exact against `ctx.model.id`. The first matching rule whose `style`
-exists wins. A `style` value is a style name, not a path.
+exists wins. The effect is intuitive layering: a project rule for a given model
+overrides the home rule for that same model, but home rules for unrelated
+models still apply — you don't have to restate your whole home config in every
+repo. A `style` value is a style name, not a path; it may resolve to a style
+file in either scope.
 
 ## Reserved command words
 
 The direct command arguments `auto`, `off`, `none`, and `clear` are reserved.
-For example, `/style auto` always enables auto mode, even if `styles/auto.md`
+For example, `/style auto` always enables auto mode, even if an `auto.md` style
 exists. The picker labels reserved style names distinctly.
 
-`Create new style…` creates a simple top-level `.md` file. If the requested name
-slugifies to a reserved command word, the extension creates `<word>-style.md`
-instead.
+`Create new style…` creates a simple top-level `.md` file in the project dir.
+If the requested name slugifies to a reserved command word, the extension
+creates `<word>-style.md` instead.
 
 ## How injection works
 
