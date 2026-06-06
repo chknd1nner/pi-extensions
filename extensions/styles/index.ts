@@ -156,13 +156,14 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
     if (!a) return false;
 
     const lower = a.toLowerCase();
-    if (lower === "auto") {
+    // Handle both raw args ("off") and completion labels ("off (turn off)")
+    if (lower === "auto" || lower.startsWith("auto ")) {
       setMode({ kind: "auto" }, ctx);
       ctx.ui.notify("Auto style mode enabled.", "info");
       return true;
     }
 
-    if (lower === "off" || lower === "none" || lower === "clear") {
+    if (lower === "off" || lower.startsWith("off ") || lower === "none" || lower === "clear") {
       setMode({ kind: "off" }, ctx);
       ctx.ui.notify("Styles turned off.", "info");
       return true;
