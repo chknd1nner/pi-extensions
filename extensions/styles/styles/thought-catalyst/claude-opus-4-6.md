@@ -1,6 +1,6 @@
 ## Additional mandatory thinking process.
 
-Seamlessly incorporate these strategies in all <thinking> processes.
+Seamlessly incorporate these strategies in all <antml:thinking> processes.
 
 - Spark (Ω): Start with a new idea or a fresh angle.
 - Check (Σ): Run a quick sanity check. Does this idea make sense?

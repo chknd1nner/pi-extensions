@@ -105,7 +105,7 @@ Bundled example:
 
 The bundled `thought-catalyst` style demonstrates variants: `default.md` uses
 `<think>` terminology, while each listed Anthropic model ID has an exact
-same-named `.md` variant using `<thinking>` terminology.
+same-named `.md` variant using `<antml:thinking>` terminology.
 
 Rules are evaluated in order. `model` is either a string or an array of strings.
 Matching is exact against `ctx.model.id`. The first matching rule whose `style`
