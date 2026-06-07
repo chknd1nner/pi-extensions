@@ -1,0 +1,30 @@
+{
+  "name": "delegate-driven-development",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Subagent-driven workflow for π: delegate, session, and tickets extensions plus the delegate-driven-development skill.",
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chknd1nner/delegate-driven-development.git"
+  },
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/delegate/index.ts",
+      "./extensions/session/index.ts",
+      "./extensions/tickets/index.ts"
+    ],
+    "skills": ["./skills"]
+  },
+  "scripts": {
+    "test": "vitest run --cache=false",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  }
+}
