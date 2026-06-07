@@ -118,7 +118,7 @@ describe("styles extension mode restoration", () => {
 
     expect(payload.messages[0].content.at(-1)).toEqual({
       type: "text",
-      text: "<userStyle>\nDefault thought style\n</userStyle>",
+      text: "Default thought style",
     });
   });
 
@@ -278,7 +278,7 @@ describe("styles extension layered discovery via styleRoots option", () => {
       messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
     };
     await handlers.get("before_provider_request")({ payload }, ctx);
-    expect(payload.messages[0].content.at(-1).text).toBe("<userStyle>\nPROJECT\n</userStyle>");
+    expect(payload.messages[0].content.at(-1).text).toBe("PROJECT");
 
     // Picker must show both project's concise (winning) and home's verbose, tagged with scope.
     await commands.get("style").handler("", ctx);
@@ -304,7 +304,7 @@ describe("styles extension request-time resolution", () => {
     await h.triggerBeforeProviderRequest(payload);
 
     expect(payload.messages[0].content.at(-1).text).toBe(
-      "<userStyle>\nClaude thought style\n</userStyle>",
+      "Claude thought style",
     );
 
     h.ctx.model = { id: "openrouter/claude", api: "anthropic-messages" };
@@ -314,7 +314,7 @@ describe("styles extension request-time resolution", () => {
     await h.triggerBeforeProviderRequest(fallbackPayload);
 
     expect(fallbackPayload.messages[0].content.at(-1).text).toBe(
-      "<userStyle>\nDefault thought style\n</userStyle>",
+      "Default thought style",
     );
   });
 
@@ -332,7 +332,7 @@ describe("styles extension request-time resolution", () => {
     expect(h.notifications).toContainEqual({ message: "Auto style resolved to 'concise'.", type: "info" });
     expect(payload.input.at(-1)).toEqual({
       role: "user",
-      content: [{ type: "input_text", text: "<userStyle>\nBe concise\n</userStyle>" }],
+      content: [{ type: "input_text", text: "Be concise" }],
     });
   });
 

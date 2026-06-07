@@ -10,9 +10,10 @@
  *   - it can change every turn without invalidating upstream cache,
  *   - the conversation-history breakpoint keeps rolling forward normally.
  *
- * This mirrors how claude.ai injects <userStyle> and how Claude Code injects
- * <system-reminder>: a trailing, ephemeral, user-role content splice — never the
- * system prompt (which is the most cache-hostile place to put volatile text).
+ * This uses the same cache-friendly placement pattern as other ephemeral
+ * instruction splices: trailing user-role content, never the system prompt
+ * (which is the most cache-hostile place to put volatile text). The style text
+ * is inserted exactly as supplied by the style resolver.
  *
  * Injectors construct their block first and perform a single append last, so a
  * validation failure throws before any mutation (the caller's try/catch then

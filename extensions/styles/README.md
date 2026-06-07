@@ -1,9 +1,13 @@
 # styles
 
-claude.ai-style **output styles** for Pi. An active style is injected
-*ephemerally* into every model request as a trailing `<userStyle>…</userStyle>`
-block — it never persists to the session, never accumulates, and is added at
-the provider payload layer immediately before the request is sent.
+**Output styles** for Pi. An active style is injected *ephemerally* into every
+model request as trailing user-role content — it never persists to the session,
+never accumulates, and is added at the provider payload layer immediately before
+the request is sent.
+
+The extension injects the trimmed contents of your style file exactly as written.
+If you want XML-like tags, Markdown headings, bullets, or plain prose, put that
+structure in the style file yourself.
 
 ## Usage
 
@@ -147,6 +151,9 @@ Injection happens in `before_provider_request` — after Pi serializes the paylo
 and assigns provider-specific cache metadata. The resolved style text is spliced
 in after cache breakpoints where the provider format exposes them, so style
 changes do not invalidate cached conversation prefixes.
+
+The style text is the style file's trimmed Markdown content. The extension does
+not wrap it in tags or otherwise transform its structure.
 
 Dispatch is keyed on `model.api`, so switching models mid-session is handled at
 request time:

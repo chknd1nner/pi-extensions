@@ -25,7 +25,7 @@ export interface ResolvedStyleContent {
   name: string;
   file: string;
   rawText: string;
-  wrappedText: string;
+  styleText: string;
 }
 
 interface ParsedAutoRule {
@@ -43,7 +43,7 @@ interface ConfigFileCacheEntry {
 interface TextCacheEntry {
   mtimeMs: number;
   rawText: string;
-  wrappedText: string;
+  styleText: string;
 }
 
 export function isSafeVariantBasename(modelId: unknown): modelId is string {
@@ -417,16 +417,16 @@ export class StyleResolver {
     const absoluteFile = path.resolve(file);
     const cached = this.contentCache.get(absoluteFile);
     if (cached && cached.mtimeMs === st.mtimeMs) {
-      if (!cached.wrappedText) return null;
-      return { name, file: absoluteFile, rawText: cached.rawText, wrappedText: cached.wrappedText };
+      if (!cached.styleText) return null;
+      return { name, file: absoluteFile, rawText: cached.rawText, styleText: cached.styleText };
     }
 
     const rawText = fs.readFileSync(absoluteFile, "utf8").trim();
-    const wrappedText = rawText ? `<userStyle>\n${rawText}\n</userStyle>` : "";
-    this.contentCache.set(absoluteFile, { mtimeMs: st.mtimeMs, rawText, wrappedText });
+    const styleText = rawText;
+    this.contentCache.set(absoluteFile, { mtimeMs: st.mtimeMs, rawText, styleText });
 
-    if (!wrappedText) return null;
-    return { name, file: absoluteFile, rawText, wrappedText };
+    if (!styleText) return null;
+    return { name, file: absoluteFile, rawText, styleText };
   }
 
   private warnOnce(id: string, message: string): void {

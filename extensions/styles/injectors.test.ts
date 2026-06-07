@@ -6,7 +6,7 @@ import {
   injectOpenAIResponses,
 } from "./injectors";
 
-const STYLE = "<userStyle>\nBe concise.\n</userStyle>";
+const STYLE = "Be concise.";
 
 describe("injectAnthropic", () => {
   it("appends a style text block after existing user content", () => {

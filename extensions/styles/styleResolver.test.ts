@@ -239,14 +239,14 @@ describe("StyleResolver.resolveAutoStyleName", () => {
 });
 
 describe("StyleResolver.resolveStyleContent", () => {
-  it("reads and wraps a simple style", () => {
+  it("reads a simple style without wrapping it", () => {
     const h = createHarness();
     h.write("concise.md", "Be concise.\n");
 
     expect(h.resolver.resolveStyleContent("concise", "claude-sonnet-4-5")).toMatchObject({
       name: "concise",
       rawText: "Be concise.",
-      wrappedText: "<userStyle>\nBe concise.\n</userStyle>",
+      styleText: "Be concise.",
     });
   });
 

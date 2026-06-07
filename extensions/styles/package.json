@@ -1,8 +1,8 @@
 {
   "name": "pi-styles",
   "version": "0.1.0",
-  "description": "claude.ai-style ephemeral output styles for Pi, injected as a trailing <userStyle> block after cache_control so prompt caching is preserved.",
-  "keywords": ["pi-package", "pi-extension", "styles", "userStyle", "prompt"],
+  "description": "Ephemeral output styles for Pi, injected as trailing raw style text after cache_control so prompt caching is preserved.",
+  "keywords": ["pi-package", "pi-extension", "styles", "prompt"],
   "license": "MIT",
   "type": "module",
   "files": ["index.ts", "injectors.ts", "styleResolver.ts", "README.md"],

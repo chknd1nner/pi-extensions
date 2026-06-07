@@ -1,5 +1,5 @@
 /**
- * styles — claude.ai-style output styles for Pi.
+ * styles — ephemeral output styles for Pi.
  *
  * A `/style` command selects a sticky style mode:
  *
@@ -8,7 +8,7 @@
  *   - auto: choose a style from styles/_config.json by exact model ID
  *
  * The resolved style text is injected EPHEMERALLY into every provider request as
- * a trailing <userStyle> block. It is never persisted to the session and never
+ * trailing user-role content. It is never persisted to the session and never
  * accumulates in conversation history.
  */
 
@@ -269,13 +269,13 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
     try {
       const inject = api ? INJECTORS[api] : undefined;
       if (inject) {
-        inject(event.payload, resolved.wrappedText);
+        inject(event.payload, resolved.styleText);
         debug("injected", { api, style: styleName, file: resolved.file });
         return event.payload;
       }
 
       const key = api ?? "unknown";
-      const ok = genericFallback(event.payload, resolved.wrappedText);
+      const ok = genericFallback(event.payload, resolved.styleText);
       if (!warnedApis.has(key)) {
         warnedApis.add(key);
         ctx.ui?.notify?.(
@@ -296,7 +296,7 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
   });
 
   pi.registerCommand("style", {
-    description: "Select, create, auto-route, or turn off an output style (ephemeral <userStyle> injection)",
+    description: "Select, create, auto-route, or turn off an output style (ephemeral raw style injection)",
     getArgumentCompletions: (prefix: string) => {
       resolver.setWarningSink(null);
       const items = [
