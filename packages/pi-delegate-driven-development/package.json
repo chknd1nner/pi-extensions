@@ -1,10 +1,12 @@
 {
   "name": "pi-delegate-driven-development",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "type": "module",
   "description": "Subagent-driven workflow for π: delegate, session, and tickets extensions plus the delegate-driven-development skill.",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/chknd1nner/pi-delegate-driven-development.git"
@@ -16,7 +18,9 @@
       "./extensions/session/index.ts",
       "./extensions/tickets/index.ts"
     ],
-    "skills": ["./skills"]
+    "skills": [
+      "./skills"
+    ]
   },
   "scripts": {
     "test": "vitest run --cache=false",
