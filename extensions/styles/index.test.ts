@@ -166,6 +166,16 @@ describe("styles extension commands", () => {
     expect(h.statuses.get("style")).toBeUndefined();
   });
 
+  it("does not keep autocomplete active for exact auto/off arguments", () => {
+    const h = createHarness();
+    const completions = h.commands.get("style").getArgumentCompletions;
+
+    expect(completions("au")).toEqual([{ value: "auto", label: "auto (choose style by model)" }]);
+    expect(completions("of")).toEqual([{ value: "off", label: "off (turn off)" }]);
+    expect(completions("auto")).toBeNull();
+    expect(completions("off")).toBeNull();
+  });
+
   it("/style picker activates a style by its displayed label and marks the current mode", async () => {
     const h = createHarness();
     h.write("concise.md", "Be concise");

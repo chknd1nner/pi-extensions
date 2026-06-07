@@ -304,6 +304,7 @@ export function registerStyles(pi: ExtensionAPI, options: StylesExtensionOptions
         { value: "auto", label: "auto (choose style by model)" },
         { value: "off", label: "off (turn off)" },
       ];
+      if (items.some((i) => i.value === prefix)) return null;
       const filtered = items.filter((i) => i.value.startsWith(prefix));
       return filtered.length ? filtered : null;
     },
