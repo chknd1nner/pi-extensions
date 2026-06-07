@@ -9,7 +9,7 @@ Before starting any work on a Pi package, consult the Pi documentation in `docs/
 This repo is the source of truth for Pi packages. Each package lives under `packages/<name>/` and is one of:
 
 - **Single-extension package** (e.g. `replace-prompt`, `agent-switcher`): one `pi` manifest pointing at one source file or directory.
-- **Bundle** (e.g. `delegate-driven-development`): a `pi` manifest exposing multiple sub-extensions (under `packages/<bundle>/extensions/<name>/`) and skills (under `packages/<bundle>/skills/<name>/`).
+- **Bundle** (e.g. `pi-delegate-driven-development`): a `pi` manifest exposing multiple sub-extensions (under `packages/<bundle>/extensions/<name>/`) and skills (under `packages/<bundle>/skills/<name>/`).
 
 ### Rules
 
@@ -27,10 +27,10 @@ This repo is the source of truth for Pi packages. Each package lives under `pack
 
 ### Bundles: source layout
 
-A bundle like `delegate-driven-development` looks like:
+A bundle like `pi-delegate-driven-development` looks like:
 
 ```
-packages/delegate-driven-development/
+packages/pi-delegate-driven-development/
   package.json              # name, version, pi manifest, peerDependencies
   tsconfig.json             # one tsconfig covering all sub-extensions
   README.md                 # consumer docs with install spec
@@ -47,9 +47,9 @@ Sub-extension directories do **not** have their own `package.json` or `tsconfig.
 
 ### Releasing a bundle
 
-Bundles publish to dedicated mirror repos (e.g. `chknd1nner/delegate-driven-development`) via `scripts/release-bundle.sh`. The release workflow is documented in `skills/releasing-a-bundle/SKILL.md` — read that skill before publishing.
+Bundles publish to dedicated mirror repos (e.g. `chknd1nner/pi-delegate-driven-development`) via `scripts/release-bundle.sh`. The release workflow is documented in `skills/releasing-a-bundle/SKILL.md` — read that skill before publishing.
 
-The monorepo retains tags of the form `<bundle>-v<version>` (e.g. `delegate-driven-development-v0.1.0`) for traceability. The mirror repo carries the plain `v<version>` tags consumers install against.
+The monorepo retains tags of the form `<bundle>-v<version>` (e.g. `pi-delegate-driven-development-v0.1.0`) for traceability. The mirror repo carries the plain `v<version>` tags consumers install against.
 
 ## Tool usage notes
 

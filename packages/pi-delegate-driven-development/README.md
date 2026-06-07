@@ -1,4 +1,4 @@
-# delegate-driven-development
+# pi-delegate-driven-development
 
 A Pi package bundling a subagent-driven workflow:
 
@@ -13,7 +13,7 @@ A Pi package bundling a subagent-driven workflow:
 // .pi/settings.json
 {
   "packages": [
-    "git:github.com/chknd1nner/delegate-driven-development@v0.1.0"
+    "git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0"
   ]
 }
 ```
@@ -21,7 +21,7 @@ A Pi package bundling a subagent-driven workflow:
 Or via CLI:
 
 ```bash
-pi install git:github.com/chknd1nner/delegate-driven-development@v0.1.0
+pi install git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0
 ```
 
 To install just one extension from the bundle:
@@ -30,7 +30,7 @@ To install just one extension from the bundle:
 {
   "packages": [
     {
-      "source": "git:github.com/chknd1nner/delegate-driven-development@v0.1.0",
+      "source": "git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0",
       "extensions": ["extensions/delegate/index.ts"],
       "skills": []
     }
@@ -40,4 +40,4 @@ To install just one extension from the bundle:
 
 ## Source
 
-Development happens upstream at [chknd1nner/pi-extensions](https://github.com/chknd1nner/pi-extensions) under `packages/delegate-driven-development/`. This repo is a publish mirror; PRs welcome upstream.
+Development happens upstream at [chknd1nner/pi-extensions](https://github.com/chknd1nner/pi-extensions) under `packages/pi-delegate-driven-development/`. This repo is a publish mirror; PRs welcome upstream.

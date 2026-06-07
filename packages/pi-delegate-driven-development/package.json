@@ -1,5 +1,5 @@
 {
-  "name": "delegate-driven-development",
+  "name": "pi-delegate-driven-development",
   "version": "0.0.0",
   "private": false,
   "type": "module",
@@ -7,7 +7,7 @@
   "keywords": ["pi-package"],
   "repository": {
     "type": "git",
-    "url": "https://github.com/chknd1nner/delegate-driven-development.git"
+    "url": "https://github.com/chknd1nner/pi-delegate-driven-development.git"
   },
   "license": "MIT",
   "pi": {

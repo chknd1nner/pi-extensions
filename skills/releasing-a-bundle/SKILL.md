@@ -8,10 +8,12 @@ description: Use when the user asks to release, publish, or ship a Pi package bu
 ## When to use
 
 The user says things like:
-- "Release delegate-driven-development v0.2.0"
+- "Release pi-delegate-driven-development v0.2.0"
 - "Publish the latest changes to <bundle>"
 - "Ship a patch for <bundle>"
 - "Cut a new version of <bundle>"
+
+Pi package bundles in this repo conventionally use a `pi-` prefix (e.g. `pi-delegate-driven-development`). The bundle directory name under `packages/`, the `name` field in `package.json`, and the mirror repo name on GitHub all match.
 
 If the user names a version, use it. If they don't, follow the version-picking decision tree below before invoking the script.
 
@@ -65,7 +67,7 @@ For first release of a bundle, use `v0.1.0` (pre-1.0, expect breaking changes; m
 
 Example:
 ```bash
-./scripts/release-bundle.sh delegate-driven-development v0.2.0
+./scripts/release-bundle.sh pi-delegate-driven-development v0.2.0
 ```
 
 The script will:
