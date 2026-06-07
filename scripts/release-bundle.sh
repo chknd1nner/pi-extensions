@@ -69,7 +69,7 @@ REMOTE=$(git rev-parse @{u})
 }
 
 # 5. Mirror reachable
-MIRROR_URL="git@github.com:chknd1nner/$BUNDLE.git"
+MIRROR_URL="https://github.com/chknd1nner/$BUNDLE.git"
 if ! git ls-remote --exit-code "$MIRROR_URL" >/dev/null 2>&1; then
   echo "error: cannot reach mirror $MIRROR_URL" >&2
   echo "       create it first: gh repo create chknd1nner/$BUNDLE --public --description \"Pi package: $BUNDLE\"" >&2
