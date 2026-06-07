@@ -41,18 +41,18 @@ The first worker of each role pays to process it; later same-role workers hit ca
    every used role has non-empty `provider` and `model`; if not, halt and ask the user.
 
 ## Orchestration loop (sequential — one worker in flight)
-**Keep dispatches lean.** Pass each worker a short task that points at its template file (`references/implementer-prompt.md`, `references/reviewer-prompt.md`, `references/fixer-prompt.md`) and supplies only per-task substitutions (`{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{TASK_BASE_SHA}}`, `{{FIX_INSTRUCTIONS}}`), instructing the worker to read the template and apply them. Do not inline full template bodies into the `task` argument: that identical boilerplate would accumulate in the orchestrator context over long runs. (Workers read templates from the worktree; the shared anchor already dedups spec+plan.)
+**Keep dispatches lean.** Pass each worker a short task that points at its template file (`skills/delegate-driven-development/references/implementer-prompt.md`, `skills/delegate-driven-development/references/reviewer-prompt.md`, `skills/delegate-driven-development/references/fixer-prompt.md`, all worktree-relative) and supplies only per-task substitutions (`{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{TASK_BASE_SHA}}`, `{{FIX_INSTRUCTIONS}}`), instructing the worker to read the template and apply them. Do not inline full template bodies into the `task` argument: that identical boilerplate would accumulate in the orchestrator context over long runs. (Workers read templates from the worktree; the shared anchor already dedups spec+plan.)
 
 For each ticket in `ready`, ascending task number:
 
 1. `ticket_move task-NN active`. Record the diff boundary:
    `task_base_sha = git -C <worktree> rev-parse HEAD`; persist with
    `ticket_set task-NN task_base_sha <sha>`.
-2. Build the implementer prompt = `references/implementer-prompt.md` with
+2. Build the implementer prompt = `skills/delegate-driven-development/references/implementer-prompt.md` with
    `{{PLAN_EXCERPT}}` (the ticket's `## Plan excerpt`), `{{WORKTREE_PATH}}`, `{{BRANCH}}`.
 3. `delegate_start({ task, cwd: <worktree>, inherit_context: "plan-foundation",
    provider/model: implementer, thinking, tools: ["read","edit","write","bash"] })`.
-4. **Wait (non-blocking):** launch `references/wait.sh <status_file> <timeout>` via the
+4. **Wait (non-blocking):** launch `skills/delegate-driven-development/references/wait.sh <status_file> <timeout>` via the
    `process` tool with `alertOnSuccess: true`, `alertOnFailure: true`, and
    `logWatches: [{ pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT" }]`. While
    waiting you MAY chat / investigate / pre-draft, but MUST NOT advance the pipeline,
@@ -65,7 +65,7 @@ For each ticket in `ready`, ascending task number:
    empty. If HEAD didn't advance or the tree is dirty, the task commit is missing —
    re-dispatch with an explicit "commit your work" instruction, or escalate. Do not
    review until this passes.
-7. `ticket_move review`. Build the reviewer prompt = `references/reviewer-prompt.md`
+7. `ticket_move review`. Build the reviewer prompt = `skills/delegate-driven-development/references/reviewer-prompt.md`
    with `{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{TASK_BASE_SHA}}`. `delegate_start`
    with the reviewer model and READ-ONLY tools `["read","bash"]`,
    `inherit_context: "plan-foundation"`. Wait via the same non-blocking pattern.
@@ -76,7 +76,7 @@ For each ticket in `ready`, ascending task number:
      (`ticket_get` → +1 → `ticket_set`); go to Escalation.
 
 ## Escalation circuit-breaker (by `review_failures`)
-- **1** → routine fixer run: build `references/fixer-prompt.md` with `{{PLAN_EXCERPT}}`
+- **1** → routine fixer run: build `skills/delegate-driven-development/references/fixer-prompt.md` with `{{PLAN_EXCERPT}}`
   and `{{FIX_INSTRUCTIONS}}` (read from `next_prompt`), `delegate_start` with the fixer
   model and tools `["read","edit","write","bash"]`, `inherit_context: "plan-foundation"`.
   After it reports, re-run the commit-boundary gate (step 6), then re-enter review (step 7).
@@ -97,6 +97,16 @@ path from the `delegate_start` result details (or `delegate_check`).
 | Implementer / Fixer | `read`, `edit`, `write`, `bash` |
 | Reviewer | `read`, `bash` (strictly read-only) |
 Workers never get `ticket_*` or `delegate_*` and must never touch `in-progress/`.
+
+## Project-scope extensions/skills do not load inside workers
+Worker subagents boot a fresh `pi` process whose cwd is the worktree. `.pi/` is
+gitignored and `pi` does not walk upward to find `.pi/settings.json`, so project-scope
+extensions and skills do not load inside workers — only stock pi tools and user-global
+packages from `~/.pi/agent/settings.json` are available. Worker procedures in this
+skill are intentionally self-contained: TDD/review/fix steps are inlined in the
+templates and allowlists are stock-only. To require a project extension or skill
+inside a worker, install it under `~/.pi/agent/extensions/<name>` (or via `npm:`/`git:`
+in `~/.pi/agent/settings.json`) first.
 
 ## Completion
 When all tickets are `done`: optionally run a whole-implementation reviewer pass over
