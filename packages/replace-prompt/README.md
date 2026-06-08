@@ -12,10 +12,10 @@ It supports:
 
 ## Install
 
-Local folder:
+Local folder from this repository:
 
 ```bash
-pi install ./extensions/replace-prompt
+pi install ./packages/replace-prompt
 ```
 
 If you publish this folder as npm or its own git repo later, the same package is ready for:
@@ -27,16 +27,14 @@ pi install git:github.com/<you>/pi-replace-prompt
 
 ## Configure
 
-Drop your `rules.ts` file into one or both of these Pi extension config folders:
+Drop your `rules.ts` file into one or both of these dedicated replace-prompt config folders:
 
-- User-scoped: `~/.pi/agent/extensions/replace-prompt/rules.ts`
-- Project-scoped: `<your-project>/.pi/extensions/replace-prompt/rules.ts`
+- User-scoped: `~/.pi/agent/replace-prompt/rules.ts`
+- Project-scoped: `<your-project>/.pi/replace-prompt/rules.ts`
 
-Use the user-scoped file for defaults you want in every project. Use the project-scoped file when a single repo needs different prompt rewrites.
+Use the user-scoped file for defaults you want in every project. Use the project-scoped file when a single repo needs different prompt rewrites. The extension does not read config from Pi extension install folders such as `.pi/extensions/replace-prompt/`.
 
-This package ships with a commented starter `rules.ts` example, but the example rule is disabled by default (`enabled: false`) so nothing auto-applies until you customize it.
-
-Minimal example:
+Minimal `rules.ts` example:
 
 ```ts
 export default {
@@ -53,7 +51,7 @@ export default {
 };
 ```
 
-And the replacement text file next to it:
+And the replacement text file next to it in the same `replace-prompt` config folder:
 
 ```md
 You are a specialised assistant focused on pragmatic, step-by-step code changes and clear explanations.
@@ -80,7 +78,7 @@ export default {
 };
 ```
 
-Logs are written to `replace-prompt.log` in the most specific installed scope.
+Logs are written to `replace-prompt.log` in the most specific config scope.
 
 ## More docs
 

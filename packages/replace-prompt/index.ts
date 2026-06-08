@@ -8,15 +8,14 @@ import { mergeScopeConfigs } from "./merge-rules";
 import { resolveReplacementText } from "./resolve-replacement";
 
 function getScopeDirs(cwd: string) {
-  const globalDir = process.env.HOME
-    ? path.join(process.env.HOME, ".pi/agent/extensions/replace-prompt")
+  const globalCandidate = process.env.HOME
+    ? path.join(process.env.HOME, ".pi/agent/replace-prompt")
     : null;
-  const projectCandidate = path.join(cwd, ".pi/extensions/replace-prompt");
-  const projectDir = fs.existsSync(projectCandidate) ? projectCandidate : null;
+  const projectCandidate = path.join(cwd, ".pi/replace-prompt");
 
   return {
-    globalDir,
-    projectDir,
+    globalDir: globalCandidate && fs.existsSync(globalCandidate) ? globalCandidate : null,
+    projectDir: fs.existsSync(projectCandidate) ? projectCandidate : null,
   };
 }
 

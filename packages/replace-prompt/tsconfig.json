@@ -8,6 +8,5 @@
     "skipLibCheck": true,
     "types": ["vitest/globals", "node"]
   },
-  "include": ["*.ts", "tests/**/*.ts"],
-  "exclude": ["rules.ts"]
+  "include": ["*.ts", "tests/**/*.ts"]
 }

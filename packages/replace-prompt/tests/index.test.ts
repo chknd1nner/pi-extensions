@@ -21,14 +21,14 @@ describe("replace-prompt extension", () => {
     expect(on).toHaveBeenCalledWith("before_agent_start", expect.any(Function));
   });
 
-  it("applies merged rules, prefers project replacement files, and logs to the most specific installed scope", async () => {
+  it("applies merged rules, prefers project replacement files, and logs to the most specific config scope", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-project-"));
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-home-"));
     tempDirs.push(projectRoot, homeDir);
     process.env.HOME = homeDir;
 
-    const projectExtDir = path.join(projectRoot, ".pi/extensions/replace-prompt");
-    const globalExtDir = path.join(homeDir, ".pi/agent/extensions/replace-prompt");
+    const projectExtDir = path.join(projectRoot, ".pi/replace-prompt");
+    const globalExtDir = path.join(homeDir, ".pi/agent/replace-prompt");
     fs.mkdirSync(projectExtDir, { recursive: true });
     fs.mkdirSync(globalExtDir, { recursive: true });
 
@@ -63,13 +63,50 @@ describe("replace-prompt extension", () => {
     expect(logText).toContain("[warn] [replace-opening] rule did not match at application time");
   });
 
-  it("falls back to the global log directory when no project extension directory is installed", async () => {
+  it("ignores deprecated extension-directory rules without backward compatibility", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-project-"));
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-home-"));
     tempDirs.push(projectRoot, homeDir);
     process.env.HOME = homeDir;
 
-    const globalExtDir = path.join(homeDir, ".pi/agent/extensions/replace-prompt");
+    const oldProjectExtDir = path.join(projectRoot, ".pi/extensions/replace-prompt");
+    const oldGlobalExtDir = path.join(homeDir, ".pi/agent/extensions/replace-prompt");
+    fs.mkdirSync(oldProjectExtDir, { recursive: true });
+    fs.mkdirSync(oldGlobalExtDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(oldProjectExtDir, "rules.ts"),
+      `export default { rules: [
+        { id: "old-project-rule", type: "literal", target: "Hello", replacement: "Old project hi" }
+      ] };`,
+    );
+    fs.writeFileSync(
+      path.join(oldGlobalExtDir, "rules.ts"),
+      `export default { rules: [
+        { id: "old-global-rule", type: "literal", target: "Hello", replacement: "Old global hi" }
+      ] };`,
+    );
+
+    let handler: ((event: any, ctx?: any) => Promise<any>) | undefined;
+    replacePrompt({
+      on(eventName: string, fn: (event: any, ctx?: any) => Promise<any>) {
+        if (eventName === "before_agent_start") {
+          handler = fn;
+        }
+      },
+    } as any);
+
+    const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot }, {});
+    expect(changed).toBeUndefined();
+  });
+
+  it("falls back to the global log directory when no project config directory is installed", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-project-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "replace-prompt-home-"));
+    tempDirs.push(projectRoot, homeDir);
+    process.env.HOME = homeDir;
+
+    const globalExtDir = path.join(homeDir, ".pi/agent/replace-prompt");
     fs.mkdirSync(globalExtDir, { recursive: true });
 
     fs.writeFileSync(
@@ -103,7 +140,7 @@ describe("replace-prompt extension", () => {
     tempDirs.push(projectRoot, homeDir);
     process.env.HOME = homeDir;
 
-    const globalExtDir = path.join(homeDir, ".pi/agent/extensions/replace-prompt");
+    const globalExtDir = path.join(homeDir, ".pi/agent/replace-prompt");
     fs.mkdirSync(globalExtDir, { recursive: true });
     fs.writeFileSync(
       path.join(globalExtDir, "rules.ts"),
@@ -150,7 +187,7 @@ describe("replace-prompt extension", () => {
     tempDirs.push(projectRoot, homeDir);
     process.env.HOME = homeDir;
 
-    const globalExtDir = path.join(homeDir, ".pi/agent/extensions/replace-prompt");
+    const globalExtDir = path.join(homeDir, ".pi/agent/replace-prompt");
     fs.mkdirSync(globalExtDir, { recursive: true });
     fs.writeFileSync(
       path.join(globalExtDir, "rules.ts"),

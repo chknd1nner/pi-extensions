@@ -110,13 +110,13 @@ describe("loadScopeConfig", () => {
     expect(resolveReplacementText(rule, { globalDir, projectDir: null })).toBeNull();
   });
 
-  it("selects the log path in the most specific installed scope", () => {
+  it("selects the log path in the most specific config scope", () => {
     expect(
       selectLogPath({
-        projectDir: "/repo/.pi/extensions/replace-prompt",
-        globalDir: "/home/.pi/agent/extensions/replace-prompt",
+        projectDir: "/repo/.pi/replace-prompt",
+        globalDir: "/home/.pi/agent/replace-prompt",
       }),
-    ).toBe("/repo/.pi/extensions/replace-prompt/replace-prompt.log");
+    ).toBe("/repo/.pi/replace-prompt/replace-prompt.log");
   });
 
   it("accepts function conditions, ignores condition on disable-only rules, and rejects non-function conditions", async () => {

@@ -4,7 +4,7 @@ import type { ScopeConfig } from "../types";
 
 const globalConfig: ScopeConfig = {
   scope: "global",
-  baseDir: "/home/.pi/agent/extensions/replace-prompt",
+  baseDir: "/home/.pi/agent/replace-prompt",
   logging: { file: false },
   events: [],
   rules: [
@@ -31,7 +31,7 @@ const globalConfig: ScopeConfig = {
 
 const projectConfig: ScopeConfig = {
   scope: "project",
-  baseDir: "/repo/.pi/extensions/replace-prompt",
+  baseDir: "/repo/.pi/replace-prompt",
   logging: { file: true },
   events: [],
   rules: [
@@ -51,8 +51,8 @@ const projectConfig: ScopeConfig = {
 describe("mergeScopeConfigs", () => {
   it("keeps inherited order, applies project override in place, and appends project-only rules", () => {
     const merged = mergeScopeConfigs(globalConfig, projectConfig, {
-      projectDir: "/repo/.pi/extensions/replace-prompt",
-      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+      projectDir: "/repo/.pi/replace-prompt",
+      globalDir: "/home/.pi/agent/replace-prompt",
     });
     expect(merged.rules.map((rule) => rule.id)).toEqual([
       "replace-opening",
@@ -61,7 +61,7 @@ describe("mergeScopeConfigs", () => {
     ]);
     expect(merged.rules[0]).toEqual({ id: "replace-opening", enabled: false });
     expect(merged.logging.file).toBe(true);
-    expect(merged.logBaseDir).toBe("/repo/.pi/extensions/replace-prompt");
+    expect(merged.logBaseDir).toBe("/repo/.pi/replace-prompt");
   });
 
   it("inherits global logging when project logging is unset", () => {
@@ -75,8 +75,8 @@ describe("mergeScopeConfigs", () => {
         logging: {},
       },
       {
-        projectDir: "/repo/.pi/extensions/replace-prompt",
-        globalDir: "/home/.pi/agent/extensions/replace-prompt",
+        projectDir: "/repo/.pi/replace-prompt",
+        globalDir: "/home/.pi/agent/replace-prompt",
       },
     );
 
@@ -85,25 +85,25 @@ describe("mergeScopeConfigs", () => {
 
   it("keeps the most specific installed directory for logging even when no project rules file exists", () => {
     const merged = mergeScopeConfigs(globalConfig, null, {
-      projectDir: "/repo/.pi/extensions/replace-prompt",
-      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+      projectDir: "/repo/.pi/replace-prompt",
+      globalDir: "/home/.pi/agent/replace-prompt",
     });
 
-    expect(merged.projectDir).toBe("/repo/.pi/extensions/replace-prompt");
-    expect(merged.globalDir).toBe("/home/.pi/agent/extensions/replace-prompt");
-    expect(merged.logBaseDir).toBe("/repo/.pi/extensions/replace-prompt");
+    expect(merged.projectDir).toBe("/repo/.pi/replace-prompt");
+    expect(merged.globalDir).toBe("/home/.pi/agent/replace-prompt");
+    expect(merged.logBaseDir).toBe("/repo/.pi/replace-prompt");
   });
 
   it("returns global order when no project config exists", () => {
     const merged = mergeScopeConfigs(globalConfig, null, {
       projectDir: null,
-      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+      globalDir: "/home/.pi/agent/replace-prompt",
     });
     expect(merged.rules.map((rule) => rule.id)).toEqual([
       "replace-opening",
       "keep-second",
     ]);
-    expect(merged.logBaseDir).toBe("/home/.pi/agent/extensions/replace-prompt");
+    expect(merged.logBaseDir).toBe("/home/.pi/agent/replace-prompt");
   });
 
   it("merges global and project events in order", () => {
@@ -116,8 +116,8 @@ describe("mergeScopeConfigs", () => {
       events: [{ level: "warn", message: "project event" }],
     };
     const merged = mergeScopeConfigs(globalWithEvents, projectWithEvents, {
-      projectDir: "/repo/.pi/extensions/replace-prompt",
-      globalDir: "/home/.pi/agent/extensions/replace-prompt",
+      projectDir: "/repo/.pi/replace-prompt",
+      globalDir: "/home/.pi/agent/replace-prompt",
     });
     expect(merged.events).toEqual([
       { level: "info", message: "global event" },

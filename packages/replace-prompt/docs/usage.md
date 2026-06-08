@@ -10,24 +10,23 @@ It supports:
 - `mode: "first" | "all"`
 - optional file logging
 
-## Installation locations
+## Config locations
 
 Put your `rules.ts` file in one or both of these places:
 
-- User-scoped: `~/.pi/agent/extensions/replace-prompt/rules.ts`
-- Project-scoped: `<your-project>/.pi/extensions/replace-prompt/rules.ts`
+- User-scoped: `~/.pi/agent/replace-prompt/rules.ts`
+- Project-scoped: `<your-project>/.pi/replace-prompt/rules.ts`
 
 Use the user-scoped file for defaults you want across all projects. Use the project-scoped file when one repo needs its own overrides.
 
-The extension looks for a `rules.ts` file inside each installed scope.
+The extension looks for a `rules.ts` file inside each replace-prompt config folder. It does not read deprecated extension install folders such as `.pi/extensions/replace-prompt/` or `~/.pi/agent/extensions/replace-prompt/`.
 
 ## Minimal file layout
 
 ### Global-only
 
 ```text
-~/.pi/agent/extensions/replace-prompt/
-├── index.ts
+~/.pi/agent/replace-prompt/
 ├── rules.ts
 └── opening.md
 ```
@@ -35,13 +34,11 @@ The extension looks for a `rules.ts` file inside each installed scope.
 ### Global + project override
 
 ```text
-~/.pi/agent/extensions/replace-prompt/
-├── index.ts
+~/.pi/agent/replace-prompt/
 ├── rules.ts
 └── opening.md
 
-<project>/.pi/extensions/replace-prompt/
-├── index.ts
+<project>/.pi/replace-prompt/
 ├── rules.ts
 └── opening.md
 ```
@@ -183,7 +180,7 @@ You must provide **exactly one** of:
 }
 ```
 
-The file path is resolved relative to the extension directory.
+The file path is resolved relative to the config folder.
 
 ## `mode`
 
@@ -345,8 +342,8 @@ export default {
 
 If an enabled rule uses `replacementFile`, the extension checks for that file in this order:
 
-1. project extension directory
-2. global extension directory
+1. project config folder
+2. global config folder
 
 This means a project can reuse an inherited global rule id and just provide a local replacement file.
 
@@ -369,7 +366,7 @@ export default {
 
 ### Global file
 
-`~/.pi/agent/extensions/replace-prompt/opening.md`
+`~/.pi/agent/replace-prompt/opening.md`
 
 ```md
 Global opening text
@@ -377,21 +374,21 @@ Global opening text
 
 ### Project file only
 
-`<project>/.pi/extensions/replace-prompt/opening.md`
+`<project>/.pi/replace-prompt/opening.md`
 
 ```md
 Project opening text
 ```
 
-With no project `rules.ts` override at all, the inherited rule still uses the project file first if the project extension directory exists.
+With no project `rules.ts` override at all, the inherited rule still uses the project file first if the project config folder exists.
 
 ## Logging behavior
 
 Logging is silent by default unless `logging.file: true` is enabled.
 
 When enabled, logs are written to:
-- project extension dir if it is actually installed
-- otherwise global extension dir
+- project config folder when `<project>/.pi/replace-prompt/` exists
+- otherwise global config folder when `~/.pi/agent/replace-prompt/` exists
 
 Log file name:
 
@@ -422,7 +419,7 @@ Examples of skipped inputs:
 ## Example 1: simple global literal replacement
 
 ```ts
-// ~/.pi/agent/extensions/replace-prompt/rules.ts
+// ~/.pi/agent/replace-prompt/rules.ts
 export default {
   rules: [
     {
@@ -437,14 +434,14 @@ export default {
 ```
 
 ```md
-<!-- ~/.pi/agent/extensions/replace-prompt/opening.md -->
+<!-- ~/.pi/agent/replace-prompt/opening.md -->
 You are a specialised assistant focused on pragmatic, step-by-step code changes and clear explanations.
 ```
 
 ## Example 2: project disables a global rule and adds a regex cleanup
 
 ```ts
-// <project>/.pi/extensions/replace-prompt/rules.ts
+// <project>/.pi/replace-prompt/rules.ts
 export default {
   rules: [
     {
@@ -491,7 +488,7 @@ Project hello
 
 Result in that project:
 - prompt uses `Project hello`
-- logs write to `<project>/.pi/extensions/replace-prompt/replace-prompt.log` if that directory exists
+- logs write to `<project>/.pi/replace-prompt/replace-prompt.log` if that directory exists
 
 ## Authoring checklist
 
