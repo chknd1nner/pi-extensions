@@ -94,7 +94,7 @@ Slides up over a dimmed home. Sectioned by paired Mac (line dividers between Mac
 1. "＋ Don't use a project" at top of that Mac's section.
 2. List of CWDs that have Pi sessions, sorted by most-recently-used.
 
-Current selection is ticked. When only one Mac is paired, the Mac header is suppressed to avoid noise.
+Current selection is ticked.
 
 ### 3.4 Left flyout (chats navigation)
 
