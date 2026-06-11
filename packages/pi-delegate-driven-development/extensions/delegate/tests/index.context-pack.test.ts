@@ -287,3 +287,115 @@ describe("delegate_start context_pack", () => {
     expect(capturedRpcOptions.value?.sessionPath).toBeUndefined();
   });
 });
+
+describe("delegate_start system_prompt_file", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedRpcOptions.value = null;
+    managerMocks.canStart.mockReturnValue(true);
+    managerMocks.nextTaskId.mockReturnValue("w1");
+    managerMocks.setStatus.mockReturnValue(true);
+    managerMocks.register.mockReturnValue({
+      taskId: "w1", status: "running", params: {}, startedAt: Date.now(),
+    });
+    fsMock.readFileSync.mockReturnValue("ROLE PROMPT CONTENT");
+  });
+
+  it("reads the file and forwards its content as the RPC systemPrompt", async () => {
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    await getTool("delegate_start")!.execute(
+      "c1",
+      { task: "x", model: "m", provider: "p", system_prompt_file: "refs/implementer-prompt.md" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(fsMock.readFileSync).toHaveBeenCalledWith(
+      expect.stringContaining("refs/implementer-prompt.md"),
+      "utf8",
+    );
+    expect(capturedRpcOptions.value?.systemPrompt).toBe("ROLE PROMPT CONTENT");
+  });
+
+  it("resolves the path against the worker cwd when params.cwd is set", async () => {
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    await getTool("delegate_start")!.execute(
+      "c1",
+      { task: "x", model: "m", provider: "p", cwd: "/worker/tree", system_prompt_file: "refs/p.md" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+
+    expect(fsMock.readFileSync).toHaveBeenCalledWith("/worker/tree/refs/p.md", "utf8");
+  });
+
+  it("rejects when both system_prompt and system_prompt_file are set, before registering a worker", async () => {
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    await expect(
+      getTool("delegate_start")!.execute(
+        "c1",
+        { task: "x", model: "m", provider: "p", system_prompt: "inline", system_prompt_file: "refs/p.md" },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow(/both 'system_prompt' and 'system_prompt_file'/);
+
+    expect(managerMocks.register).not.toHaveBeenCalled();
+    expect(rpcMocks.start).not.toHaveBeenCalled();
+  });
+
+  it("unreadable file fails the worker pre-start and names the path", async () => {
+    fsMock.readFileSync.mockImplementationOnce(() => {
+      throw new Error("ENOENT");
+    });
+
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    await expect(
+      getTool("delegate_start")!.execute(
+        "c1",
+        { task: "x", model: "m", provider: "p", system_prompt_file: "refs/missing.md" },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow(/refs\/missing\.md/);
+
+    expect(managerMocks.setStatus).toHaveBeenCalledWith("w1", "failed", expect.stringContaining("refs/missing.md"));
+    expect(visibilityMocks.writeStatus).toHaveBeenCalledWith("failed");
+    expect(rpcMocks.start).not.toHaveBeenCalled();
+  });
+
+  it("unreadable file cleans up an already-written pack temp file", async () => {
+    fsMock.readFileSync
+      .mockReturnValueOnce("PACK FILE CONTENT") // pack read succeeds
+      .mockImplementationOnce(() => {
+        throw new Error("ENOENT"); // system prompt file read fails
+      });
+
+    const { pi, getTool } = createFakePi();
+    delegate(pi);
+
+    await expect(
+      getTool("delegate_start")!.execute(
+        "c1",
+        { task: "x", model: "m", provider: "p", context_pack: "impl", system_prompt_file: "refs/missing.md" },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow();
+
+    expect(fsMock.rmSync).toHaveBeenCalledWith(expect.stringContaining("pi-worker-w1-"), { force: true });
+  });
+});

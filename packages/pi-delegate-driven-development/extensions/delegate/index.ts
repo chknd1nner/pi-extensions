@@ -206,6 +206,12 @@ export default function delegate(pi: ExtensionAPI) {
       system_prompt: Type.Optional(
         Type.String({ description: "Additional system prompt appended to worker" }),
       ),
+      system_prompt_file: Type.Optional(
+        Type.String({
+          description:
+            "Path to a file whose content is appended to the worker system prompt (resolved against the worker cwd; absolute paths pass through). Mutually exclusive with system_prompt. Use for role prompt templates so their bodies stay out of the orchestrator transcript.",
+        }),
+      ),
       cwd: Type.Optional(
         Type.String({ description: "Working directory for the worker (default: project root)" }),
       ),
@@ -228,6 +234,12 @@ export default function delegate(pi: ExtensionAPI) {
       if (params.tools && params.denied_tools) {
         throw new Error(
           "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one.",
+        );
+      }
+
+      if (params.system_prompt && params.system_prompt_file) {
+        throw new Error(
+          "Cannot specify both 'system_prompt' and 'system_prompt_file'. Pick one.",
         );
       }
 
@@ -376,6 +388,20 @@ export default function delegate(pi: ExtensionAPI) {
         }
       }
 
+      let resolvedSystemPrompt = params.system_prompt;
+      if (params.system_prompt_file) {
+        const promptPath = path.resolve(workerCwd, params.system_prompt_file);
+        try {
+          resolvedSystemPrompt = readFileSync(promptPath, "utf8");
+        } catch {
+          const msg = `Cannot read system_prompt_file: ${promptPath}`;
+          tryCleanupTempFile();
+          transitionWorker("failed", msg);
+          tryCloseLogWriter();
+          throw new Error(msg);
+        }
+      }
+
       const rpcClient = new RPCClient(
         {
           model: params.model,
@@ -384,7 +410,7 @@ export default function delegate(pi: ExtensionAPI) {
           tools: toolsAllowlist,
           deniedTools: toolsAllowlist ? undefined : deniedTools,
           allToolNames: toolsAllowlist ? undefined : allToolNames,
-          systemPrompt: params.system_prompt,
+          systemPrompt: resolvedSystemPrompt,
           cwd: workerCwd,
           sessionPath,
         },
