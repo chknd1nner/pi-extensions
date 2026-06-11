@@ -13,7 +13,7 @@ A Pi package bundling a subagent-driven workflow:
 // .pi/settings.json
 {
   "packages": [
-    "git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0"
+    "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0"
   ]
 }
 ```
@@ -21,7 +21,7 @@ A Pi package bundling a subagent-driven workflow:
 Or via CLI:
 
 ```bash
-pi install git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0
+pi install git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0
 ```
 
 To install just one extension from the bundle:
@@ -30,7 +30,7 @@ To install just one extension from the bundle:
 {
   "packages": [
     {
-      "source": "git:github.com/chknd1nner/pi-delegate-driven-development@v0.1.0",
+      "source": "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0",
       "extensions": ["extensions/delegate/index.ts"],
       "skills": []
     }
