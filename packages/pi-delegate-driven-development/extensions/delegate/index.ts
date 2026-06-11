@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Type } from "typebox";
@@ -7,6 +7,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
+import { buildPackFile, PACK_NAME_PATTERN } from "./pack";
+import type { PackItem } from "./pack";
 import { buildSessionSnapshot } from "./snapshot";
 import { ProgressLogWriter, StatusFileWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
@@ -485,6 +487,104 @@ export default function delegate(pi: ExtensionAPI) {
           },
         ],
         details: { name, entryId, entryCount },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_pack",
+    label: "Delegate Pack",
+    description:
+      "Compile an ordered list of files (plus optional note) into a frozen, named context pack that delegate_start workers can share as a cached prefix.",
+    promptSnippet:
+      "Use to convert files like spec and plan into a frozen context pack reusable across many delegate_start workers.",
+    promptGuidelines: [
+      "Use delegate_pack to freeze spec/plan files into a named context pack before dispatching workers.",
+      "Packs are immutable; pass overwrite: true only when you intend to start a new cache prefix generation.",
+      "Consume packs via delegate_start({ context_pack: \"<name>\" }).",
+    ],
+    parameters: Type.Object({
+      name: Type.String({
+        description: "Pack name: lowercase letters, digits, '-', '_' (must start alphanumeric)",
+      }),
+      files: Type.Array(Type.String(), {
+        description: "Ordered file paths to embed, resolved against the orchestrator cwd",
+      }),
+      note: Type.Optional(
+        Type.String({ description: "Optional freeform note appended after the files" }),
+      ),
+      overwrite: Type.Optional(
+        Type.Boolean({ description: "Replace an existing same-name pack from today (default false)" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (!PACK_NAME_PATTERN.test(params.name)) {
+        throw new Error(
+          `Invalid pack name '${params.name}'. Use lowercase letters, digits, '-', '_' (must start alphanumeric).`,
+        );
+      }
+      if (params.files.length === 0 && !params.note) {
+        throw new Error("Pack needs at least one file or a note.");
+      }
+
+      const items: PackItem[] = [];
+      for (const file of params.files) {
+        const resolved = path.resolve(initialCwd, file);
+        let content: string;
+        try {
+          content = readFileSync(resolved, "utf8");
+        } catch {
+          throw new Error(`Cannot read pack source file: ${resolved}`);
+        }
+        if (content.trim().length === 0) {
+          throw new Error(`Pack source file is empty: ${resolved}`);
+        }
+        items.push({ kind: "file", path: file, content });
+      }
+      if (params.note) {
+        items.push({ kind: "note", content: params.note });
+      }
+
+      const packPath = path.join(
+        projectRoot,
+        ".pi",
+        "delegate",
+        todayDate(),
+        "packs",
+        `${params.name}.jsonl`,
+      );
+      if (existsSync(packPath) && !params.overwrite) {
+        throw new Error(
+          `Pack '${params.name}' already exists at ${packPath}. Pass overwrite: true to replace it (this starts a new cache prefix), or pick a new name.`,
+        );
+      }
+
+      const content = buildPackFile(params.name, items);
+      mkdirSync(path.dirname(packPath), { recursive: true });
+      writeFileSync(packPath, content, "utf8");
+
+      const bytes = Buffer.byteLength(content, "utf8");
+      const tokenEstimate = Math.round(bytes / 4);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: [
+              `Pack '${params.name}' frozen (${items.length} items, ${bytes} bytes, ~${tokenEstimate} tokens).`,
+              `Path: ${packPath}`,
+              `Use with delegate_start({ context_pack: "${params.name}" }).`,
+            ].join("\n"),
+          },
+        ],
+        details: {
+          name: params.name,
+          path: packPath,
+          items: items.length,
+          bytes,
+          token_estimate: tokenEstimate,
+        },
       };
     },
   });
