@@ -4,6 +4,7 @@ vi.mock("node:crypto", () => ({
   randomUUID: vi.fn(() => "fixed-test-uuid"),
 }));
 
+import { randomUUID } from "node:crypto";
 import { buildSessionSnapshot } from "../snapshot";
 
 function makeMgr(branch: object[]) {
@@ -74,5 +75,68 @@ describe("buildSessionSnapshot", () => {
     for (const line of output.trim().split("\n")) {
       expect(() => JSON.parse(line)).not.toThrow();
     }
+  });
+
+  const packEntries = [
+    {
+      type: "message",
+      id: "pack-0",
+      parentId: null,
+      timestamp: "frozen",
+      message: { role: "user", content: [{ type: "text", text: "SPEC" }], timestamp: 1 },
+    },
+    {
+      type: "message",
+      id: "pack-1",
+      parentId: "pack-0",
+      timestamp: "frozen",
+      message: { role: "user", content: [{ type: "text", text: "PLAN" }], timestamp: 1 },
+    },
+  ];
+
+  it("accepts a null session manager and emits header + pack entries only", () => {
+    vi.mocked(randomUUID)
+      .mockReturnValueOnce("header-uuid" as never)
+      .mockReturnValueOnce("aaaa1111bbbb" as never)
+      .mockReturnValueOnce("cccc2222dddd" as never);
+
+    const lines = buildSessionSnapshot(null, "/w", null, packEntries).trim().split("\n");
+    expect(lines).toHaveLength(3);
+
+    const first = JSON.parse(lines[1]);
+    const second = JSON.parse(lines[2]);
+    expect(first.id).toBe("aaaa1111");
+    expect(first.parentId).toBeNull();
+    expect(second.id).toBe("cccc2222");
+    expect(second.parentId).toBe("aaaa1111");
+  });
+
+  it("re-parents the first pack entry onto the anchor branch leaf", () => {
+    vi.mocked(randomUUID)
+      .mockReturnValueOnce("header-uuid" as never)
+      .mockReturnValueOnce("aaaa1111bbbb" as never)
+      .mockReturnValueOnce("cccc2222dddd" as never);
+
+    const branch = [{ id: "e1" }, { id: "e2" }];
+    const lines = buildSessionSnapshot(makeMgr(branch), "/w", "e2", packEntries).trim().split("\n");
+    expect(lines).toHaveLength(5);
+
+    const firstPack = JSON.parse(lines[3]);
+    expect(firstPack.parentId).toBe("e2");
+  });
+
+  it("never mutates message payloads when re-identifying pack entries", () => {
+    const lines = buildSessionSnapshot(null, "/w", null, packEntries).trim().split("\n");
+    const first = JSON.parse(lines[1]);
+    const second = JSON.parse(lines[2]);
+
+    expect(first.message).toEqual(packEntries[0].message);
+    expect(second.message).toEqual(packEntries[1].message);
+  });
+
+  it("defaults to no pack entries (backward compatible)", () => {
+    const branch = [{ id: "e1" }];
+    const lines = buildSessionSnapshot(makeMgr(branch), "/w", "e1").trim().split("\n");
+    expect(lines).toHaveLength(2);
   });
 });
