@@ -13,44 +13,63 @@ and you decide every transition. Design spec:
 `docs/superpowers/specs/2026-05-31-delegate-driven-development-v2-design.md`.
 
 ## Core idea — cache the spec+plan prefix
-`delegate_anchor` + `inherit_context` let every worker inherit a shared session prefix.
-`buildSessionSnapshot` serializes the ENTIRE session branch from root to the anchor, so
-prefix cleanliness depends on controlling what happens BEFORE the anchor — not on
-selecting files. The prefix is exactly: `[system prompt][kickoff][full spec][full plan]`.
-The first worker of each role pays to process it; later same-role workers hit cache.
+`delegate_pack` freezes the spec + plan into an on-disk context pack
+(`.pi/delegate/<date>/packs/<name>.jsonl`); every worker dispatched with
+`context_pack` receives it as an identical message prefix, independent of the
+orchestrator's own session history. Role instructions ride in the system layer via
+`system_prompt_file`. Each worker's token prefix is exactly:
+`[base system prompt][role prompt][pack: spec+plan][task]` — the first worker of
+each role pays to process everything before `[task]`; later same-role workers hit
+cache.
 
 **Cache correctness (non-negotiable):**
-- Lock each role's `(provider, model)` for the whole run. Same system prompt + tool
-  scope per role. The only sanctioned mid-run model switch is escalating a repeatedly
-  failing task (see Escalation).
+- Lock each role's `(provider, model)`, `system_prompt_file`, and tool scope for
+  the whole run ("pick and stick"). The only sanctioned mid-run model switch is
+  escalating a repeatedly failing task (see Escalation).
+- Role template files are re-read at every spawn — do not edit them mid-run.
+- Never put per-ticket detail in the pack or a role prompt. Per-ticket values go
+  only in the `task` argument (the uncached tail).
+- Never recompile the pack mid-run (`overwrite: true` starts a new cold prefix).
+  After an orchestrator restart mid-run, reuse the existing pack by name
+  (`context_pack` resolves newest-date-first) — do not recompile.
 
-## Run setup (order matters — anchor FIRST)
-1. Start in a fresh `/new` session; the kickoff message names the plan + spec paths.
-2. **Anchor first, before any other tool call** (no worktree, no bash, no sharding):
-   - `Read` the FULL spec to EOF (continue with `offset`/`limit`; `Read` truncates at
-     ~2000 lines / 50KB — verify you reached EOF).
-   - `Read` the FULL plan to EOF, same discipline.
-   - `delegate_anchor({ name: "plan-foundation" })`.
-   - If setup noise slipped in before the anchor, recover with `session_entries()` and
-     `delegate_anchor({ name: "plan-foundation", entry_id })` at the correct entry.
+(`delegate_anchor` + `inherit_context` still exist for inheriting live *session*
+context into a worker and compose with `context_pack` — anchor content first, pack
+appended — but this skill's pipeline does not need them.)
+
+## Run setup
+1. The kickoff message names the plan + spec paths. (A fresh session is NOT
+   required — packs are independent of orchestrator session history.)
+2. `delegate_pack({ name: "plan-foundation", files: [<spec path>, <plan path>] })`.
+   Do NOT read the full spec/plan into your own context first — workers get them
+   from the pack; read targeted sections on demand if orchestration requires it.
+   If the pack already exists from an interrupted run, reuse it as-is.
 3. Confirm the plan has `### Task N:` sections.
 4. `using-git-worktrees` → create `.worktrees/<branch>` on a new feature branch; run
    project setup; verify a clean test baseline. Record the worktree path + branch name.
 5. `ticket_shard(plan_path, spec_path)` → tickets land in `in-progress/ready/`.
 6. Resolve role models: runtime args → `models.json` (beside this file). **Validate**
    every used role has non-empty `provider` and `model`; if not, halt and ask the user.
+7. Record the absolute path of this skill's `references/` directory — role prompts
+   are passed from there via `system_prompt_file`.
 
 ## Orchestration loop (sequential — one worker in flight)
-**Keep dispatches lean.** Pass each worker a short task that points at its template file (`skills/delegate-driven-development/references/implementer-prompt.md`, `skills/delegate-driven-development/references/reviewer-prompt.md`, `skills/delegate-driven-development/references/fixer-prompt.md`, all worktree-relative) and supplies only per-task substitutions (`{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{BRANCH}}`, `{{TASK_BASE_SHA}}`, `{{FIX_INSTRUCTIONS}}`), instructing the worker to read the template and apply them. Do not inline full template bodies into the `task` argument: that identical boilerplate would accumulate in the orchestrator context over long runs. (Workers read templates from the worktree; the shared anchor already dedups spec+plan.)
+**Keep dispatches lean.** Pass each role's prompt via `system_prompt_file` — the
+absolute path to this skill's `references/<role>-prompt.md` (implementer-prompt.md,
+reviewer-prompt.md, fixer-prompt.md). The extension reads the file at spawn time, so
+template bodies never enter your transcript. The `task` argument carries ONLY
+per-task data: the ticket's plan excerpt, worktree path, branch, task base SHA, and
+(for fixers) fix instructions. Never inline template bodies into `task`.
 
 For each ticket in `ready`, ascending task number:
 
 1. `ticket_move task-NN active`. Record the diff boundary:
    `task_base_sha = git -C <worktree> rev-parse HEAD`; persist with
    `ticket_set task-NN task_base_sha <sha>`.
-2. Build the implementer prompt = `skills/delegate-driven-development/references/implementer-prompt.md` with
-   `{{PLAN_EXCERPT}}` (the ticket's `## Plan excerpt`), `{{WORKTREE_PATH}}`, `{{BRANCH}}`.
-3. `delegate_start({ task, cwd: <worktree>, inherit_context: "plan-foundation",
+2. Build the implementer task message: the ticket's `## Plan excerpt`, the worktree
+   path, and the branch name.
+3. `delegate_start({ task, cwd: <worktree>, context_pack: "plan-foundation",
+   system_prompt_file: "<skill references dir>/implementer-prompt.md",
    provider/model: implementer, thinking, tools: ["read","edit","write","bash"] })`.
 4. **Wait (non-blocking):** launch `skills/delegate-driven-development/references/wait.sh <status_file> <timeout>` via the
    `process` tool with `alertOnSuccess: true`, `alertOnFailure: true`, and
@@ -65,10 +84,12 @@ For each ticket in `ready`, ascending task number:
    empty. If HEAD didn't advance or the tree is dirty, the task commit is missing —
    re-dispatch with an explicit "commit your work" instruction, or escalate. Do not
    review until this passes.
-7. `ticket_move review`. Build the reviewer prompt = `skills/delegate-driven-development/references/reviewer-prompt.md`
-   with `{{PLAN_EXCERPT}}`, `{{WORKTREE_PATH}}`, `{{TASK_BASE_SHA}}`. `delegate_start`
-   with the reviewer model and READ-ONLY tools `["read","bash"]`,
-   `inherit_context: "plan-foundation"`. Wait via the same non-blocking pattern.
+7. `ticket_move review`. Build the reviewer task message: the ticket's
+   `## Plan excerpt`, the worktree path, and `task_base_sha`. `delegate_start` with
+   the reviewer model, READ-ONLY tools `["read","bash"]`,
+   `context_pack: "plan-foundation"`, and
+   `system_prompt_file: "<skill references dir>/reviewer-prompt.md"`. Wait via the
+   same non-blocking pattern.
 8. On alert → `delegate_check` → `delegate_result`; parse `VERDICT:`.
    - `PASS` → `ticket_move done`; next ticket.
    - `FAIL` → write the reviewer's Fix Instructions to `next_prompt`
@@ -76,9 +97,11 @@ For each ticket in `ready`, ascending task number:
      (`ticket_get` → +1 → `ticket_set`); go to Escalation.
 
 ## Escalation circuit-breaker (by `review_failures`)
-- **1** → routine fixer run: build `skills/delegate-driven-development/references/fixer-prompt.md` with `{{PLAN_EXCERPT}}`
-  and `{{FIX_INSTRUCTIONS}}` (read from `next_prompt`), `delegate_start` with the fixer
-  model and tools `["read","edit","write","bash"]`, `inherit_context: "plan-foundation"`.
+- **1** → routine fixer run: build the fixer task message from the ticket's
+  `## Plan excerpt`, the fix instructions (read from `next_prompt`), the worktree
+  path, and the branch. `delegate_start` with the fixer model, tools
+  `["read","edit","write","bash"]`, `context_pack: "plan-foundation"`, and
+  `system_prompt_file: "<skill references dir>/fixer-prompt.md"`.
   After it reports, re-run the commit-boundary gate (step 6), then re-enter review (step 7).
 - **2** → YOU (the strong orchestrator) investigate the root cause. If it is a
   fundamental spec/design flaw → stop and escalate to the user with findings. Otherwise
