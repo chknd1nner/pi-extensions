@@ -78,25 +78,39 @@ If the script aborts mid-flight, do not improvise recovery. Read the error, fix 
 
 ## Post-flight verification (mandatory — evidence before declaring done)
 
-After the script reports success, verify the published mirror actually installs cleanly:
+After the script reports success, verify the published mirror actually installs cleanly. Use a **project-local install in a throwaway directory** (`pi install -l`) — it is fully isolated: settings and the git clone both land under the tmp dir's `.pi/`, touching nothing global.
 
 ```bash
 TMPDIR=$(mktemp -d)
 cd "$TMPDIR"
-pi -e git:github.com/chknd1nner/<bundle>@<version> --print \
-  "List the tools and skills provided by the <bundle> package, then exit. Do not call any tools."
+pi install -l git:github.com/chknd1nner/<bundle>@<version>
+# Evidence 1: the cache contains the released commit
+git -C .pi/git/github.com/chknd1nner/<bundle> log --oneline -1
+# Evidence 2: a live session actually loads the new surface area
+# (-a/--approve is required: non-interactive --print otherwise ignores
+#  untrusted project-local settings and silently skips the package)
+pi -a --print "Without calling any tools: does <new-or-changed tool> exist? \
+Quote its one-line description and any new parameters this release added."
 cd - && rm -rf "$TMPDIR"
 ```
 
-Expected: Pi clones the mirror at the new tag, then lists the expected tools/skills.
+Expected: the cache log shows the `release(<bundle>): <version>` commit, and the session quotes the new tool/parameter descriptions verbatim.
 
-If the listing is missing a tool or skill that should be there, the publish technically succeeded but the bundle's `pi` manifest is wrong. Open an issue, do not re-publish under the same tag — bump to the next patch version with a fix.
+**Pitfalls (learned the hard way):**
+- **Do not use `pi -e git:...` for verification.** It caches clones under `~/.pi/agent/tmp/extensions/git-github.com/<hash>/` keyed without the ref — a stale clone from an earlier run is silently served even when you request the new tag, making the new release look broken (or worse, an old one look verified). If you must use `-e`, clear that cache first: `rm -rf ~/.pi/agent/tmp/extensions/git-github.com/*`.
+- **Do not use bare `pi install`** (no `-l`): it installs **globally**, mutating `~/.pi/agent/settings.json` and leaking the bundle into every project until manually reverted.
+- **Ask pointed questions about the release's new surface area**, not "list the tools". A generic listing can look plausible even when a stale version loaded; quoting a brand-new tool's description cannot.
+
+If the new tool/skill is missing despite the cache showing the right commit, the publish technically succeeded but the bundle's `pi` manifest is wrong. Open an issue, do not re-publish under the same tag — bump to the next patch version with a fix.
 
 ## Reporting back
 
 Report to the user:
 - Mirror URL and tag URL.
-- Install spec they can paste into `.pi/settings.json`.
-- Output of the post-flight verification (the tool/skill list Pi printed).
+- Install spec they can paste into `.pi/settings.json`, or apply directly with
+  `pi install -l git:github.com/chknd1nner/<bundle>@<version>` from the consuming
+  project's root (updates that project's `.pi/settings.json` AND refreshes its
+  `.pi/git/` cache in one step — editing settings.json alone leaves a stale cache).
+- Output of the post-flight verification (the quoted tool/parameter descriptions).
 
 Do not declare success without the verification output.
