@@ -27,13 +27,18 @@ alongside or instead of an anchor.
   pack's content to the worker's session snapshot.
 - `context_pack` **composes** with `inherit_context`: anchor content first, pack
   content after. All four combinations are valid.
-- The delegate-driven-development skill switches from anchor choreography to packs.
+- New **`system_prompt_file`** parameter on `delegate_start`: a path whose content
+  the extension reads at spawn time and passes via `--append-system-prompt`, so
+  role prompts ride in the system layer without inlining their bodies into the
+  orchestrator transcript.
+- The delegate-driven-development skill switches from anchor choreography to packs,
+  and from "worker reads the role template" to `system_prompt_file`.
 
 Three-layer cache model this enables (top of token prefix to tail):
 
 | Layer | Varies by | Cached? |
 |---|---|---|
-| `system_prompt` (+ base π prompt, tool defs) | role | per-role lineage |
+| `system_prompt_file` (+ base π prompt, tool defs) | role | per-role lineage |
 | context pack (spec, plan, …) | implementation effort | shared within lineage |
 | task prompt | every ticket | uncached tail |
 
@@ -110,7 +115,23 @@ context_pack?: string
 // and that it composes with inherit_context (anchor first, pack appended).
 ```
 
-### Resolution
+### New parameter: `system_prompt_file`
+
+```ts
+system_prompt_file?: string
+// Path to a file whose content is appended to the worker system prompt.
+// Mutually exclusive with system_prompt (error if both are set).
+```
+
+Resolved against the worker cwd (`params.cwd` if set, else orchestrator cwd) —
+role templates live in the worktree per the DDD skill. The extension reads the
+file at spawn time and passes the content as `--append-system-prompt`; the path,
+not the content, appears in the orchestrator transcript. Unlike packs the file is
+re-read per spawn (no freeze): identical file content → identical per-role cache
+lineage; mid-run edits would silently fork the lineage, which the skill's
+cache-discipline section calls out as the orchestrator's responsibility.
+
+### `context_pack` resolution
 
 - Value contains `/` or ends with `.jsonl` → treat as a path (relative to
   orchestrator cwd or absolute).
@@ -172,8 +193,18 @@ dir as a unit under any future retention sweep.
   `session_entries` recovery dance.
 - All worker dispatch examples switch `inherit_context: "plan-foundation"` →
   `context_pack: "plan-foundation"`.
+- **Role prompts move to the system layer.** Dispatches pass
+  `system_prompt_file: "<worktree>/skills/delegate-driven-development/references/<role>-prompt.md"`
+  instead of instructing the worker to read the template. The `task` argument
+  shrinks to pure per-task data (plan excerpt, worktree path, task base SHA,
+  fix instructions, ticket pointer).
+- **Template rewording pass.** The three role templates are rewritten as system
+  prompts: no `{{…}}` placeholders or "apply these substitutions" framing —
+  instead "your task message provides …". Per-task values appear only in the
+  uncached task prompt, never in the system layer.
 - New short **cache discipline** subsection: pick implementer/reviewer/fixer model,
-  provider, tools, and `system_prompt` at run start and hold them constant; each
+  provider, tools, and system prompt file at run start and hold them constant
+  (the file is re-read per spawn — don't edit role templates mid-run); each
   distinct role system prompt is its own warm lineage; never put per-ticket detail
   in the pack or system prompt.
 - New **resume** note: after an orchestrator restart mid-run, reuse the existing
@@ -192,6 +223,8 @@ dir as a unit under any future retention sweep.
 | `delegate_pack` name exists for today, no `overwrite` | tool error suggesting `overwrite: true` or a new name |
 | `delegate_start` pack name unresolvable | worker `failed` + error listing available packs |
 | `delegate_start` pack file corrupt / wrong version | worker `failed` + reason |
+| `delegate_start` `system_prompt_file` missing/unreadable | worker `failed` + error naming the path |
+| `delegate_start` both `system_prompt` and `system_prompt_file` set | tool error before spawn |
 
 ## Testing
 
@@ -207,6 +240,8 @@ Unit (vitest, alongside existing delegate tests):
   re-parenting onto anchor leaf; fresh ids; identical `message` payloads across
   repeated spawns (cache-stability proxy).
 - `delegate_start` failure paths transition worker to `failed` and clean temp files.
+- `system_prompt_file`: content read and forwarded as `--append-system-prompt`;
+  resolution against worker cwd; mutual-exclusion error; missing-file failure path.
 
 Integration: extend the existing delegate integration test to spawn a worker with
 `context_pack` and assert the worker can see pack content.
