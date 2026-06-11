@@ -7,7 +7,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
-import { buildPackFile, PACK_NAME_PATTERN } from "./pack";
+import { buildPackFile, PACK_NAME_PATTERN, parsePackFile, resolvePackPath } from "./pack";
 import type { PackItem } from "./pack";
 import { buildSessionSnapshot } from "./snapshot";
 import { ProgressLogWriter, StatusFileWriter } from "./visibility";
@@ -179,6 +179,7 @@ export default function delegate(pi: ExtensionAPI) {
       "After the wait command emits DELEGATE_WATCH_DONE or DELEGATE_WATCH_TIMEOUT, call delegate_check once for authoritative state, then delegate_result when terminal.",
       "Avoid tight polling loops around delegate_check; if polling is unavoidable, use a slow cadence.",
       "Use delegate_steer to send instructions to a running worker and delegate_abort to stop one.",
+      "Use delegate_pack + context_pack to give many workers an identical frozen file-based prefix (spec/plan); context_pack composes with inherit_context (anchor first, pack appended).",
       "Maximum 2 concurrent workers by default.",
     ],
     parameters: Type.Object({
@@ -212,6 +213,13 @@ export default function delegate(pi: ExtensionAPI) {
         Type.Union([Type.Boolean(), Type.String({ minLength: 1 })], {
           description:
             'false/absent = ephemeral (--no-session). true = inherit current session context. "name" = inherit from named anchor set by delegate_anchor.',
+        }),
+      ),
+      context_pack: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Context pack created by delegate_pack: a name (resolved newest-date-first under .pi/delegate/*/packs/) or an explicit path (contains "/" or ends with .jsonl). Appended to the worker session after any inherit_context content.',
         }),
       ),
     }),
@@ -302,36 +310,54 @@ export default function delegate(pi: ExtensionAPI) {
       };
 
       let sessionPath: string | undefined;
+      let resolvedPackPath: string | undefined;
 
-      if (params.inherit_context === true || typeof params.inherit_context === "string") {
+      const usesAnchor = params.inherit_context === true || typeof params.inherit_context === "string";
+      const usesPack = typeof params.context_pack === "string" && params.context_pack.length > 0;
+
+      if (usesAnchor || usesPack) {
         let tmpPath: string | undefined;
 
         try {
-          const sessionManager = (
-            ctx as {
-              sessionManager: {
-                getLeafId(): string | null;
-                getBranch(fromId?: string): object[];
-              };
-            }
-          ).sessionManager;
+          let snapshotManager: {
+            getLeafId(): string | null;
+            getBranch(fromId?: string): object[];
+          } | null = null;
+          let anchorEntryId: string | null = null;
 
-          let anchorEntryId: string | null;
+          if (usesAnchor) {
+            const sessionManager = (
+              ctx as {
+                sessionManager: {
+                  getLeafId(): string | null;
+                  getBranch(fromId?: string): object[];
+                };
+              }
+            ).sessionManager;
 
-          if (params.inherit_context === true) {
-            anchorEntryId = sessionManager.getLeafId();
-          } else {
-            const anchorName = params.inherit_context as string;
-            if (!anchorMap.has(anchorName)) {
-              throw new Error(
-                `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
-              );
+            if (params.inherit_context === true) {
+              anchorEntryId = sessionManager.getLeafId();
+            } else {
+              const anchorName = params.inherit_context as string;
+              if (!anchorMap.has(anchorName)) {
+                throw new Error(
+                  `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
+                );
+              }
+              anchorEntryId = anchorMap.get(anchorName)!;
             }
-            anchorEntryId = anchorMap.get(anchorName)!;
+            snapshotManager = sessionManager;
+          }
+
+          let packEntries: object[] = [];
+          if (usesPack) {
+            resolvedPackPath = resolvePackPath(projectRoot, params.context_pack as string, initialCwd);
+            const parsed = parsePackFile(readFileSync(resolvedPackPath, "utf8"));
+            packEntries = parsed.entries;
           }
 
           tmpPath = `${tmpdir()}/pi-worker-${taskId}-${Date.now()}.jsonl`;
-          const snapshot = buildSessionSnapshot(sessionManager, workerCwd, anchorEntryId);
+          const snapshot = buildSessionSnapshot(snapshotManager, workerCwd, anchorEntryId, packEntries);
           writeFileSync(tmpPath, snapshot, "utf8");
           entry.tempFilePath = tmpPath;
           sessionPath = tmpPath;
@@ -441,6 +467,7 @@ export default function delegate(pi: ExtensionAPI) {
           status_file: statusFile,
           progress_file_relative: progressFileRelative,
           status_file_relative: statusFileRelative,
+          ...(resolvedPackPath ? { context_pack_path: resolvedPackPath } : {}),
           watch,
         },
       };

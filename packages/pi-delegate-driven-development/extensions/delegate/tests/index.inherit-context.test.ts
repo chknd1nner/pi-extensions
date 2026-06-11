@@ -161,7 +161,7 @@ describe("delegate_start inherit_context", () => {
 
     await getTool("delegate_start")!.execute("c1", { task: "x", model: "m", provider: "p", inherit_context: true }, undefined, undefined, ctx);
 
-    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), "leaf9999");
+    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), "leaf9999", []);
     expect(fsMock.writeFileSync).toHaveBeenCalledWith(expect.stringContaining("pi-worker-w1-"), expect.any(String), "utf8");
     expect(capturedRpcOptions.value?.sessionPath).toEqual(expect.stringContaining("pi-worker-w1-"));
   });
@@ -175,7 +175,7 @@ describe("delegate_start inherit_context", () => {
     const ctx = makeCtx();
     await getTool("delegate_start")!.execute("c1", { task: "x", model: "m", provider: "p", inherit_context: "foundation" }, undefined, undefined, ctx);
 
-    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), "anchor1111");
+    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), "anchor1111", []);
   });
 
   it("missing named anchor fails pre-start, sets worker failed, does not write file or start RPC client", async () => {
@@ -240,7 +240,7 @@ describe("delegate_start inherit_context", () => {
     const ctx = makeCtx();
     await getTool("delegate_start")!.execute("c1", { task: "x", model: "m", provider: "p", inherit_context: "start" }, undefined, undefined, ctx);
 
-    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), null);
+    expect(snapshotMock.buildSessionSnapshot).toHaveBeenCalledWith(ctx.sessionManager, expect.any(String), null, []);
   });
 
   it("onExit cleans up temp file even when worker status is already completed", async () => {
