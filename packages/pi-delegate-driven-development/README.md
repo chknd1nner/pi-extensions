@@ -2,7 +2,7 @@
 
 A Pi package bundling a subagent-driven workflow:
 
-- **delegate** extension — RPC-driven worker spawning (`delegate_start`, `delegate_check`, `delegate_steer`, `delegate_result`, `delegate_abort`, `delegate_anchor`).
+- **delegate** extension — RPC-driven worker spawning (`delegate_start`, `delegate_check`, `delegate_steer`, `delegate_result`, `delegate_abort`, `delegate_anchor`, `delegate_pack`). `delegate_pack` freezes files (e.g. spec + plan) into a reusable context pack consumed via `delegate_start({ context_pack })`; `system_prompt_file` loads role prompts from disk at spawn time.
 - **session** extension — session entry inspection (`session_entries`).
 - **tickets** extension — ticket sharding and lifecycle (`ticket_shard`, `ticket_list`, `ticket_show`, `ticket_move`, `ticket_set`, `ticket_next`, `ticket_get`).
 - **delegate-driven-development** skill — orchestrates implementer → reviewer → fixer per ticket using the three extensions above.
