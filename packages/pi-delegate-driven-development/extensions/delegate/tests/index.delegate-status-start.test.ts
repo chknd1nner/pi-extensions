@@ -1,3 +1,4 @@
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import delegate from "../index";
@@ -32,8 +33,8 @@ const rpcClientState = vi.hoisted(() => ({
 }));
 
 const visibilityState = vi.hoisted(() => ({
-  progressFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.progress.md",
-  statusFile: "/tmp/.pi/delegate/2026-05-07/sess-abc/w1.status",
+  progressFile: `${process.cwd()}/.pi/delegate/2026-05-07/sess-abc/w1.progress.md`,
+  statusFile: `${process.cwd()}/.pi/delegate/2026-05-07/sess-abc/w1.status`,
   progressCtorArgs: [] as unknown[][],
   statusCtorArgs: [] as unknown[][],
   writeStatus: vi.fn(),
@@ -115,6 +116,13 @@ function createFakePi() {
   };
 }
 
+function expectRelativeArtifactPath(value: unknown, suffix: string) {
+  expect(typeof value).toBe("string");
+  const text = value as string;
+  expect(path.isAbsolute(text)).toBe(false);
+  expect(text.split(path.sep).join("/")).toContain(suffix);
+}
+
 describe("delegate_start status file details", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -137,12 +145,41 @@ describe("delegate_start status file details", () => {
       provider: "openai-codex",
     });
 
-    expect(result.details).toEqual({
+    expect(result.details).toMatchObject({
       task_id: "w1",
       status: "running",
       progress_file: visibilityState.progressFile,
       status_file: visibilityState.statusFile,
+      watch: {
+        timeout_seconds: 1800,
+        poll_seconds: 5,
+        sentinel_pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT",
+        preferred_mode: "async_background_if_available",
+        fallback_mode: "blocking_shell",
+        authoritative_followup: "delegate_check",
+      },
     });
+    expectRelativeArtifactPath(result.details?.progress_file_relative, "w1.progress.md");
+    expectRelativeArtifactPath(result.details?.status_file_relative, "w1.status");
+
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("Worker w1 started.");
+    expect(text).toContain("Artifacts:");
+    expect(text).toContain(String(result.details?.progress_file_relative));
+    expect(text).toContain(String(result.details?.status_file_relative));
+    expect(text).toContain("Recommended wait pattern:");
+    expect(text).toContain("async/background command runner");
+    expect(text).toContain("details.watch.command");
+    expect(text).toContain("DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT");
+    expect(text).toContain("call delegate_check(\"w1\") once");
+
+    const watch = result.details?.watch as { command?: string } | undefined;
+    expect(watch?.command).toEqual(expect.any(String));
+    expect(watch?.command).toContain("bash -lc");
+    expect(watch?.command).toContain(visibilityState.statusFile);
+    expect(watch?.command).toContain("DELEGATE_WATCH_DONE task_id=$task_id status=$status");
+    expect(watch?.command).toContain("DELEGATE_WATCH_TIMEOUT task_id=$task_id last=$last_status");
+    expect(watch?.command).toContain("exit 124");
     expect(visibilityState.writeStatus).toHaveBeenCalledWith("running");
     expect(visibilityState.writeStatus.mock.invocationCallOrder[0]).toBeLessThan(
       rpcClientState.start.mock.invocationCallOrder[0],
@@ -174,6 +211,26 @@ describe("delegate_start status file details", () => {
     expect(visibilityState.statusCtorArgs).toHaveLength(1);
     expect(visibilityState.progressCtorArgs[0]?.[1]).toBe("2026-05-07");
     expect(visibilityState.statusCtorArgs[0]?.[1]).toBe("2026-05-07");
+  });
+
+  it("uses the worker timeout in the returned watch recipe", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_start")!;
+    const result = await tool.execute("call-1", {
+      task: "Review delegate status files.",
+      model: "gpt-5.5",
+      provider: "openai-codex",
+      timeout: 42,
+    });
+
+    expect(result.details?.watch).toMatchObject({
+      timeout_seconds: 42,
+      poll_seconds: 5,
+    });
+    const watch = result.details?.watch as { command?: string } | undefined;
+    expect(watch?.command).toContain("timeout_seconds=42");
   });
 
   it("writes failed if rpcClient.start throws", async () => {

@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import path from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -21,6 +22,106 @@ function resolveGitRoot(cwd: string): string {
 
 function todayDate(): string {
   return new Date().toLocaleDateString("en-CA");
+}
+
+function relativeToProject(projectRoot: string, artifactPath: string): string {
+  try {
+    const relative = path.relative(projectRoot, artifactPath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      return artifactPath;
+    }
+    return relative.split(path.sep).join("/");
+  } catch {
+    return artifactPath;
+  }
+}
+
+function shellSingleQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+type DelegateWatchRecipe = {
+  command: string;
+  timeout_seconds: number;
+  poll_seconds: number;
+  sentinel_pattern: string;
+  preferred_mode: "async_background_if_available";
+  fallback_mode: "blocking_shell";
+  authoritative_followup: "delegate_check";
+};
+
+function buildDelegateWatchRecipe(
+  statusFile: string,
+  taskId: string,
+  timeoutSeconds: number,
+  pollSeconds = 5,
+): DelegateWatchRecipe {
+  const normalizedTimeout = Math.max(1, Math.floor(timeoutSeconds));
+  const normalizedPoll = Math.max(1, Math.floor(pollSeconds));
+  const script = [
+    `status_file=${shellSingleQuote(statusFile)}`,
+    `task_id=${shellSingleQuote(taskId)}`,
+    `timeout_seconds=${normalizedTimeout}`,
+    `poll_seconds=${normalizedPoll}`,
+    `last_status="unknown"`,
+    `start_seconds=$SECONDS`,
+    `while true; do`,
+    `  if [[ -f "$status_file" ]]; then`,
+    `    status=""`,
+    `    if read -r status < "$status_file"; then`,
+    `      case "$status" in`,
+    `        completed|failed|aborted)`,
+    `          echo "DELEGATE_WATCH_DONE task_id=$task_id status=$status"`,
+    `          exit 0`,
+    `          ;;`,
+    `        running)`,
+    `          last_status="$status"`,
+    `          ;;`,
+    `        *)`,
+    `          if [[ -n "$status" ]]; then last_status="$status"; fi`,
+    `          ;;`,
+    `      esac`,
+    `    fi`,
+    `  fi`,
+    ``,
+    `  elapsed=$((SECONDS - start_seconds))`,
+    `  if (( elapsed >= timeout_seconds )); then`,
+    `    echo "DELEGATE_WATCH_TIMEOUT task_id=$task_id last=$last_status"`,
+    `    exit 124`,
+    `  fi`,
+    ``,
+    `  sleep "$poll_seconds"`,
+    `done`,
+  ].join("\n");
+
+  return {
+    command: `bash -lc ${shellSingleQuote(script)}`,
+    timeout_seconds: normalizedTimeout,
+    poll_seconds: normalizedPoll,
+    sentinel_pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT",
+    preferred_mode: "async_background_if_available",
+    fallback_mode: "blocking_shell",
+    authoritative_followup: "delegate_check",
+  };
+}
+
+function formatDelegateStartMessage(
+  taskId: string,
+  progressFileRelative: string,
+  statusFileRelative: string,
+): string {
+  return [
+    `Worker ${taskId} started.`,
+    ``,
+    `Artifacts:`,
+    `- progress: ${progressFileRelative}`,
+    `- status: ${statusFileRelative}`,
+    ``,
+    `Recommended wait pattern:`,
+    `- If an async/background command runner is available, run details.watch.command there and watch for: DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT.`,
+    `- If no async/background runner is available, run the same command in a shell; it will block, but avoids frequent delegate_check polling.`,
+    `- After any sentinel or timeout, call delegate_check("${taskId}") once; delegate_check is authoritative.`,
+  ].join("\n");
 }
 
 function statusFromAgentEndMessages(messages: unknown[] | undefined): WorkerStatus {
@@ -314,13 +415,27 @@ export default function delegate(pi: ExtensionAPI) {
         tryCloseLogWriter();
       }, timeout * 1000);
 
+      const progressFile = logWriter.getFilePath();
+      const statusFile = statusWriter.getFilePath();
+      const progressFileRelative = relativeToProject(projectRoot, progressFile);
+      const statusFileRelative = relativeToProject(projectRoot, statusFile);
+      const watch = buildDelegateWatchRecipe(statusFile, taskId, timeout);
+
       return {
-        content: [{ type: "text" as const, text: `Worker ${taskId} started. Use delegate_check("${taskId}") to monitor progress.` }],
+        content: [
+          {
+            type: "text" as const,
+            text: formatDelegateStartMessage(taskId, progressFileRelative, statusFileRelative),
+          },
+        ],
         details: {
           task_id: taskId,
           status: "running",
-          progress_file: logWriter.getFilePath(),
-          status_file: statusWriter.getFilePath(),
+          progress_file: progressFile,
+          status_file: statusFile,
+          progress_file_relative: progressFileRelative,
+          status_file_relative: statusFileRelative,
+          watch,
         },
       };
     },
