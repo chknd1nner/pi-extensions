@@ -38,6 +38,16 @@ To install just one extension from the bundle:
 }
 ```
 
+## Delegate worker monitoring
+
+`delegate_start` returns worker artifact paths and a self-contained status-file wait recipe:
+
+- `details.progress_file` / `details.progress_file_relative` — append-only markdown progress log.
+- `details.status_file` / `details.status_file_relative` — machine-readable lifecycle status file.
+- `details.watch.command` — Bash command that waits for `completed`, `failed`, or `aborted` status and emits `DELEGATE_WATCH_DONE` or `DELEGATE_WATCH_TIMEOUT`.
+
+If an async/background command runner is available, run `details.watch.command` there and watch for `DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT`. If not, run the same command in a shell; it blocks, but avoids frequent `delegate_check` polling. After any sentinel or timeout, call `delegate_check` once because in-memory delegate state is authoritative.
+
 ## Source
 
 Development happens upstream at [chknd1nner/pi-extensions](https://github.com/chknd1nner/pi-extensions) under `packages/pi-delegate-driven-development/`. This repo is a publish mirror; PRs welcome upstream.
