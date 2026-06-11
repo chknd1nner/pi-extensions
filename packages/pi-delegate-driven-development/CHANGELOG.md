@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0 - 2026-06-11
+
+- Add `delegate_pack` tool: compile ordered files (plus optional note) into a frozen, named context pack under `.pi/delegate/<date>/packs/<name>.jsonl`
+- Add `context_pack` parameter to `delegate_start`: workers receive the pack as an identical message prefix (name resolved newest-date-first, or explicit path); composes with `inherit_context` (anchor first, pack appended)
+- Add `system_prompt_file` parameter to `delegate_start`: role prompt files are read at spawn time and forwarded as the worker system prompt (mutually exclusive with `system_prompt`)
+- `buildSessionSnapshot` now accepts a nullable session manager and appends re-identified pack entries
+- delegate-driven-development skill: orchestrate via context packs + `system_prompt_file` instead of anchor-first choreography; new cache-discipline and resume guidance
+- Role templates (implementer/reviewer/fixer) rewritten in system-prompt voice with no `{{…}}` placeholders
+
 ## v0.2.0 - 2026-06-11
 
 - Add relative delegate progress/status artifact paths to `delegate_start` results.
