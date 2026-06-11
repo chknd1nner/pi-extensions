@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 export type PackItem =
   | { kind: "file"; path: string; content: string }
   | { kind: "note"; content: string };
@@ -105,4 +108,63 @@ export function parsePackFile(content: string): { header: PackHeader; entries: P
   }
 
   return { header, entries };
+}
+
+export function listPackNames(projectRoot: string): string[] {
+  const base = path.join(projectRoot, ".pi", "delegate");
+  const names = new Set<string>();
+
+  let dates: string[];
+  try {
+    dates = fs.readdirSync(base);
+  } catch {
+    return [];
+  }
+
+  for (const date of dates) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(path.join(base, date, "packs"));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (file.endsWith(".jsonl")) {
+        names.add(file.slice(0, -".jsonl".length));
+      }
+    }
+  }
+
+  return [...names].sort();
+}
+
+export function resolvePackPath(projectRoot: string, ref: string, cwd: string): string {
+  if (ref.includes("/") || ref.endsWith(".jsonl")) {
+    const resolved = path.resolve(cwd, ref);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(`Context pack not found at path: ${resolved}`);
+    }
+    return resolved;
+  }
+
+  const base = path.join(projectRoot, ".pi", "delegate");
+  let dates: string[] = [];
+  try {
+    dates = fs.readdirSync(base).sort().reverse();
+  } catch {
+    // fall through to the not-found error below
+  }
+
+  for (const date of dates) {
+    const candidate = path.join(base, date, "packs", `${ref}.jsonl`);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const available = listPackNames(projectRoot);
+  const availableText = available.length > 0 ? available.join(", ") : "(none)";
+  throw new Error(
+    `No context pack named '${ref}'. Available packs: ${availableText}. Create one with delegate_pack.`,
+  );
 }

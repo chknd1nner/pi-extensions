@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { buildPackFile, parsePackFile, PACK_NAME_PATTERN } from "../pack";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildPackFile, listPackNames, parsePackFile, PACK_NAME_PATTERN, resolvePackPath } from "../pack";
 import type { PackItem } from "../pack";
 
 describe("PACK_NAME_PATTERN", () => {
@@ -112,5 +115,71 @@ describe("parsePackFile", () => {
     const content =
       '{"type":"pack","version":1,"name":"p","timestamp":"t","sources":[]}\n{"type":"model_change","id":"x"}\n';
     expect(() => parsePackFile(content)).toThrow(/entry type/i);
+  });
+});
+
+describe("pack resolution", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "pack-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  function writePack(date: string, name: string, marker: string): string {
+    const dir = path.join(root, ".pi", "delegate", date, "packs");
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, `${name}.jsonl`);
+    fs.writeFileSync(p, marker, "utf8");
+    return p;
+  }
+
+  it("resolves a bare name to the newest date dir containing it", () => {
+    writePack("2026-06-09", "impl", "old");
+    const newest = writePack("2026-06-10", "impl", "new");
+
+    expect(resolvePackPath(root, "impl", "/anywhere")).toBe(newest);
+  });
+
+  it("falls back to older dates when newest lacks the name", () => {
+    const only = writePack("2026-06-09", "impl", "x");
+    writePack("2026-06-10", "other", "y");
+
+    expect(resolvePackPath(root, "impl", "/anywhere")).toBe(only);
+  });
+
+  it("treats values containing '/' or ending in .jsonl as paths resolved against cwd", () => {
+    const p = writePack("2026-06-10", "impl", "x");
+
+    expect(resolvePackPath(root, p, "/anywhere")).toBe(p);
+    expect(resolvePackPath(root, path.relative(root, p), root)).toBe(p);
+  });
+
+  it("throws for a path that does not exist", () => {
+    expect(() => resolvePackPath(root, "./nope/missing.jsonl", root)).toThrow(/not found at path/i);
+  });
+
+  it("throws for an unknown name, listing available packs", () => {
+    writePack("2026-06-09", "impl", "x");
+    writePack("2026-06-10", "review", "y");
+
+    expect(() => resolvePackPath(root, "missing", "/anywhere")).toThrow(
+      /No context pack named 'missing'.*impl, review/s,
+    );
+  });
+
+  it("throws helpfully when no packs exist at all", () => {
+    expect(() => resolvePackPath(root, "missing", "/anywhere")).toThrow(/\(none\)/);
+  });
+
+  it("listPackNames returns sorted unique names across date dirs", () => {
+    writePack("2026-06-09", "impl", "x");
+    writePack("2026-06-10", "impl", "y");
+    writePack("2026-06-10", "review", "z");
+
+    expect(listPackNames(root)).toEqual(["impl", "review"]);
   });
 });
