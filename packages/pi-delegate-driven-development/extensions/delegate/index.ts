@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Type } from "typebox";
@@ -7,6 +7,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RPCClient } from "./rpc-client";
 import { ProgressAccumulator } from "./progress";
+import { buildPackFile, PACK_NAME_PATTERN, parsePackFile, resolvePackPath } from "./pack";
+import type { PackItem } from "./pack";
 import { buildSessionSnapshot } from "./snapshot";
 import { ProgressLogWriter, StatusFileWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
@@ -177,6 +179,7 @@ export default function delegate(pi: ExtensionAPI) {
       "After the wait command emits DELEGATE_WATCH_DONE or DELEGATE_WATCH_TIMEOUT, call delegate_check once for authoritative state, then delegate_result when terminal.",
       "Avoid tight polling loops around delegate_check; if polling is unavoidable, use a slow cadence.",
       "Use delegate_steer to send instructions to a running worker and delegate_abort to stop one.",
+      "Use delegate_pack + context_pack to give many workers an identical frozen file-based prefix (spec/plan); context_pack composes with inherit_context (anchor first, pack appended).",
       "Maximum 2 concurrent workers by default.",
     ],
     parameters: Type.Object({
@@ -203,6 +206,12 @@ export default function delegate(pi: ExtensionAPI) {
       system_prompt: Type.Optional(
         Type.String({ description: "Additional system prompt appended to worker" }),
       ),
+      system_prompt_file: Type.Optional(
+        Type.String({
+          description:
+            "Path to a file whose content is appended to the worker system prompt (resolved against the worker cwd; absolute paths pass through). Mutually exclusive with system_prompt. Use for role prompt templates so their bodies stay out of the orchestrator transcript.",
+        }),
+      ),
       cwd: Type.Optional(
         Type.String({ description: "Working directory for the worker (default: project root)" }),
       ),
@@ -212,12 +221,25 @@ export default function delegate(pi: ExtensionAPI) {
             'false/absent = ephemeral (--no-session). true = inherit current session context. "name" = inherit from named anchor set by delegate_anchor.',
         }),
       ),
+      context_pack: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            'Context pack created by delegate_pack: a name (resolved newest-date-first under .pi/delegate/*/packs/) or an explicit path (contains "/" or ends with .jsonl). Appended to the worker session after any inherit_context content.',
+        }),
+      ),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       if (params.tools && params.denied_tools) {
         throw new Error(
           "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one.",
+        );
+      }
+
+      if (params.system_prompt && params.system_prompt_file) {
+        throw new Error(
+          "Cannot specify both 'system_prompt' and 'system_prompt_file'. Pick one.",
         );
       }
 
@@ -300,36 +322,54 @@ export default function delegate(pi: ExtensionAPI) {
       };
 
       let sessionPath: string | undefined;
+      let resolvedPackPath: string | undefined;
 
-      if (params.inherit_context === true || typeof params.inherit_context === "string") {
+      const usesAnchor = params.inherit_context === true || typeof params.inherit_context === "string";
+      const usesPack = typeof params.context_pack === "string" && params.context_pack.length > 0;
+
+      if (usesAnchor || usesPack) {
         let tmpPath: string | undefined;
 
         try {
-          const sessionManager = (
-            ctx as {
-              sessionManager: {
-                getLeafId(): string | null;
-                getBranch(fromId?: string): object[];
-              };
-            }
-          ).sessionManager;
+          let snapshotManager: {
+            getLeafId(): string | null;
+            getBranch(fromId?: string): object[];
+          } | null = null;
+          let anchorEntryId: string | null = null;
 
-          let anchorEntryId: string | null;
+          if (usesAnchor) {
+            const sessionManager = (
+              ctx as {
+                sessionManager: {
+                  getLeafId(): string | null;
+                  getBranch(fromId?: string): object[];
+                };
+              }
+            ).sessionManager;
 
-          if (params.inherit_context === true) {
-            anchorEntryId = sessionManager.getLeafId();
-          } else {
-            const anchorName = params.inherit_context as string;
-            if (!anchorMap.has(anchorName)) {
-              throw new Error(
-                `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
-              );
+            if (params.inherit_context === true) {
+              anchorEntryId = sessionManager.getLeafId();
+            } else {
+              const anchorName = params.inherit_context as string;
+              if (!anchorMap.has(anchorName)) {
+                throw new Error(
+                  `No anchor named '${anchorName}'. Call delegate_anchor({ name: '${anchorName}' }) first.`,
+                );
+              }
+              anchorEntryId = anchorMap.get(anchorName)!;
             }
-            anchorEntryId = anchorMap.get(anchorName)!;
+            snapshotManager = sessionManager;
+          }
+
+          let packEntries: object[] = [];
+          if (usesPack) {
+            resolvedPackPath = resolvePackPath(projectRoot, params.context_pack as string, initialCwd);
+            const parsed = parsePackFile(readFileSync(resolvedPackPath, "utf8"));
+            packEntries = parsed.entries;
           }
 
           tmpPath = `${tmpdir()}/pi-worker-${taskId}-${Date.now()}.jsonl`;
-          const snapshot = buildSessionSnapshot(sessionManager, workerCwd, anchorEntryId);
+          const snapshot = buildSessionSnapshot(snapshotManager, workerCwd, anchorEntryId, packEntries);
           writeFileSync(tmpPath, snapshot, "utf8");
           entry.tempFilePath = tmpPath;
           sessionPath = tmpPath;
@@ -348,6 +388,20 @@ export default function delegate(pi: ExtensionAPI) {
         }
       }
 
+      let resolvedSystemPrompt = params.system_prompt;
+      if (params.system_prompt_file) {
+        const promptPath = path.resolve(workerCwd, params.system_prompt_file);
+        try {
+          resolvedSystemPrompt = readFileSync(promptPath, "utf8");
+        } catch {
+          const msg = `Cannot read system_prompt_file: ${promptPath}`;
+          tryCleanupTempFile();
+          transitionWorker("failed", msg);
+          tryCloseLogWriter();
+          throw new Error(msg);
+        }
+      }
+
       const rpcClient = new RPCClient(
         {
           model: params.model,
@@ -356,7 +410,7 @@ export default function delegate(pi: ExtensionAPI) {
           tools: toolsAllowlist,
           deniedTools: toolsAllowlist ? undefined : deniedTools,
           allToolNames: toolsAllowlist ? undefined : allToolNames,
-          systemPrompt: params.system_prompt,
+          systemPrompt: resolvedSystemPrompt,
           cwd: workerCwd,
           sessionPath,
         },
@@ -439,6 +493,7 @@ export default function delegate(pi: ExtensionAPI) {
           status_file: statusFile,
           progress_file_relative: progressFileRelative,
           status_file_relative: statusFileRelative,
+          ...(resolvedPackPath ? { context_pack_path: resolvedPackPath } : {}),
           watch,
         },
       };
@@ -485,6 +540,104 @@ export default function delegate(pi: ExtensionAPI) {
           },
         ],
         details: { name, entryId, entryCount },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "delegate_pack",
+    label: "Delegate Pack",
+    description:
+      "Compile an ordered list of files (plus optional note) into a frozen, named context pack that delegate_start workers can share as a cached prefix.",
+    promptSnippet:
+      "Use to convert files like spec and plan into a frozen context pack reusable across many delegate_start workers.",
+    promptGuidelines: [
+      "Use delegate_pack to freeze spec/plan files into a named context pack before dispatching workers.",
+      "Packs are immutable; pass overwrite: true only when you intend to start a new cache prefix generation.",
+      "Consume packs via delegate_start({ context_pack: \"<name>\" }).",
+    ],
+    parameters: Type.Object({
+      name: Type.String({
+        description: "Pack name: lowercase letters, digits, '-', '_' (must start alphanumeric)",
+      }),
+      files: Type.Array(Type.String(), {
+        description: "Ordered file paths to embed, resolved against the orchestrator cwd",
+      }),
+      note: Type.Optional(
+        Type.String({ description: "Optional freeform note appended after the files" }),
+      ),
+      overwrite: Type.Optional(
+        Type.Boolean({ description: "Replace an existing same-name pack from today (default false)" }),
+      ),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      if (!PACK_NAME_PATTERN.test(params.name)) {
+        throw new Error(
+          `Invalid pack name '${params.name}'. Use lowercase letters, digits, '-', '_' (must start alphanumeric).`,
+        );
+      }
+      if (params.files.length === 0 && !params.note) {
+        throw new Error("Pack needs at least one file or a note.");
+      }
+
+      const items: PackItem[] = [];
+      for (const file of params.files) {
+        const resolved = path.resolve(initialCwd, file);
+        let content: string;
+        try {
+          content = readFileSync(resolved, "utf8");
+        } catch {
+          throw new Error(`Cannot read pack source file: ${resolved}`);
+        }
+        if (content.trim().length === 0) {
+          throw new Error(`Pack source file is empty: ${resolved}`);
+        }
+        items.push({ kind: "file", path: file, content });
+      }
+      if (params.note) {
+        items.push({ kind: "note", content: params.note });
+      }
+
+      const packPath = path.join(
+        projectRoot,
+        ".pi",
+        "delegate",
+        todayDate(),
+        "packs",
+        `${params.name}.jsonl`,
+      );
+      if (existsSync(packPath) && !params.overwrite) {
+        throw new Error(
+          `Pack '${params.name}' already exists at ${packPath}. Pass overwrite: true to replace it (this starts a new cache prefix), or pick a new name.`,
+        );
+      }
+
+      const content = buildPackFile(params.name, items);
+      mkdirSync(path.dirname(packPath), { recursive: true });
+      writeFileSync(packPath, content, "utf8");
+
+      const bytes = Buffer.byteLength(content, "utf8");
+      const tokenEstimate = Math.round(bytes / 4);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: [
+              `Pack '${params.name}' frozen (${items.length} items, ${bytes} bytes, ~${tokenEstimate} tokens).`,
+              `Path: ${packPath}`,
+              `Use with delegate_start({ context_pack: "${params.name}" }).`,
+            ].join("\n"),
+          },
+        ],
+        details: {
+          name: params.name,
+          path: packPath,
+          items: items.length,
+          bytes,
+          token_estimate: tokenEstimate,
+        },
       };
     },
   });

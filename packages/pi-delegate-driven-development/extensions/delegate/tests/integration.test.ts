@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import delegate from "../index";
+import { buildPackFile } from "../pack";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -121,6 +123,84 @@ async function waitForValue<T>(
 }
 
 describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => {
+  it(
+    "spawns a worker with a context pack and writes the composed session JSONL",
+    async () => {
+      const originalCwd = process.cwd();
+      const tempProjectRoot = fs.mkdtempSync(path.join(tmpdir(), "delegate-pack-integration-"));
+      process.chdir(tempProjectRoot);
+
+      const sessionId = `delegate-pack-integration-${Date.now()}`;
+      const logDir = path.join(tempProjectRoot, ".pi", "delegate", todayDate(), sessionId);
+      const packDir = path.join(tempProjectRoot, ".pi", "delegate", todayDate(), "packs");
+      const packPath = path.join(packDir, `integration-${Date.now()}.jsonl`);
+      const harness = createIntegrationHarness();
+      const marker = `PACKED CONTEXT MARKER ${Date.now()}`;
+      const tmpBefore = new Set(fs.readdirSync(tmpdir()).filter((file) => file.startsWith("pi-worker-w1-")));
+
+      fs.rmSync(logDir, { recursive: true, force: true });
+      fs.mkdirSync(packDir, { recursive: true });
+      fs.writeFileSync(
+        packPath,
+        buildPackFile("integration", [{ kind: "file", path: "integration-context.md", content: marker }]),
+        "utf8",
+      );
+
+      await harness.trigger("session_start", {}, {
+        sessionManager: {
+          getSessionId: () => sessionId,
+        },
+      });
+
+      const startTool = harness.getTool("delegate_start");
+      const abortTool = harness.getTool("delegate_abort");
+      expect(startTool).toBeDefined();
+      expect(abortTool).toBeDefined();
+
+      try {
+        await startTool!.execute("call-start-pack", {
+          task: [
+            "You received a context pack. Before answering, use bash exactly once with command `sleep 30`.",
+            "Then answer with the packed marker text.",
+          ].join(" "),
+          model: TEST_MODEL,
+          provider: TEST_PROVIDER,
+          context_pack: packPath,
+          tools: ["bash"],
+          timeout: 60,
+          cwd: tempProjectRoot,
+        });
+
+        const composedSession = await waitForValue(
+          "composed context-pack session file",
+          () => {
+            for (const file of fs.readdirSync(tmpdir())) {
+              if (!file.startsWith("pi-worker-w1-") || tmpBefore.has(file)) continue;
+              const candidate = path.join(tmpdir(), file);
+              const content = fs.readFileSync(candidate, "utf8");
+              if (content.includes(marker)) return content;
+            }
+            return undefined;
+          },
+          30_000,
+        );
+
+        expect(composedSession).toContain("[context-pack:integration] File: integration-context.md");
+        expect(composedSession).toContain(marker);
+      } finally {
+        try {
+          await abortTool?.execute("call-abort-pack", { task_id: "w1" });
+        } catch {
+          // Worker may already be terminal; ignore cleanup abort errors.
+        }
+        await harness.trigger("session_shutdown");
+        process.chdir(originalCwd);
+        fs.rmSync(tempProjectRoot, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
   it(
     "spawns a worker, writes a progress log, and reads the final result",
     async () => {

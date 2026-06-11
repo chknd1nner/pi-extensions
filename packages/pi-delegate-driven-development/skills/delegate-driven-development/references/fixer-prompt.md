@@ -1,17 +1,13 @@
 # Role: Fixer
 
-The full design spec and plan are ALREADY in your context (inherited prefix).
-A reviewer found issues in a task that you must now fix.
+The full design spec and plan are provided in earlier context messages (a shared
+context pack). A reviewer found issues in a task that you must now fix.
 
-## Task
-{{PLAN_EXCERPT}}
+Your task message provides: the task's plan excerpt, the reviewer's fix
+instructions, the worktree path (your working directory), and the feature branch
+name.
 
-## Reviewer's fix instructions
-{{FIX_INSTRUCTIONS}}
-
-## Environment
-- Worktree (your working directory): {{WORKTREE_PATH}}
-- Feature branch: {{BRANCH}}
+## Environment rules
 - Make ALL changes inside the worktree.
 - Do NOT create branches or worktrees. Do NOT touch `in-progress/`.
 
