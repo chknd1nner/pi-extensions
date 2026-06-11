@@ -81,61 +81,78 @@ fi
 VERSION_NUM="${VERSION#v}"
 MONOREPO_TAG="$BUNDLE-$VERSION"
 
-# 6. Refuse duplicate tags
+# 6. Refuse duplicate tags, except for resuming after the monorepo tag was
+# created and the release stopped before publishing the mirror tag.
+RESUME_AFTER_MONOREPO_TAG=0
 if git rev-parse -q --verify "refs/tags/$MONOREPO_TAG" >/dev/null; then
-  echo "error: monorepo tag $MONOREPO_TAG already exists" >&2
-  exit 1
+  TAG_COMMIT=$(git rev-parse "refs/tags/$MONOREPO_TAG^{commit}")
+  HEAD_COMMIT=$(git rev-parse HEAD)
+  if [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]]; then
+    RESUME_AFTER_MONOREPO_TAG=1
+    echo "resuming from existing monorepo tag $MONOREPO_TAG at HEAD"
+  else
+    echo "error: monorepo tag $MONOREPO_TAG already exists but does not point at HEAD" >&2
+    echo "       tag commit:  $TAG_COMMIT" >&2
+    echo "       HEAD commit: $HEAD_COMMIT" >&2
+    exit 1
+  fi
 fi
 if git ls-remote --tags "$MIRROR_URL" | grep -q "refs/tags/$VERSION\$"; then
   echo "error: mirror tag $VERSION already exists on $MIRROR_URL" >&2
   exit 1
 fi
 
-# 7. Bump version in bundle package.json
-node -e "
-  const fs = require('fs');
-  const p = '$BUNDLE_DIR/package.json';
-  const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
-  pkg.version = '$VERSION_NUM';
-  fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
-"
-echo "bumped $BUNDLE_DIR/package.json to $VERSION_NUM"
+if [[ "$RESUME_AFTER_MONOREPO_TAG" != "1" ]]; then
+  # 7. Bump version in bundle package.json
+  node -e "
+    const fs = require('fs');
+    const p = '$BUNDLE_DIR/package.json';
+    const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+    pkg.version = '$VERSION_NUM';
+    fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+  "
+  echo "bumped $BUNDLE_DIR/package.json to $VERSION_NUM"
 
-# 8. Update CHANGELOG (prepend stub, open editor)
-CHANGELOG="$BUNDLE_DIR/CHANGELOG.md"
-DATE=$(date +%Y-%m-%d)
-if [[ ! -f "$CHANGELOG" ]]; then
-  printf '# Changelog\n\n' > "$CHANGELOG"
-fi
-TMP=$(mktemp)
-{
-  echo "# Changelog"
-  echo ""
-  echo "## $VERSION - $DATE"
-  echo ""
-  echo "- (describe changes — this line will be opened in \$EDITOR)"
-  echo ""
-  tail -n +2 "$CHANGELOG" | sed '1{/^$/d;}'
-} > "$TMP"
-mv "$TMP" "$CHANGELOG"
-if [[ "$DRY_RUN" != "1" ]]; then
-  "${EDITOR:-vi}" "$CHANGELOG"
-fi
+  # 8. Update CHANGELOG (prepend stub, open editor)
+  CHANGELOG="$BUNDLE_DIR/CHANGELOG.md"
+  DATE=$(date +%Y-%m-%d)
+  if [[ ! -f "$CHANGELOG" ]]; then
+    printf '# Changelog\n\n' > "$CHANGELOG"
+  fi
+  TMP=$(mktemp)
+  {
+    echo "# Changelog"
+    echo ""
+    echo "## $VERSION - $DATE"
+    echo ""
+    echo "- (describe changes — this line will be opened in \$EDITOR)"
+    echo ""
+    tail -n +2 "$CHANGELOG" | sed '1{/^$/d;}'
+  } > "$TMP"
+  mv "$TMP" "$CHANGELOG"
+  if [[ "$DRY_RUN" != "1" ]]; then
+    "${EDITOR:-vi}" "$CHANGELOG"
+  fi
 
-# 9. Commit + tag in monorepo
-run git add "$BUNDLE_DIR/package.json" "$CHANGELOG"
-run git commit -m "release($BUNDLE): $VERSION"
-if git config --get user.signingkey >/dev/null 2>&1; then
-  run git tag -s "$MONOREPO_TAG" -m "$BUNDLE $VERSION"
-else
-  echo "warning: no signing key configured; creating unsigned tag" >&2
-  run git tag -a "$MONOREPO_TAG" -m "$BUNDLE $VERSION"
+  # 9. Commit + tag in monorepo
+  run git add "$BUNDLE_DIR/package.json" "$CHANGELOG"
+  run git commit -m "release($BUNDLE): $VERSION"
+  if git config --get user.signingkey >/dev/null 2>&1; then
+    run git tag -s "$MONOREPO_TAG" -m "$BUNDLE $VERSION"
+  else
+    echo "warning: no signing key configured; creating unsigned tag" >&2
+    run git tag -a "$MONOREPO_TAG" -m "$BUNDLE $VERSION"
+  fi
 fi
 
 # 10. Subtree split + push to mirror
 SPLIT_BRANCH="release/$BUNDLE-$VERSION"
+if git rev-parse -q --verify "refs/heads/$SPLIT_BRANCH" >/dev/null 2>&1; then
+  run git branch -D "$SPLIT_BRANCH"
+fi
 run git subtree split --prefix="$BUNDLE_DIR" -b "$SPLIT_BRANCH"
-run git push "$MIRROR_URL" "$SPLIT_BRANCH:main" --force-with-lease
+MIRROR_MAIN_SHA=$(git ls-remote --heads "$MIRROR_URL" main | awk '{print $1}')
+run git push "$MIRROR_URL" "$SPLIT_BRANCH:main" "--force-with-lease=refs/heads/main:$MIRROR_MAIN_SHA"
 
 # 11. Tag the mirror
 TMPDIR=$(mktemp -d)
