@@ -126,9 +126,13 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
   it(
     "spawns a worker with a context pack and writes the composed session JSONL",
     async () => {
+      const originalCwd = process.cwd();
+      const tempProjectRoot = fs.mkdtempSync(path.join(tmpdir(), "delegate-pack-integration-"));
+      process.chdir(tempProjectRoot);
+
       const sessionId = `delegate-pack-integration-${Date.now()}`;
-      const logDir = path.join(PROJECT_ROOT, ".pi", "delegate", todayDate(), sessionId);
-      const packDir = path.join(PROJECT_ROOT, ".pi", "delegate", todayDate(), "packs");
+      const logDir = path.join(tempProjectRoot, ".pi", "delegate", todayDate(), sessionId);
+      const packDir = path.join(tempProjectRoot, ".pi", "delegate", todayDate(), "packs");
       const packPath = path.join(packDir, `integration-${Date.now()}.jsonl`);
       const harness = createIntegrationHarness();
       const marker = `PACKED CONTEXT MARKER ${Date.now()}`;
@@ -164,7 +168,7 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
           context_pack: packPath,
           tools: ["bash"],
           timeout: 60,
-          cwd: PROJECT_ROOT,
+          cwd: tempProjectRoot,
         });
 
         const composedSession = await waitForValue(
@@ -190,8 +194,8 @@ describe.skipIf(!RUN_INTEGRATION)("integration: full delegate lifecycle", () => 
           // Worker may already be terminal; ignore cleanup abort errors.
         }
         await harness.trigger("session_shutdown");
-        fs.rmSync(logDir, { recursive: true, force: true });
-        fs.rmSync(packPath, { force: true });
+        process.chdir(originalCwd);
+        fs.rmSync(tempProjectRoot, { recursive: true, force: true });
       }
     },
     120_000,
