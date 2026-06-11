@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-11
 **Package:** `pi-delegate-driven-development` (delegate sub-extension + delegate-driven-development skill)
-**Status:** Draft for review
+**Status:** Approved
 
 ## Problem
 
