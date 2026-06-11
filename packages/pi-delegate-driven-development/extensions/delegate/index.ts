@@ -168,11 +168,15 @@ export default function delegate(pi: ExtensionAPI) {
     name: "delegate_start",
     label: "Delegate Start",
     description: "Spawn a worker agent as an isolated Pi RPC subprocess to execute a task.",
-    promptSnippet: "Spawn a worker agent to execute a task in an isolated subprocess.",
+    promptSnippet: "Spawn a worker agent to execute a task in an isolated subprocess and return artifact paths plus a status-file wait recipe.",
     promptGuidelines: [
       "Use delegate_start to offload tasks to a worker agent (code review, implementation, research).",
       "The worker runs as a separate Pi process with its own context window.",
-      "Check progress with delegate_check, steer with delegate_steer, abort with delegate_abort, read result with delegate_result.",
+      "delegate_start returns progress/status artifact paths and a self-contained status-file wait command in details.watch.command.",
+      "Prefer running details.watch.command with an async/background command runner when one is available; otherwise run it in a blocking shell rather than polling frequently.",
+      "After the wait command emits DELEGATE_WATCH_DONE or DELEGATE_WATCH_TIMEOUT, call delegate_check once for authoritative state, then delegate_result when terminal.",
+      "Avoid tight polling loops around delegate_check; if polling is unavoidable, use a slow cadence.",
+      "Use delegate_steer to send instructions to a running worker and delegate_abort to stop one.",
       "Maximum 2 concurrent workers by default.",
     ],
     parameters: Type.Object({

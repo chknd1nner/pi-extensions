@@ -4,6 +4,8 @@ import delegate from "../index";
 
 type RegisteredTool = {
   name: string;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
   parameters?: {
     properties?: Record<string, unknown>;
   };
@@ -57,6 +59,23 @@ describe("delegate tools registration", () => {
       description: expect.stringContaining("log"),
       enum: ["log"],
     });
+  });
+
+  it("guides agents toward status-file waiting without naming optional third-party tools", () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_start");
+    expect(tool).toBeDefined();
+
+    const guidance = [tool?.promptSnippet, ...(tool?.promptGuidelines ?? [])].join("\n");
+    expect(guidance).toContain("details.watch.command");
+    expect(guidance).toContain("async/background command runner");
+    expect(guidance).toContain("blocking shell");
+    expect(guidance).toContain("After the wait command emits");
+    expect(guidance).toContain("Avoid tight polling loops around delegate_check");
+    expect(guidance).not.toContain("process tool");
+    expect(guidance).not.toContain("pi-processes");
   });
 
   it("throws when tools and denied_tools are used together", async () => {
