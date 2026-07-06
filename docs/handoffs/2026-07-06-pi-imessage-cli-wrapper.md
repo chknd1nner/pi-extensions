@@ -1,7 +1,7 @@
 # Handoff: pi-imessage — next up, the light CLI wrapper
 
 **Date:** 2026-07-06
-**Status of prior work:** COMPLETE — merged to `main` at `4d80737`, deployed, verified end-to-end
+**Status of prior work:** COMPLETE — merged to `main`, **released as v0.1.0 and installed globally**, deployed, verified end-to-end
 **Next goal:** a light CLI wrapper (`imsg`) so shell scripts, cron jobs, and non-π tools can send the same iMessage notifications
 
 ## What exists (deployed and working)
@@ -29,6 +29,11 @@
   KeepAlive, TCC Automation grant all survive reboot).
 - E2E verified twice, including post-reboot; health check via MagicDNS name works.
 
+**Release & install (2026-07-06, post-merge):**
+- Published to the mirror repo via `scripts/release-bundle.sh`: https://github.com/chknd1nner/pi-imessage, tag `v0.1.0` (monorepo tag `pi-imessage-v0.1.0`, release commit `8e221ee` on `main`). Tags unsigned (no signing key configured yet).
+- **Installed globally**: `git:github.com/chknd1nner/pi-imessage@v0.1.0` in `~/.pi/agent/settings.json` — every π session on the Pro has `send_imessage`. Verified with a live send from a plain session in `/tmp`.
+- Note the pin: future releases require re-running `pi install git:github.com/chknd1nner/pi-imessage@v0.x.y` to update the global entry.
+
 **Design docs:**
 - Spec: `docs/superpowers/specs/2026-07-06-pi-imessage-notify-design.md`
 - Plan (executed, all 8 tasks done): `docs/superpowers/plans/2026-07-06-pi-imessage.md`
@@ -53,15 +58,18 @@ Design constraints already settled:
 - Open questions for brainstorming: distribution (bin entry in the pi-imessage package
   vs. standalone script vs. compiled), TS execution for a CLI (the extension runs under
   π's TS loader; a CLI invoked from shell doesn't), flag surface (`--context` override?
-  `--url`/`--token` overrides? stdin piping?).
+  `--url`/`--token` overrides? stdin piping?). Note the release workflow implication:
+  if the CLI ships inside the pi-imessage package, adding it is a MINOR bump (v0.2.0)
+  released via `skills/releasing-a-bundle/SKILL.md` + `scripts/release-bundle.sh`, and
+  the global install pin must be bumped afterwards.
 
 ## Repo conventions that bit us (respect them)
 
 - `AGENTS.md` is authoritative: workspace root owns installs, no per-package lockfiles,
   π deps as `"*"` peerDependencies, `keywords: ["pi-package"]`.
-- Local-path dogfood entries in `.pi/settings.json` must NOT be committed. (The package
-  is currently NOT wired into any settings — user was offered global install vs. project
-  dogfood vs. publishing to a `chknd1nner/pi-imessage` mirror; no decision recorded. Ask.)
+- Local-path dogfood entries in `.pi/settings.json` must NOT be committed. (Resolved:
+  the user chose publish-to-mirror + global install — see "Release & install" above.
+  No project-local settings entry exists or is needed.)
 - `npm test -w pi-imessage` (48 tests) and `npm run typecheck -w pi-imessage` must stay green.
 - tsconfig includes `extension/**/*.ts` and `server/tests/**/*.ts`; server runtime files
   are plain `.mjs` (Node ≥ 18, node: builtins only — no npm install on the Air).
