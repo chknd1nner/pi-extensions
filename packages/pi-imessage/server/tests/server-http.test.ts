@@ -59,7 +59,8 @@ describe("POST /send", () => {
 
   it("401 generic body on missing/wrong token; token never logged", async () => {
     const base = await start(async () => {});
-    for (const headers of [{}, { authorization: "Bearer wrong-token" }]) {
+    const authHeaders: Array<Record<string, string>> = [{}, { authorization: "Bearer wrong-token" }];
+    for (const headers of authHeaders) {
       const res = await fetch(`${base}/send`, {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },

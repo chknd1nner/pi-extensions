@@ -33,6 +33,9 @@ export function validatePayload(body) {
   return { ok: true, value };
 }
 
+/**
+ * @param {{ message: string, emoji?: string, context?: string }} payload
+ */
 export function composeText({ message, emoji, context }) {
   const line1 = emoji ? `${emoji} ${message}` : message;
   return context ? `${line1}\n[${context}]` : line1;
