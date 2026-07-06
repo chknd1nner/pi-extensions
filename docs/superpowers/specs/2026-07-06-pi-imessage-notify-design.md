@@ -110,11 +110,18 @@ build step.
   `ThrottleInterval` (e.g. 10 s). Constraint: LaunchAgents run only within a logged-in
   GUI session — acceptable because the Air auto-logs-in and Amphetamine keeps it awake;
   the spec makes this dependency explicit. Plist declares stdout/stderr log paths.
-- `setup.sh` (run on the Air): generates token, writes config (prompting for and
-  validating recipient), installs + loads the plist, prints the token for pasting into
-  the Pro config. Also provides `setup.sh --smoke-send`, which invokes **the exact same
-  send code path** interactively from the logged-in session — this is the deterministic
-  first-run Automation authorization step (see below).
+- `setup.sh` (run on the Air) is staged — it never loads launchd before authorization
+  succeeds. Three explicit subcommands, run in order:
+  1. `setup.sh configure` — generates token, writes config (prompting for and
+     validating recipient), prints the token for pasting into the Pro config. Does
+     **not** touch launchd.
+  2. `setup.sh smoke-send` — invokes **the exact same send code path** interactively
+     from the logged-in session; this is the deterministic first-run Automation
+     authorization step (see below). Must succeed before step 3.
+  3. `setup.sh install-agent` — installs + loads the LaunchAgent plist, then performs
+     a second smoke test through the HTTP endpoint to confirm the launchd context is
+     also authorized.
+  Running bare `setup.sh` prints these steps rather than doing anything implicitly.
 
 ### Manual setup steps (documented in README, cannot be scripted)
 
@@ -128,9 +135,10 @@ build step.
    loading the LaunchAgent, approve the Automation prompt, then verify System
    Settings → Privacy & Security → Automation shows the controller allowed for
    Messages. Troubleshooting doc includes `tccutil reset AppleEvents` to clear a
-   botched grant. Only after the smoke-send succeeds is the LaunchAgent loaded, and a
-   second smoke test is run through the HTTP endpoint to confirm the launchd context
-   is also authorized.
+   botched grant. Only after the smoke-send succeeds is `setup.sh install-agent` run,
+   which loads the LaunchAgent and runs a second smoke test through the HTTP endpoint
+   to confirm the launchd context is also authorized. (Stage ordering is enforced by
+   the staged subcommands above — `configure` → `smoke-send` → `install-agent`.)
 4. Add the agent Apple ID to Contacts (name + avatar) on the user's devices.
 
 ## Component: π extension (`send_imessage` tool)
