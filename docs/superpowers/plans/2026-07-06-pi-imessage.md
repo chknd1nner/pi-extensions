@@ -4,7 +4,7 @@
 
 **Goal:** A π custom tool `send_imessage` that lets any agent on the MacBook Pro send the user a real iMessage from a dedicated agent identity, via a small HTTP service on the MacBook Air.
 
-**Architecture:** One package `packages/pi-imessage/` containing (a) a plain-Node HTTP service (`server/`, ESM `.mjs`, no build step) deployed to the Air that sends via `osascript` → Messages.app, and (b) a π extension registering the `send_imessage` tool that POSTs to the service over Tailscale. Spec: `docs/superpowers/specs/2026-07-06-pi-imessage-notify-design.md` — read it before starting any task.
+**Architecture:** One package `packages/pi-imessage/` containing (a) a plain-Node HTTP service (`server/`, ESM `.mjs`, no build step) deployed to the Air that sends via `osascript` → Messages.app, and (b) a π extension (`extension/`) registering the `send_imessage` tool that POSTs to the service over Tailscale. Spec: `docs/superpowers/specs/2026-07-06-pi-imessage-notify-design.md` — read it before starting any task.
 
 **Tech Stack:** TypeScript (extension), plain Node ESM (server, no dependencies), vitest, launchd, AppleScript via osascript.
 
@@ -16,28 +16,29 @@
 - Server config: `~/.config/imsg-server/config.json` → `{ token, recipient, port, host }`, perms 600.
 - Pro config: `~/.config/imsg/config.json` → `{ url, token }`, perms 600. Stable interface (future CLI shares it).
 - Never log tokens or `Authorization` headers. 401 body is generic: `{"ok":false,"error":"unauthorized"}`.
-- osascript stderr goes to local logs only; HTTP 502 bodies carry sanitized error codes: `AUTOMATION_NOT_AUTHORIZED`, `MESSAGES_UNAVAILABLE`, `SEND_FAILED`.
+- osascript stderr goes to local logs only; HTTP 502 bodies carry ONLY whitelisted sanitized codes: `AUTOMATION_NOT_AUTHORIZED`, `MESSAGES_UNAVAILABLE`, `SEND_FAILED` (anything else maps to `SEND_FAILED`).
 - Recipient and message are passed to AppleScript as `osascript` argv — never interpolated into script source.
 - Recipient validated as phone-like (`+`/digits, ≥ 5 digits) or email-like at setup and startup.
 - `setup.sh` is staged: `configure` → `smoke-send` → `install-agent`; bare invocation prints usage only.
-- Server files are dependency-free plain Node ≥ 18 (`node:` builtins only) so the Air needs no `npm install`.
-- Package conventions per AGENTS.md: own `package.json` with π manifest, `keywords: ["pi-package"]`, π packages in `peerDependencies` as `"*"`, no per-package lockfile, tests via root workspace.
+- Server files are dependency-free plain Node ≥ 18 (`node:` builtins only) so the Air needs no `npm install`. Do not use `AbortSignal.any()` anywhere (arrived mid-Node-18); use explicit `AbortController` wiring.
+- Package conventions per AGENTS.md: own `package.json` with π manifest, `keywords: ["pi-package"]`, π packages in `peerDependencies` as `"*"`, no per-package lockfile, tests via root workspace. Local-path dogfood entries in `.pi/settings.json` are NOT committed.
 - Run tests with `npm test -w pi-imessage`, typecheck with `npm run typecheck -w pi-imessage` (from repo root).
 
 ## File Structure
 
+Matches the spec's repo layout exactly:
+
 ```
 packages/pi-imessage/
-  package.json              # π manifest → ./index.ts
+  package.json              # π manifest → ./extension/index.ts
   tsconfig.json
   README.md                 # install + Air setup runbook (Task 7)
-  index.ts                  # registers send_imessage (Task 7)
-  lib.ts                    # Pro-side pure logic: config, context, send (Task 6)
-  tests/
-    server-lib.test.ts      # Task 1, 4
-    server-send.test.ts     # Task 2
-    server-http.test.ts     # Task 3
-    lib.test.ts             # Task 6
+  extension/
+    index.ts                # registers send_imessage (Task 7)
+    lib.ts                  # Pro-side pure logic: config, context, send (Task 6)
+    tests/
+      lib.test.ts           # Task 6
+      index.test.ts         # Task 7
   server/
     lib.mjs                 # validation + composition + config load (Tasks 1, 4)
     send.mjs                # osascript invocation + error classification (Task 2)
@@ -45,6 +46,10 @@ packages/pi-imessage/
     imsg-server.mjs         # entry point + --smoke-send (Task 4)
     setup.sh                # staged setup (Task 5)
     com.familyos.imsg-server.plist.template  # (Task 5)
+    tests/
+      server-lib.test.ts    # Tasks 1, 4
+      server-send.test.ts   # Task 2
+      server-http.test.ts   # Task 3
 ```
 
 ---
@@ -55,7 +60,7 @@ packages/pi-imessage/
 - Create: `packages/pi-imessage/package.json`
 - Create: `packages/pi-imessage/tsconfig.json`
 - Create: `packages/pi-imessage/server/lib.mjs`
-- Test: `packages/pi-imessage/tests/server-lib.test.ts`
+- Test: `packages/pi-imessage/server/tests/server-lib.test.ts`
 
 **Interfaces:**
 - Consumes: nothing (first task).
@@ -82,9 +87,9 @@ packages/pi-imessage/
     "directory": "packages/pi-imessage"
   },
   "type": "module",
-  "files": ["*.ts", "server", "README.md"],
+  "files": ["extension", "server", "README.md"],
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./extension/index.ts"]
   },
   "scripts": {
     "test": "vitest run --cache=false",
@@ -111,7 +116,7 @@ packages/pi-imessage/
     "allowJs": true,
     "types": ["node"]
   },
-  "include": ["*.ts"]
+  "include": ["extension/**/*.ts", "server/tests/**/*.ts"]
 }
 ```
 
@@ -119,11 +124,11 @@ Run: `npm install` (repo root, links the workspace).
 
 - [ ] **Step 2: Write failing tests**
 
-`packages/pi-imessage/tests/server-lib.test.ts`:
+`packages/pi-imessage/server/tests/server-lib.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "vitest";
-import { composeText, tokenMatches, validatePayload, validateRecipient } from "../server/lib.mjs";
+import { composeText, tokenMatches, validatePayload, validateRecipient } from "../lib.mjs";
 
 describe("validatePayload", () => {
   it("accepts a minimal valid payload", () => {
@@ -209,7 +214,7 @@ describe("tokenMatches", () => {
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `npm test -w pi-imessage`
-Expected: FAIL — cannot resolve `../server/lib.mjs`.
+Expected: FAIL — cannot resolve `../lib.mjs`.
 
 - [ ] **Step 4: Implement `server/lib.mjs`**
 
@@ -290,7 +295,7 @@ git commit -m "feat(pi-imessage): scaffold package and server validation/composi
 
 **Files:**
 - Create: `packages/pi-imessage/server/send.mjs`
-- Test: `packages/pi-imessage/tests/server-send.test.ts`
+- Test: `packages/pi-imessage/server/tests/server-send.test.ts`
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
@@ -301,11 +306,11 @@ git commit -m "feat(pi-imessage): scaffold package and server validation/composi
 
 - [ ] **Step 1: Write failing tests**
 
-`packages/pi-imessage/tests/server-send.test.ts`:
+`packages/pi-imessage/server/tests/server-send.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "vitest";
-import { SEND_SCRIPT, SendError, sendMessage } from "../server/send.mjs";
+import { SEND_SCRIPT, SendError, sendMessage } from "../send.mjs";
 
 type ExecCb = (error: (Error & { code?: number }) | null, stdout: string, stderr: string) => void;
 
@@ -356,7 +361,7 @@ describe("sendMessage", () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -w pi-imessage`
-Expected: FAIL — cannot resolve `../server/send.mjs`.
+Expected: FAIL — cannot resolve `../send.mjs`.
 
 - [ ] **Step 3: Implement `server/send.mjs`**
 
@@ -420,7 +425,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/pi-imessage/server/send.mjs packages/pi-imessage/tests/server-send.test.ts
+git add packages/pi-imessage/server/send.mjs packages/pi-imessage/server/tests/server-send.test.ts
 git commit -m "feat(pi-imessage): osascript sender with sanitized error classification"
 ```
 
@@ -430,29 +435,30 @@ git commit -m "feat(pi-imessage): osascript sender with sanitized error classifi
 
 **Files:**
 - Create: `packages/pi-imessage/server/server.mjs`
-- Test: `packages/pi-imessage/tests/server-http.test.ts`
+- Test: `packages/pi-imessage/server/tests/server-http.test.ts`
 
 **Interfaces:**
 - Consumes: `validatePayload`, `composeText`, `tokenMatches` from `server/lib.mjs` (Task 1); `SendError` shape from Task 2.
 - Produces (from `server/server.mjs`):
   - `createHandler(config: { token: string, recipient: string }, deps: { send: ({recipient, text}) => Promise<void>, log?: (line: string) => void }) → (req, res) => void` — a plain `node:http` request listener. Entry point (Task 4) wires it to `http.createServer` and the real `sendMessage`.
+  - 502 error codes are whitelisted: any `err.code` outside `AUTOMATION_NOT_AUTHORIZED` / `MESSAGES_UNAVAILABLE` / `SEND_FAILED` is coerced to `SEND_FAILED` before hitting the wire.
 
 - [ ] **Step 1: Write failing tests**
 
-`packages/pi-imessage/tests/server-http.test.ts`:
+`packages/pi-imessage/server/tests/server-http.test.ts`:
 
 ```typescript
 import http from "node:http";
 import { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { createHandler } from "../server/server.mjs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHandler } from "../server.mjs";
 
 class FakeSendError extends Error {
   code = "AUTOMATION_NOT_AUTHORIZED";
   localDetail = "raw stderr with /Users/secret";
 }
 
-let server: http.Server;
+let server: http.Server | undefined;
 const logged: string[] = [];
 
 async function start(sendImpl: (args: { recipient: string; text: string }) => Promise<void>) {
@@ -461,11 +467,22 @@ async function start(sendImpl: (args: { recipient: string; text: string }) => Pr
     { send: sendImpl, log: (l: string) => logged.push(l) },
   );
   server = http.createServer(handler);
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  await new Promise<void>((r) => server!.listen(0, "127.0.0.1", r));
+  return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
 }
 
-afterEach(() => new Promise<void>((r) => server.close(() => r())));
+beforeEach(() => {
+  logged.length = 0;
+});
+
+afterEach(
+  () =>
+    new Promise<void>((r) => {
+      if (!server) return r();
+      server.close(() => r());
+      server = undefined;
+    }),
+);
 
 describe("GET /health", () => {
   it("returns 200 ok without auth", async () => {
@@ -535,6 +552,19 @@ describe("POST /send", () => {
     expect(logged.join("\n")).toContain("/Users/secret");
   });
 
+  it("coerces unknown error codes to SEND_FAILED (whitelist)", async () => {
+    const base = await start(async () => {
+      throw Object.assign(new Error("boom"), { code: "ESECRET_INTERNAL" });
+    });
+    const res = await fetch(`${base}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer sekret", "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi" }),
+    });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ ok: false, error: "SEND_FAILED" });
+  });
+
   it("404 elsewhere", async () => {
     const base = await start(async () => {});
     const res = await fetch(`${base}/nope`);
@@ -546,17 +576,18 @@ describe("POST /send", () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -w pi-imessage`
-Expected: FAIL — cannot resolve `../server/server.mjs`.
+Expected: FAIL — cannot resolve `../server.mjs`.
 
 - [ ] **Step 3: Implement `server/server.mjs`**
 
 ```javascript
 // HTTP request handler for imsg-server. No framework. Never logs tokens or
 // Authorization headers; 401 bodies are generic; osascript detail goes to
-// the local log only.
+// the local log only; 502 codes are whitelisted.
 import { composeText, tokenMatches, validatePayload } from "./lib.mjs";
 
 const MAX_BODY_BYTES = 64 * 1024;
+const SANITIZED_CODES = new Set(["AUTOMATION_NOT_AUTHORIZED", "MESSAGES_UNAVAILABLE", "SEND_FAILED"]);
 
 function json(res, status, body) {
   const data = JSON.stringify(body);
@@ -613,7 +644,7 @@ export function createHandler(config, deps) {
       try {
         await deps.send({ recipient: config.recipient, text });
       } catch (err) {
-        const code = err?.code ?? "SEND_FAILED";
+        const code = SANITIZED_CODES.has(err?.code) ? err.code : "SEND_FAILED";
         log(`send failed (${code}): ${err?.localDetail ?? err?.message ?? err}`);
         return json(res, 502, { ok: false, error: code });
       }
@@ -633,7 +664,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/pi-imessage/server/server.mjs packages/pi-imessage/tests/server-http.test.ts
+git add packages/pi-imessage/server/server.mjs packages/pi-imessage/server/tests/server-http.test.ts
 git commit -m "feat(pi-imessage): HTTP handler with auth, /health, /send"
 ```
 
@@ -644,7 +675,7 @@ git commit -m "feat(pi-imessage): HTTP handler with auth, /health, /send"
 **Files:**
 - Modify: `packages/pi-imessage/server/lib.mjs` (add `loadServerConfig`)
 - Create: `packages/pi-imessage/server/imsg-server.mjs`
-- Test: `packages/pi-imessage/tests/server-lib.test.ts` (append)
+- Test: `packages/pi-imessage/server/tests/server-lib.test.ts` (append)
 
 **Interfaces:**
 - Consumes: `validateRecipient` (Task 1), `createHandler` (Task 3), `sendMessage` (Task 2).
@@ -652,12 +683,11 @@ git commit -m "feat(pi-imessage): HTTP handler with auth, /health, /send"
   - `loadServerConfig(path: string) → { token, recipient, port, host }` — throws `Error` with a human-readable message on missing file, invalid JSON, missing/invalid fields, or invalid recipient. Defaults: `port` 8787 if absent. `host` is REQUIRED (no default — the spec forbids implicit wide binds).
   - `server/imsg-server.mjs` — executable entry: `node imsg-server.mjs` starts the HTTP server; `node imsg-server.mjs --smoke-send [text]` sends one message through the exact production code path and exits 0/1. Config path: `$IMSG_SERVER_CONFIG` override or `~/.config/imsg-server/config.json` (override exists for tests/setup.sh).
 
-- [ ] **Step 1: Append failing tests to `tests/server-lib.test.ts`**
+- [ ] **Step 1: Append failing tests to `server/tests/server-lib.test.ts`**
 
 ```typescript
-// Append these imports to the existing import from "../server/lib.mjs":
-//   loadServerConfig
-// And these imports at top of file:
+// Add loadServerConfig to the existing import from "../lib.mjs", and add
+// these imports at top of file:
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -753,8 +783,7 @@ Expected: PASS.
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { loadServerConfig } from "./lib.mjs";
-import { composeText } from "./lib.mjs";
+import { composeText, loadServerConfig } from "./lib.mjs";
 import { sendMessage } from "./send.mjs";
 import { createHandler } from "./server.mjs";
 
@@ -818,7 +847,7 @@ Expected: `{"ok":true}`.
 Run: `npm test -w pi-imessage` — Expected: PASS.
 
 ```bash
-git add packages/pi-imessage/server/lib.mjs packages/pi-imessage/server/imsg-server.mjs packages/pi-imessage/tests/server-lib.test.ts
+git add packages/pi-imessage/server/lib.mjs packages/pi-imessage/server/imsg-server.mjs packages/pi-imessage/server/tests/server-lib.test.ts
 git commit -m "feat(pi-imessage): server config loading and entry point with --smoke-send"
 ```
 
@@ -831,12 +860,12 @@ git commit -m "feat(pi-imessage): server config loading and entry point with --s
 - Create: `packages/pi-imessage/server/com.familyos.imsg-server.plist.template`
 
 **Interfaces:**
-- Consumes: `imsg-server.mjs --smoke-send` (Task 4).
+- Consumes: `imsg-server.mjs --smoke-send` (Task 4), `validateRecipient`/`loadServerConfig` from `server/lib.mjs`.
 - Produces: the deploy/authorization workflow documented in the spec: `configure` → `smoke-send` → `install-agent`. No exports.
 
 - [ ] **Step 1: Create the plist template**
 
-`packages/pi-imessage/server/com.familyos.imsg-server.plist.template` — placeholders `__NODE__`, `__SERVER__`, `__HOME__` are substituted by `setup.sh install-agent`:
+`packages/pi-imessage/server/com.familyos.imsg-server.plist.template` — placeholders `__NODE__`, `__SERVER__`, `__HOME__` are substituted (XML-escaped) by `setup.sh install-agent`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -901,10 +930,14 @@ configure() {
   if [ -z "$host" ]; then
     read -r -p "Tailscale IP of this machine (bind address): " host
   fi
+  if [ -z "$host" ]; then
+    echo "error: bind host must not be empty (never binds 0.0.0.0 implicitly)" >&2
+    exit 1
+  fi
   read -r -p "Recipient (your phone number or Apple ID email): " recipient
   IMSG_TOKEN="$token" IMSG_HOST="$host" IMSG_RECIPIENT="$recipient" node --input-type=module -e '
     const { validateRecipient } = await import(process.argv[1]);
-    const { token, host, recipient } = { token: process.env.IMSG_TOKEN, host: process.env.IMSG_HOST, recipient: process.env.IMSG_RECIPIENT };
+    const { IMSG_TOKEN: token, IMSG_HOST: host, IMSG_RECIPIENT: recipient } = process.env;
     if (!validateRecipient(recipient)) { console.error("recipient is not phone/email-like"); process.exit(1); }
     const fs = await import("node:fs");
     fs.writeFileSync(process.argv[2], JSON.stringify({ token, recipient, host, port: 8787 }, null, 2) + "\n", { mode: 0o600 });
@@ -931,10 +964,15 @@ install_agent() {
   local node_path
   node_path=$(command -v node)
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/imsg-server"
-  sed -e "s|__NODE__|$node_path|" \
-      -e "s|__SERVER__|$SCRIPT_DIR/imsg-server.mjs|" \
-      -e "s|__HOME__|$HOME|" \
-      "$SCRIPT_DIR/$PLIST_LABEL.plist.template" > "$PLIST_DEST"
+  IMSG_NODE="$node_path" IMSG_SERVER="$SCRIPT_DIR/imsg-server.mjs" node --input-type=module -e '
+    import { readFileSync, writeFileSync } from "node:fs";
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    let t = readFileSync(process.argv[1], "utf8");
+    t = t.replace("__NODE__", esc(process.env.IMSG_NODE))
+         .replace("__SERVER__", esc(process.env.IMSG_SERVER))
+         .replaceAll("__HOME__", esc(process.env.HOME));
+    writeFileSync(process.argv[2], t);
+  ' "$SCRIPT_DIR/$PLIST_LABEL.plist.template" "$PLIST_DEST"
   launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
   echo "LaunchAgent loaded. Verifying via HTTP (launchd context)..."
@@ -983,27 +1021,27 @@ git commit -m "feat(pi-imessage): staged setup script and launchd plist template
 ### Task 6: Pro-side extension library
 
 **Files:**
-- Create: `packages/pi-imessage/lib.ts`
-- Test: `packages/pi-imessage/tests/lib.test.ts`
+- Create: `packages/pi-imessage/extension/lib.ts`
+- Test: `packages/pi-imessage/extension/tests/lib.test.ts`
 
 **Interfaces:**
 - Consumes: server HTTP API contract (Task 3): `POST {url}/send` with bearer token, body `{ message, emoji?, context? }`, responses `{ok:true}` / `{ok:false,error}`.
-- Produces (from `lib.ts`):
+- Produces (from `extension/lib.ts`):
   - `loadProConfig(configPath: string) → { url: string, token: string }` — throws with setup hint on any problem.
-  - `defaultConfigPath() → string` — `~/.config/imsg/config.json`.
+  - `defaultConfigPath() → string` — `$IMSG_CONFIG` override, else `~/.config/imsg/config.json`.
   - `computeContext(hostname: string, cwd: string) → string` — `{short hostname lowercase} · {basename(cwd)}`.
-  - `sendNotification(args: { config: {url, token}, message: string, emoji?: string, context: string, fetchFn?: typeof fetch, signal?: AbortSignal }) → Promise<void>` — resolves on success, throws `Error` with actionable message otherwise. 10 s timeout.
+  - `sendNotification(args: { config: {url, token}, message: string, emoji?: string, context: string, fetchFn?: typeof fetch, signal?: AbortSignal }) → Promise<void>` — resolves only on `200 {"ok":true}`, throws `Error` with actionable message otherwise. 10 s timeout via explicit `AbortController` (no `AbortSignal.any()`).
 
 - [ ] **Step 1: Write failing tests**
 
-`packages/pi-imessage/tests/lib.test.ts`:
+`packages/pi-imessage/extension/tests/lib.test.ts`:
 
 ```typescript
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
-import { computeContext, loadProConfig, sendNotification } from "../lib.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { computeContext, defaultConfigPath, loadProConfig, sendNotification } from "../lib.js";
 
 describe("computeContext", () => {
   it("short lowercase hostname · basename(cwd)", () => {
@@ -1011,6 +1049,19 @@ describe("computeContext", () => {
       "macbook-pro · pi-extensions",
     );
     expect(computeContext("familyos-server", "/tmp/x")).toBe("familyos-server · x");
+  });
+});
+
+describe("defaultConfigPath", () => {
+  afterEach(() => {
+    delete process.env.IMSG_CONFIG;
+  });
+  it("defaults to ~/.config/imsg/config.json", () => {
+    expect(defaultConfigPath()).toBe(path.join(os.homedir(), ".config", "imsg", "config.json"));
+  });
+  it("honours $IMSG_CONFIG override", () => {
+    process.env.IMSG_CONFIG = "/tmp/override.json";
+    expect(defaultConfigPath()).toBe("/tmp/override.json");
   });
 });
 
@@ -1036,7 +1087,7 @@ describe("loadProConfig", () => {
 describe("sendNotification", () => {
   const config = { url: "http://air:8787", token: "sekret" };
 
-  it("POSTs payload with bearer token and resolves on ok", async () => {
+  it("POSTs payload with bearer token and resolves on 200 ok:true", async () => {
     const calls: Array<{ input: string; init: RequestInit }> = [];
     const fetchFn = (async (input: string, init: RequestInit) => {
       calls.push({ input, init });
@@ -1061,6 +1112,14 @@ describe("sendNotification", () => {
     }) as typeof fetch;
     await sendNotification({ config, message: "done", context: "c", fetchFn });
     expect(JSON.parse(body)).toEqual({ message: "done", context: "c" });
+  });
+
+  it("throws when a 200 response lacks ok:true", async () => {
+    const fetchFn = (async () =>
+      new Response(JSON.stringify({ ok: false, error: "weird" }), { status: 200 })) as typeof fetch;
+    await expect(
+      sendNotification({ config, message: "m", context: "c", fetchFn }),
+    ).rejects.toThrow(/NOT delivered/i);
   });
 
   it("throws NOT delivered with hint on 401", async () => {
@@ -1095,7 +1154,7 @@ describe("sendNotification", () => {
 Run: `npm test -w pi-imessage`
 Expected: FAIL — cannot resolve `../lib.js`.
 
-- [ ] **Step 3: Implement `lib.ts`**
+- [ ] **Step 3: Implement `extension/lib.ts`**
 
 ```typescript
 // Pro-side logic for the send_imessage tool: config loading, context
@@ -1110,7 +1169,7 @@ export interface ProConfig {
 }
 
 export function defaultConfigPath(): string {
-  return join(homedir(), ".config", "imsg", "config.json");
+  return process.env.IMSG_CONFIG ?? join(homedir(), ".config", "imsg", "config.json");
 }
 
 export function loadProConfig(configPath: string): ProConfig {
@@ -1149,39 +1208,52 @@ export async function sendNotification(args: {
 }): Promise<void> {
   const { config, message, emoji, context } = args;
   const fetchFn = args.fetchFn ?? fetch;
-  const timeout = AbortSignal.timeout(10_000);
-  const signal = args.signal ? AbortSignal.any([args.signal, timeout]) : timeout;
+
+  // Explicit AbortController: 10s timeout + optional upstream signal.
+  // (AbortSignal.any() deliberately avoided — see Global Constraints.)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("timeout after 10s")), 10_000);
+  const onUpstreamAbort = () => controller.abort(args.signal?.reason);
+  if (args.signal?.aborted) controller.abort(args.signal.reason);
+  args.signal?.addEventListener("abort", onUpstreamAbort, { once: true });
 
   const body: Record<string, string> = { message, context };
   if (emoji !== undefined) body.emoji = emoji;
 
-  let res: Response;
   try {
-    res = await fetchFn(`${config.url.replace(/\/$/, "")}/send`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (err) {
-    throw new Error(
-      `iMessage notification NOT delivered: server unreachable at ${config.url} (${err instanceof Error ? err.message : String(err)}). Is the Air online and imsg-server running?`,
-    );
-  }
-  if (res.status === 401) {
-    throw new Error(
-      "iMessage notification NOT delivered: server rejected the token (401). Check that the token in ~/.config/imsg/config.json matches the Air's config.",
-    );
-  }
-  if (!res.ok) {
+    let res: Response;
+    try {
+      res = await fetchFn(`${config.url.replace(/\/$/, "")}/send`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw new Error(
+        `iMessage notification NOT delivered: server unreachable at ${config.url} (${err instanceof Error ? err.message : String(err)}). Is the Air online and imsg-server running?`,
+      );
+    }
+    if (res.status === 401) {
+      throw new Error(
+        "iMessage notification NOT delivered: server rejected the token (401). Check that the token in ~/.config/imsg/config.json matches the Air's config.",
+      );
+    }
+    let responseOk = false;
     let code = `HTTP ${res.status}`;
     try {
-      const parsed = (await res.json()) as { error?: string };
+      const parsed = (await res.json()) as { ok?: boolean; error?: string };
+      responseOk = res.ok && parsed.ok === true;
       if (parsed.error) code = parsed.error;
     } catch {
       // keep HTTP status as the code
     }
-    throw new Error(`iMessage notification NOT delivered: ${code}`);
+    if (!responseOk) {
+      throw new Error(`iMessage notification NOT delivered: ${code}`);
+    }
+  } finally {
+    clearTimeout(timer);
+    args.signal?.removeEventListener("abort", onUpstreamAbort);
   }
 }
 ```
@@ -1194,7 +1266,7 @@ Expected: both PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/pi-imessage/lib.ts packages/pi-imessage/tests/lib.test.ts
+git add packages/pi-imessage/extension/lib.ts packages/pi-imessage/extension/tests/lib.test.ts
 git commit -m "feat(pi-imessage): pro-side config, context, and delivery library"
 ```
 
@@ -1203,15 +1275,80 @@ git commit -m "feat(pi-imessage): pro-side config, context, and delivery library
 ### Task 7: Extension entry, README, dogfood wiring
 
 **Files:**
-- Create: `packages/pi-imessage/index.ts`
+- Create: `packages/pi-imessage/extension/index.ts`
 - Create: `packages/pi-imessage/README.md`
-- Modify: `.pi/settings.json` (add local-path package entry for dogfooding)
+- Test: `packages/pi-imessage/extension/tests/index.test.ts`
 
 **Interfaces:**
-- Consumes: everything from `lib.ts` (Task 6).
-- Produces: the `send_imessage` tool visible to π agents.
+- Consumes: everything from `extension/lib.ts` (Task 6).
+- Produces: the `send_imessage` tool visible to π agents. Default export: `(pi: ExtensionAPI) => void`.
 
-- [ ] **Step 1: Implement `index.ts`**
+- [ ] **Step 1: Write failing tests**
+
+`packages/pi-imessage/extension/tests/index.test.ts`:
+
+```typescript
+import { afterEach, describe, expect, it } from "vitest";
+import registerExtension from "../index.js";
+
+// Minimal structural fake of ExtensionAPI — we only use registerTool.
+interface ToolDef {
+  name: string;
+  description: string;
+  parameters: {
+    required?: string[];
+    properties: Record<string, { maxLength?: number }>;
+  };
+  execute: (
+    toolCallId: string,
+    params: { message: string; emoji?: string },
+    signal: AbortSignal | undefined,
+    onUpdate: undefined,
+    ctx: { cwd: string },
+  ) => Promise<unknown>;
+}
+
+function capture(): ToolDef[] {
+  const tools: ToolDef[] = [];
+  const fakePi = { registerTool: (def: ToolDef) => void tools.push(def) };
+  registerExtension(fakePi as never);
+  return tools;
+}
+
+afterEach(() => {
+  delete process.env.IMSG_CONFIG;
+});
+
+describe("extension registration", () => {
+  it("registers exactly one tool: send_imessage", () => {
+    const tools = capture();
+    expect(tools.map((t) => t.name)).toEqual(["send_imessage"]);
+  });
+
+  it("requires message, emoji optional with maxLength 16", () => {
+    const [tool] = capture();
+    expect(tool.parameters.required).toEqual(["message"]);
+    expect(tool.parameters.properties.emoji.maxLength).toBe(16);
+  });
+
+  it("execute rejects with setup hint when config is missing", async () => {
+    process.env.IMSG_CONFIG = "/nonexistent/imsg-config.json";
+    const [tool] = capture();
+    const err = await tool
+      .execute("id1", { message: "hi" }, undefined, undefined, { cwd: "/tmp/x" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(String((err as Error).message)).toMatch(/config not found|Setup/i);
+  });
+});
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `npm test -w pi-imessage`
+Expected: FAIL — cannot resolve `../index.js`.
+
+- [ ] **Step 3: Implement `extension/index.ts`**
 
 ```typescript
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -1235,6 +1372,7 @@ export default function (pi: ExtensionAPI) {
       }),
       emoji: Type.Optional(
         Type.String({
+          maxLength: 16,
           description:
             "Optional single status emoji prefixed to the message, e.g. ✅ done, ⏸️ input needed, ❌ failed. Omit if no status glyph fits.",
         }),
@@ -1261,12 +1399,12 @@ export default function (pi: ExtensionAPI) {
 
 Note: errors thrown by `loadProConfig`/`sendNotification` propagate out of `execute` — that is π's documented way to mark the tool result as failed (`isError: true`), so the agent sees "NOT delivered" and can tell the user in-session.
 
-- [ ] **Step 2: Typecheck and full test run**
+- [ ] **Step 4: Run tests + typecheck to verify they pass**
 
-Run: `npm run typecheck -w pi-imessage && npm test -w pi-imessage`
+Run: `npm test -w pi-imessage && npm run typecheck -w pi-imessage`
 Expected: both PASS.
 
-- [ ] **Step 3: Write `README.md`**
+- [ ] **Step 5: Write `README.md`**
 
 Content requirements (write actual prose, structured as):
 
@@ -1277,17 +1415,21 @@ Content requirements (write actual prose, structured as):
 5. **Message format** — the emoji/message/context format with one example.
 6. **Out of scope / roadmap** — two-way replies, CLI wrapper (config file is a stable interface), typing indicators (explicitly rejected: private API/SIP).
 
-- [ ] **Step 4: Dogfood wiring**
+- [ ] **Step 6: Dogfood verification (NOT committed)**
 
-Add a local-path entry to `.pi/settings.json` `packages` array (exact key/format: match the existing entries in that file — inspect it first): `"../packages/pi-imessage"` per AGENTS.md's hot-loop development rule.
-
-Verify: `pi -e packages/pi-imessage/index.ts` in a scratch session → tool `send_imessage` appears in the tools list. Calling it without `~/.config/imsg/config.json` must return a tool error containing the setup hint (this validates the error path end-to-end without any server).
-
-- [ ] **Step 5: Commit**
+Per AGENTS.md, local-path entries are for hot-loop development only and must not be committed. Verify without touching `.pi/settings.json` in git:
 
 ```bash
-git add packages/pi-imessage/index.ts packages/pi-imessage/README.md .pi/settings.json
-git commit -m "feat(pi-imessage): register send_imessage tool, README runbook, dogfood wiring"
+pi -e packages/pi-imessage/extension/index.ts
+```
+
+In the scratch session: confirm `send_imessage` appears in the tools list, then ask the agent to call it. Without `~/.config/imsg/config.json` present it must return a tool error containing the setup hint (validates the error path end-to-end without any server). If you add a local-path entry to `.pi/settings.json` for ongoing dogfooding, leave it uncommitted (or commit only after the package is published to a git mirror, switching the entry to the mirror spec).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/pi-imessage/extension/index.ts packages/pi-imessage/extension/tests/index.test.ts packages/pi-imessage/README.md
+git commit -m "feat(pi-imessage): register send_imessage tool, README runbook"
 ```
 
 ---
