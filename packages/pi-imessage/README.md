@@ -69,7 +69,7 @@ NOT delivered, so the agent knows to tell you in-session.
 ### One owning account
 
 TCC Automation grants, LaunchAgents, the Messages iMessage sign-in, and the service
-config are all **per-user** on macOS. One account on the Air — `familyos-admin`, the
+config are all **per-user** on macOS. One account on the Air — `familyosadmin`, the
 permanently logged-in server account — must own the entire setup: the Messages sign-in,
 all `setup.sh` stages, the LaunchAgent, and `~/.config/imsg-server/`. The service runs
 only while that account holds a GUI session (staying logged in behind fast user
@@ -82,11 +82,11 @@ the Messages sign-in and all three setup stages as the new user.
 1. **Create the agent Apple ID** (manual — needs phone-number verification). This is
    the identity your notifications will appear to come from.
 
-2. **Sign Messages into the agent Apple ID** on the Air, as `familyos-admin`:
+2. **Sign Messages into the agent Apple ID** on the Air, as `familyosadmin`:
    Messages → Settings → iMessage → sign in. This sign-in is independent of the
    machine's iCloud account — the Air's iCloud stays on your own account.
 
-3. **Deploy the server** to the Air as `familyos-admin` (git clone this repo, or copy
+3. **Deploy the server** to the Air as `familyosadmin` (git clone this repo, or copy
    just the server directory):
 
    ```bash
@@ -127,7 +127,7 @@ the Messages sign-in and all three setup stages as the new user.
 | Error code (HTTP 502 / tool error) | Meaning | Fix |
 |---|---|---|
 | `AUTOMATION_NOT_AUTHORIZED` | The server process is not allowed to control Messages (TCC `-1743`) | Redo `./setup.sh smoke-send` in the GUI session and approve the prompt; check System Settings → Privacy & Security → Automation |
-| `MESSAGES_UNAVAILABLE` | Messages has no iMessage account signed in, or isn't available | Sign Messages into the agent Apple ID (Messages → Settings → iMessage) as `familyos-admin` |
+| `MESSAGES_UNAVAILABLE` | Messages has no iMessage account signed in, or isn't available | Sign Messages into the agent Apple ID (Messages → Settings → iMessage) as `familyosadmin` |
 | `SEND_FAILED` | Generic osascript/send failure | Check `~/Library/Logs/imsg-server/err.log` on the Air |
 
 Additional notes:

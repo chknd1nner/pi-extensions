@@ -126,7 +126,7 @@ build step.
 ### Single owning account (Air)
 
 TCC Automation grants, LaunchAgents, the Messages iMessage sign-in, and the service
-config are all **per-user**. One account on the Air — `familyos-admin`, the permanently
+config are all **per-user**. One account on the Air — `familyosadmin`, the permanently
 logged-in server account — owns the entire setup: Messages sign-in, all `setup.sh`
 stages, the LaunchAgent, and `~/.config/imsg-server/`. The service runs only while
 that account holds a GUI session (background via fast user switching is fine; full

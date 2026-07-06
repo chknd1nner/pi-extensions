@@ -1418,7 +1418,7 @@ Content requirements (write actual prose, structured as):
 
 1. **What it is** — one paragraph; the architecture diagram from the spec.
 2. **Install (Pro side)** — π package spec for `.pi/settings.json` or global settings; creating `~/.config/imsg/config.json` (`{"url":"http://<air-tailscale-name-or-ip>:8787","token":"..."}`; `chmod 600`).
-3. **Air setup runbook** — copied faithfully from the spec's "Single owning account" and "Manual setup steps" sections: one owning account (`familyos-admin`); create agent Apple ID; sign Messages into it (Messages → Settings → iMessage — independent of machine iCloud); deploy `server/` to the Air (git clone or scp); `./setup.sh configure` → `./setup.sh smoke-send` (approve Automation prompt, verify in System Settings → Privacy & Security → Automation) → `./setup.sh install-agent`; add agent Apple ID to Contacts.
+3. **Air setup runbook** — copied faithfully from the spec's "Single owning account" and "Manual setup steps" sections: one owning account (`familyosadmin`); create agent Apple ID; sign Messages into it (Messages → Settings → iMessage — independent of machine iCloud); deploy `server/` to the Air (git clone or scp); `./setup.sh configure` → `./setup.sh smoke-send` (approve Automation prompt, verify in System Settings → Privacy & Security → Automation) → `./setup.sh install-agent`; add agent Apple ID to Contacts.
 4. **Troubleshooting** — `tccutil reset AppleEvents`; error-code table (`AUTOMATION_NOT_AUTHORIZED` → redo smoke-send; `MESSAGES_UNAVAILABLE` → Messages not signed in / not running; `SEND_FAILED` → check `~/Library/Logs/imsg-server/err.log`); note that logs never contain tokens; grants survive reboot but may reset on macOS major upgrades or Node binary changes.
 5. **Message format** — the emoji/message/context format with one example.
 6. **Out of scope / roadmap** — two-way replies, CLI wrapper (config file is a stable interface), typing indicators (explicitly rejected: private API/SIP).
@@ -1450,8 +1450,8 @@ This task is a checklist executed with the user present — it cannot be fully d
 
 - [ ] **Step 1: Pre-flight (Pro).** `npm test -w pi-imessage && npm run typecheck -w pi-imessage` — all green.
 - [ ] **Step 2 (user): Create agent Apple ID.** Verify with phone number.
-- [ ] **Step 3 (user, on Air as `familyos-admin`):** Messages → Settings → iMessage → sign in with agent Apple ID.
-- [ ] **Step 4: Deploy `server/` to the Air** (as `familyos-admin`): `scp -r packages/pi-imessage/server familyos-server:~/imsg-server` (or git clone). Requires Node ≥ 18 on the Air (`node --version`).
+- [ ] **Step 3 (user, on Air as `familyosadmin`):** Messages → Settings → iMessage → sign in with agent Apple ID.
+- [ ] **Step 4: Deploy `server/` to the Air** (as `familyosadmin`): `scp -r packages/pi-imessage/server familyos-server:~/imsg-server` (or git clone). Requires Node ≥ 18 on the Air (`node --version`).
 - [ ] **Step 5 (user, on Air GUI session):** `./setup.sh configure` — note the printed token.
 - [ ] **Step 6 (user, on Air GUI session):** `./setup.sh smoke-send` — approve the Automation prompt; confirm test iMessage arrives on the user's phone from the agent identity; verify the grant in System Settings → Privacy & Security → Automation.
 - [ ] **Step 7 (user, on Air):** `./setup.sh install-agent` — confirm "HTTP smoke test OK" and a second iMessage arrives (proves the launchd context is authorized).
