@@ -2,6 +2,7 @@
 // recipient validation, constant-time token comparison.
 // Dependency-free: node builtins only (runs on the Air without npm install).
 import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 export const LIMITS = { message: 4000, emoji: 16, context: 200 };
 
@@ -53,4 +54,34 @@ export function tokenMatches(authorizationHeader, token) {
   const expected = Buffer.from(token);
   if (presented.length !== expected.length) return false;
   return timingSafeEqual(presented, expected);
+}
+
+export function loadServerConfig(configPath) {
+  let raw;
+  try {
+    raw = readFileSync(configPath, "utf8");
+  } catch {
+    throw new Error(`config not found at ${configPath} — run setup.sh configure`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`invalid JSON in ${configPath}`);
+  }
+  const { token, recipient, host } = parsed;
+  if (typeof token !== "string" || token.length === 0) {
+    throw new Error(`config missing "token" (${configPath})`);
+  }
+  if (typeof recipient !== "string" || !validateRecipient(recipient)) {
+    throw new Error(`config "recipient" missing or not phone/email-like (${configPath})`);
+  }
+  if (typeof host !== "string" || host.length === 0) {
+    throw new Error(`config missing "host" — bind address is required, never defaults to 0.0.0.0 (${configPath})`);
+  }
+  const port = parsed.port ?? 8787;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`config "port" must be an integer 1-65535 (${configPath})`);
+  }
+  return { token, recipient, host, port };
 }

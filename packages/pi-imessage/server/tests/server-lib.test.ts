@@ -1,5 +1,8 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { composeText, tokenMatches, validatePayload, validateRecipient } from "../lib.mjs";
+import { composeText, loadServerConfig, tokenMatches, validatePayload, validateRecipient } from "../lib.mjs";
 
 describe("validatePayload", () => {
   it("accepts a minimal valid payload", () => {
@@ -78,5 +81,35 @@ describe("tokenMatches", () => {
   });
   it("rejects length-mismatched tokens without throwing", () => {
     expect(tokenMatches("Bearer s", "sekret")).toBe(false);
+  });
+});
+
+describe("loadServerConfig", () => {
+  function writeConfig(value: unknown): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "imsg-"));
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(p, typeof value === "string" ? value : JSON.stringify(value));
+    return p;
+  }
+
+  it("loads a valid config and defaults port to 8787", () => {
+    const p = writeConfig({ token: "t".repeat(64), recipient: "a@b.co", host: "100.99.196.91" });
+    expect(loadServerConfig(p)).toEqual({
+      token: "t".repeat(64),
+      recipient: "a@b.co",
+      host: "100.99.196.91",
+      port: 8787,
+    });
+  });
+  it("throws readable errors for missing file, bad JSON, missing fields", () => {
+    expect(() => loadServerConfig("/nonexistent/config.json")).toThrow(/not found|no such/i);
+    expect(() => loadServerConfig(writeConfig("{oops"))).toThrow(/invalid JSON/i);
+    expect(() => loadServerConfig(writeConfig({ recipient: "a@b.co", host: "h" }))).toThrow(/token/i);
+    expect(() => loadServerConfig(writeConfig({ token: "t", host: "h" }))).toThrow(/recipient/i);
+    expect(() => loadServerConfig(writeConfig({ token: "t", recipient: "a@b.co" }))).toThrow(/host/i);
+  });
+  it("rejects invalid recipient at load time", () => {
+    const p = writeConfig({ token: "t", recipient: "tell app", host: "h" });
+    expect(() => loadServerConfig(p)).toThrow(/recipient/i);
   });
 });
