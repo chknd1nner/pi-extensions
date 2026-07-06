@@ -123,6 +123,16 @@ build step.
      also authorized.
   Running bare `setup.sh` prints these steps rather than doing anything implicitly.
 
+### Single owning account (Air)
+
+TCC Automation grants, LaunchAgents, the Messages iMessage sign-in, and the service
+config are all **per-user**. One account on the Air — `familyos-admin`, the permanently
+logged-in server account — owns the entire setup: Messages sign-in, all `setup.sh`
+stages, the LaunchAgent, and `~/.config/imsg-server/`. The service runs only while
+that account holds a GUI session (background via fast user switching is fine; full
+logout stops it). Changing the owning account means redoing Messages sign-in and all
+three setup stages as the new user.
+
 ### Manual setup steps (documented in README, cannot be scripted)
 
 1. Create the agent Apple ID (needs phone-number verification).
