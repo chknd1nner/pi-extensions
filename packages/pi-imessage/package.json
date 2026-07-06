@@ -1,0 +1,25 @@
+{
+  "name": "pi-imessage",
+  "version": "0.1.0",
+  "description": "Pi extension exposing a send_imessage tool that notifies the user via a self-hosted iMessage relay on an always-on Mac.",
+  "keywords": ["pi-package", "pi-extension", "imessage", "notifications"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chknd1nner/pi-extensions.git",
+    "directory": "packages/pi-imessage"
+  },
+  "type": "module",
+  "files": ["extension", "server", "README.md"],
+  "pi": {
+    "extensions": ["./extension/index.ts"]
+  },
+  "scripts": {
+    "test": "vitest run --cache=false",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
