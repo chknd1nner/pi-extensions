@@ -73,9 +73,16 @@ config are all **per-user** on macOS. One account on the Air — `familyosadmin`
 permanently logged-in server account — must own the entire setup: the Messages sign-in,
 all `setup.sh` stages, the LaunchAgent, and `~/.config/imsg-server/`. The service runs
 only while that account holds a GUI session (staying logged in behind fast user
-switching is fine; a full logout stops it). The Air should auto-login to this account
-and be kept awake (e.g. with Amphetamine). Changing the owning account means redoing
-the Messages sign-in and all three setup stages as the new user.
+switching is fine; a full logout stops it). The Air should ideally auto-login to this
+account and be kept awake (e.g. with Amphetamine). Changing the owning account means
+redoing the Messages sign-in and all three setup stages as the new user.
+
+**FileVault caveat:** macOS disables auto-login while FileVault is on. If you keep
+FileVault enabled (as this deployment does), the service is down after any reboot or
+power loss until someone logs in as the owning account — everything resumes
+automatically at login (launchd `RunAtLoad` + persisted TCC grant; both verified).
+Pro-side sends during the gap fail fast with a "server unreachable" error, so agents
+report the outage in-session rather than silently dropping notifications.
 
 ### Steps
 
