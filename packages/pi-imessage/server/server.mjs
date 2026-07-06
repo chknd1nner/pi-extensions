@@ -12,20 +12,35 @@ function json(res, status, body) {
   res.end(data);
 }
 
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("body too large");
+    this.name = "BodyTooLargeError";
+  }
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
-    const chunks = [];
+    let tooLarge = false;
+    let chunks = [];
     req.on("data", (chunk) => {
+      if (tooLarge) return; // keep draining, discard the rest
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("body too large"));
-        req.destroy();
+        tooLarge = true;
+        chunks = [];
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => {
+      if (tooLarge) {
+        reject(new BodyTooLargeError());
+      } else {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
+    });
     req.on("error", reject);
   });
 }
@@ -51,7 +66,10 @@ export function createHandler(config, deps) {
       let body;
       try {
         body = JSON.parse(await readBody(req));
-      } catch {
+      } catch (err) {
+        if (err instanceof BodyTooLargeError) {
+          return json(res, 400, { ok: false, error: "body too large" });
+        }
         return json(res, 400, { ok: false, error: "invalid JSON body" });
       }
       const result = validatePayload(body);

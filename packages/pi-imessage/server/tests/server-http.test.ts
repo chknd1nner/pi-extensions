@@ -88,6 +88,36 @@ describe("POST /send", () => {
     expect(tooLong.status).toBe(400);
   });
 
+  it("400 JSON (not a socket error) on oversized body; send not called", async () => {
+    let sendCalls = 0;
+    const base = await start(async () => {
+      sendCalls += 1;
+    });
+    const res = await fetch(`${base}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer sekret", "content-type": "application/json" },
+      body: JSON.stringify({ message: "x".repeat(70 * 1024) }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ ok: false, error: "body too large" });
+    expect(sendCalls).toBe(0);
+  });
+
+  it("401 generic body on wrong token even with a huge body (auth before body read)", async () => {
+    let sendCalls = 0;
+    const base = await start(async () => {
+      sendCalls += 1;
+    });
+    const res = await fetch(`${base}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer wrong-token", "content-type": "application/json" },
+      body: JSON.stringify({ message: "x".repeat(70 * 1024) }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
+    expect(sendCalls).toBe(0);
+  });
+
   it("502 with sanitized code on send failure; stderr only in local log", async () => {
     const base = await start(async () => {
       throw new FakeSendError("boom");
