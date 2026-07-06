@@ -1,0 +1,31 @@
+{
+  "name": "edit-field-guard",
+  "version": "0.1.0",
+  "description": "Pi extension: overrides the built-in edit tool to repair malformed arguments (stray newText2, typo'd keys, numbered pairs) instead of failing schema validation, and warns the agent.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "edit",
+    "tool",
+    "guard"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "*.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
