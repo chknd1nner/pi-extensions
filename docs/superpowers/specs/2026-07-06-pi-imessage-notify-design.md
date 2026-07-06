@@ -49,7 +49,7 @@ packages/pi-imessage/
     tests/
   server/
     imsg-server.mjs       # plain Node, no framework, no build step
-    setup.sh              # generates token, writes config, installs launchd plist
+    setup.sh              # staged: configure / smoke-send / install-agent
     com.user.imsg-server.plist  # template
     tests/
 ```
@@ -131,7 +131,7 @@ build step.
    guaranteed to work):** headless processes may get TCC error `-1743` without any
    prompt ever appearing, and granted consent attaches to the *responsible process*
    (Terminal, node, osascript — whichever initiated it). So: run
-   `setup.sh --smoke-send` from Terminal **in the logged-in GUI session** before
+   `setup.sh smoke-send` from Terminal **in the logged-in GUI session** before
    loading the LaunchAgent, approve the Automation prompt, then verify System
    Settings → Privacy & Security → Automation shows the controller allowed for
    Messages. Troubleshooting doc includes `tccutil reset AppleEvents` to clear a
