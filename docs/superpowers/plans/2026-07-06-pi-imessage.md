@@ -393,7 +393,7 @@ export class SendError extends Error {
 
 function classify(stderr) {
   if (/-1743|not authori[sz]ed/i.test(stderr)) return "AUTOMATION_NOT_AUTHORIZED";
-  if (/service type|iMessage|-1728|isn.t running|application .Messages./i.test(stderr)) {
+  if (/service type|-1728|isn.t running|application .Messages./i.test(stderr)) {
     return "MESSAGES_UNAVAILABLE";
   }
   return "SEND_FAILED";
@@ -1030,7 +1030,7 @@ git commit -m "feat(pi-imessage): staged setup script and launchd plist template
   - `loadProConfig(configPath: string) → { url: string, token: string }` — throws with setup hint on any problem.
   - `defaultConfigPath() → string` — `$IMSG_CONFIG` override, else `~/.config/imsg/config.json`.
   - `computeContext(hostname: string, cwd: string) → string` — `{short hostname lowercase} · {basename(cwd)}`.
-  - `sendNotification(args: { config: {url, token}, message: string, emoji?: string, context: string, fetchFn?: typeof fetch, signal?: AbortSignal }) → Promise<void>` — resolves only on `200 {"ok":true}`, throws `Error` with actionable message otherwise. 10 s timeout via explicit `AbortController` (no `AbortSignal.any()`).
+  - `sendNotification(args: { config: {url, token}, message: string, emoji?: string, context: string, fetchFn?: typeof fetch, signal?: AbortSignal }) → Promise<void>` — resolves only on exactly `200 {"ok":true}` (a 201 or other 2xx is treated as failure), throws `Error` with actionable message otherwise. 10 s timeout via explicit `AbortController` (no `AbortSignal.any()`).
 
 - [ ] **Step 1: Write failing tests**
 
@@ -1117,6 +1117,14 @@ describe("sendNotification", () => {
   it("throws when a 200 response lacks ok:true", async () => {
     const fetchFn = (async () =>
       new Response(JSON.stringify({ ok: false, error: "weird" }), { status: 200 })) as typeof fetch;
+    await expect(
+      sendNotification({ config, message: "m", context: "c", fetchFn }),
+    ).rejects.toThrow(/NOT delivered/i);
+  });
+
+  it("throws on non-200 2xx even with ok:true (contract is 200 exactly)", async () => {
+    const fetchFn = (async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 201 })) as typeof fetch;
     await expect(
       sendNotification({ config, message: "m", context: "c", fetchFn }),
     ).rejects.toThrow(/NOT delivered/i);
@@ -1243,7 +1251,7 @@ export async function sendNotification(args: {
     let code = `HTTP ${res.status}`;
     try {
       const parsed = (await res.json()) as { ok?: boolean; error?: string };
-      responseOk = res.ok && parsed.ok === true;
+      responseOk = res.status === 200 && parsed.ok === true;
       if (parsed.error) code = parsed.error;
     } catch {
       // keep HTTP status as the code
