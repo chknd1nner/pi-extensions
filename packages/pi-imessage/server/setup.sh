@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$HOME/.config/imsg-server"
 CONFIG="$CONFIG_DIR/config.json"
+SMOKE_SENTINEL="$CONFIG_DIR/.smoke-send-ok"
 PLIST_LABEL="com.familyos.imsg-server"
 PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
@@ -45,6 +46,7 @@ configure() {
     fs.writeFileSync(process.argv[2], JSON.stringify({ token, recipient, host, port: 8787 }, null, 2) + "\n", { mode: 0o600 });
   ' "$SCRIPT_DIR/lib.mjs" "$CONFIG"
   chmod 600 "$CONFIG"
+  rm -f "$SMOKE_SENTINEL"
   echo "Config written to $CONFIG"
   echo
   echo "Token (paste into ~/.config/imsg/config.json on the Pro):"
@@ -57,12 +59,31 @@ smoke_send() {
   echo "Sending test message via the production code path..."
   echo "If a macOS prompt appears (Terminal wants to control Messages), APPROVE it."
   node "$SCRIPT_DIR/imsg-server.mjs" --smoke-send "setup smoke test"
+  touch "$SMOKE_SENTINEL"
+  chmod 600 "$SMOKE_SENTINEL"
   echo
   echo "Verify System Settings > Privacy & Security > Automation shows the grant."
   echo "Next: ./setup.sh install-agent"
 }
 
 install_agent() {
+  # Preflight 1: config must load cleanly BEFORE anything touches launchd,
+  # so a broken KeepAlive agent is never bootstrapped.
+  node --input-type=module -e '
+    const { loadServerConfig } = await import(process.argv[1]);
+    try { loadServerConfig(process.argv[2]); } catch (err) {
+      console.error(String(err.message ?? err));
+      process.exit(1);
+    }
+  ' "$SCRIPT_DIR/lib.mjs" "$CONFIG"
+  # Preflight 2: a successful interactive smoke-send must have happened for
+  # the CURRENT config (sentinel exists and is newer than the config file).
+  # This enforces the spec's staged-authorization ordering: launchd never
+  # loads before Automation authorization has succeeded.
+  if [ ! -f "$SMOKE_SENTINEL" ] || [ ! "$SMOKE_SENTINEL" -nt "$CONFIG" ]; then
+    echo "error: run ./setup.sh smoke-send successfully before install-agent" >&2
+    exit 1
+  fi
   local node_path
   node_path=$(command -v node)
   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/imsg-server"
