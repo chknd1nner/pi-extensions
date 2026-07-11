@@ -1,0 +1,19 @@
+{
+  "name": "pi-skills",
+  "version": "0.1.0",
+  "private": false,
+  "description": "A collection of standalone π skills distributed as a single package. Currently ships reviewing-large-documents.",
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chknd1nner/pi-skills.git"
+  },
+  "license": "MIT",
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
