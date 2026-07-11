@@ -47,7 +47,7 @@ Sub-extension directories do **not** have their own `package.json` or `tsconfig.
 
 ### Releasing a bundle
 
-Bundles publish to dedicated mirror repos (e.g. `chknd1nner/pi-delegate-driven-development`) via `scripts/release-bundle.sh`. The release workflow is documented in `skills/releasing-a-bundle/SKILL.md` — read that skill before publishing.
+Bundles publish to dedicated mirror repos (e.g. `chknd1nner/pi-delegate-driven-development`) via `scripts/release-bundle.sh`. The release workflow is documented in `docs/agents/releasing-a-bundle.md` — read that reference doc before publishing.
 
 The monorepo retains tags of the form `<bundle>-v<version>` (e.g. `pi-delegate-driven-development-v0.1.0`) for traceability. The mirror repo carries the plain `v<version>` tags consumers install against.
 
