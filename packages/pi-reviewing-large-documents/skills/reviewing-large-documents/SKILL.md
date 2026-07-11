@@ -49,27 +49,31 @@ phase is the signal to dispatch a worker instead.
 5. **Project lens** — check the document's surface area against the project's
    AGENTS.md task-specific references; list the relevant project doc paths for
    worker briefs. This skill ships no domain knowledge — the project supplies it.
-6. **Dispatch round 1** — one worker per batch plus the lens's specialist worker
+6. **Confirm the review model** — before dispatching anything, settle which
+   provider/model the review workers run on. If the user did not specify it, the
+   project documentation gives no guidance, or the choice is ambiguous, do not
+   choose for the user: stop and ask for a specific provider/model, then proceed.
+7. **Dispatch round 1** — one worker per batch plus the lens's specialist worker
    (coverage-matrix for plans, internal-consistency for specs), briefed from the
    lens's templates. Extract each batch to a file (`mdedit extract --to-file`) and
    pass the path in the brief. High-risk batches may get a second independent
    reviewer.
-7. **Cross-check** — join the contract ledgers across all reports:
+8. **Cross-check** — join the contract ledgers across all reports:
    - Match every **consumes** claim against a **produces** claim. Exact-signature
      mismatch = confirmed finding, no extraction needed. Consumed-but-never-produced
      = likely blocker.
    - Validate **ordering claims** against the document's declared dependency order.
    - Read **foreign pulls** as a discovered dependency map; compare it with the
      declared one.
-8. **Follow-up rounds (max 2)** — for each unresolved mismatch or suspected
+9. **Follow-up rounds (max 2)** — for each unresolved mismatch or suspected
    cross-batch risk, dispatch a small probe worker with a tight brief: which
    sections to extract, what to compare, which read-only commands to run. After two
    rounds, unresolved risks go into the review as explicit open questions, each
    with a recommended probe.
-9. **Verify personally** — before publishing, extract and read: every blocker's
-   cited section, every claimed ledger mismatch, and any finding that rests on
-   ambiguous interpretation. Workers propose; you confirm.
-10. **Write** — severity-tiered review (Blockers / High / Medium / Low / things
+10. **Verify personally** — before publishing, extract and read: every blocker's
+    cited section, every claimed ledger mismatch, and any finding that rests on
+    ambiguous interpretation. Workers propose; you confirm.
+11. **Write** — severity-tiered review (Blockers / High / Medium / Low / things
     done right / recommended edits), findings quoted with section + line refs and
     worker evidence, plus a **review-coverage appendix**: which batches went to
     which workers, what was probed, and what was not. Save per project convention
@@ -88,6 +92,9 @@ phase is the signal to dispatch a worker instead.
 - **Report contract is mandatory:** a worker report missing the ledger or the
   verification log gets sent back, not interpreted charitably.
 - **Bounded waves:** one round-1 sweep plus at most two follow-up rounds.
+- **No implicit model choice:** never pick the review workers' provider/model on
+  the user's behalf. If it is unspecified, unsupported by project docs, or
+  ambiguous, stop and ask before dispatching.
 
 ## Red flags — stop and correct course
 
