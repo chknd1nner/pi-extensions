@@ -117,17 +117,31 @@ export function replaceValueAtPath(
       return { value: next, changed: true };
     }
 
-    if (!isPlainObject(value) || !Object.prototype.hasOwnProperty.call(value, segment)) {
+    if (!isPlainObject(value)) {
       return { value, changed: false };
     }
 
-    const child = replaceAt(value[segment], pathIndex + 1);
+    const descriptor = Object.getOwnPropertyDescriptor(value, segment);
+    if (!descriptor || !("value" in descriptor)) {
+      return { value, changed: false };
+    }
+
+    const child = replaceAt(descriptor.value, pathIndex + 1);
     if (!child.changed) {
       return { value, changed: false };
     }
 
-    const next = Object.assign(Object.create(Object.getPrototypeOf(value)), value) as Record<string, unknown>;
-    next[segment] = child.value;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    Object.defineProperty(descriptors, segment, {
+      value: { ...descriptor, value: child.value },
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
+    const next = Object.defineProperties(
+      Object.create(Object.getPrototypeOf(value)),
+      descriptors,
+    ) as Record<string, unknown>;
     return { value: next, changed: true };
   }
 

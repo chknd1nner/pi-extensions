@@ -389,8 +389,8 @@ Some automatically triggered Pi turns can start with the replaced system prompt 
 `replace-prompt` protects these continuations in three phases:
 
 1. `before_agent_start` applies configured rules once and remembers the exact source and result.
-2. The next provider request is scanned once to find the unique exact location containing the result.
-3. Later requests inspect only that learned location. An exact source value is replaced with the exact remembered result.
+2. While no path is known, every context-matching provider request is scanned for exact locations containing the result. The first request with exactly one match teaches the extension that path.
+3. Only after a path is learned do later requests inspect just that location. An exact source value there is replaced with the exact remembered result.
 
 Rules are never re-run at the provider boundary, so non-idempotent rules such as `foo → foobar` cannot become `foo → foobarbar`.
 
@@ -398,9 +398,9 @@ Rules are never re-run at the provider boundary, so non-idempotent rules such as
 
 The extension learns paths such as `system[1].text`, `instructions`, or `messages[0].content` from the outgoing payload. These examples are not hard-coded mappings.
 
-Path discovery succeeds only when the exact replaced prompt appears once. Zero matches or multiple matches are ambiguous and leave the payload unchanged. After discovery, the extension reads only the learned path, so an exact copy of the base prompt in a user message or tool result elsewhere in the payload is not rewritten.
+Path discovery succeeds only when the exact replaced prompt appears once. Zero matches mean the prompt path is missing or was not found; multiple matches are ambiguous. Both outcomes leave the payload unchanged and the path unknown, so a later context-matching request can still be scanned. After discovery, the extension reads only the learned path, so an exact copy of the base prompt in a user message or tool result elsewhere in the payload is not rewritten.
 
-A missing path or a value other than the exact source/result also leaves the payload unchanged.
+A missing learned path or a value other than the exact source/result also leaves the payload unchanged.
 
 ### Conditional context isolation
 

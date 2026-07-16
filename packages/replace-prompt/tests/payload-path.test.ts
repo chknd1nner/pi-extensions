@@ -73,6 +73,41 @@ describe("provider payload paths", () => {
     expect(payload.system[0].text).toBe("BP");
   });
 
+  it("preserves an unrelated own __proto__ property when cloning a JSON object", () => {
+    const payload = JSON.parse(
+      '{"system":"BP","__proto__":{"marker":"preserved"}}',
+    ) as Record<string, unknown>;
+    const originalProtoValue = payload.__proto__;
+
+    const outcome = replaceValueAtPath(payload, ["system"], "BP", "RP");
+    const replacement = outcome.value as Record<string, unknown>;
+
+    expect(outcome.changed).toBe(true);
+    expect(Object.getPrototypeOf(replacement)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(replacement, "__proto__")).toBe(true);
+    expect(replacement.__proto__).toBe(originalProtoValue);
+    expect(replacement.system).toBe("RP");
+    expect(payload.system).toBe("BP");
+    expect(payload.__proto__).toBe(originalProtoValue);
+  });
+
+  it("replaces a learned own __proto__ path without mutating the JSON payload", () => {
+    const payload = JSON.parse(
+      '{"__proto__":"BP","other":"unchanged"}',
+    ) as Record<string, unknown>;
+
+    const outcome = replaceValueAtPath(payload, ["__proto__"], "BP", "RP");
+    const replacement = outcome.value as Record<string, unknown>;
+
+    expect(outcome.changed).toBe(true);
+    expect(Object.getPrototypeOf(replacement)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(replacement, "__proto__")).toBe(true);
+    expect(replacement.__proto__).toBe("RP");
+    expect(replacement.other).toBe("unchanged");
+    expect(payload.__proto__).toBe("BP");
+    expect(payload.other).toBe("unchanged");
+  });
+
   it("fails open when the path or expected value is stale", () => {
     const payload = { system: [{ text: "something else" }] };
 
