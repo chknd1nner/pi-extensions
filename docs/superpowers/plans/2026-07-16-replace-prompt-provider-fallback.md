@@ -1443,6 +1443,15 @@ Fallback restoration assumes `replace-prompt` is the only extension mutating the
 
 Ordinary replacement still participates in Pi's normal extension chaining. This limitation applies specifically to the provider-boundary repair of automatic post-tool turns.
 
+### Dynamic tool loading
+
+Pi's dynamic tool loading lets an extension activate additional tools mid-run with `pi.setActiveTools()`. This interacts with restoration only when a newly activated tool contributes `promptSnippet` or `promptGuidelines`, because that metadata rebuilds the system prompt after a transformation has already been recorded.
+
+- Activating a tool whose definition changes only the payload tool block (no `promptSnippet` or `promptGuidelines`) does not affect the learned system-prompt path, and restoration continues normally.
+- Activating a tool that contributes `promptSnippet` or `promptGuidelines` rebuilds the system prompt. The recorded source and result then no longer match the rebuilt prompt, so the next provider request fails open with a single `provider prompt path was stale` log. Restoration resumes only after the next normal `before_agent_start` re-applies the rules to the new prompt.
+
+Tools that are active from session start are unaffected: their prompt metadata is part of the initial prefix and never triggers a mid-run rebuild.
+
 ### Cache expectations
 
 Sending the same exact replaced prompt preserves a necessary cache-prefix invariant. Actual cache reads, accounting, and quota behavior still depend on the provider, model, request shape, and provider-side cache support.
