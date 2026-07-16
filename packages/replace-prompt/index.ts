@@ -31,14 +31,24 @@ export default function replacePrompt(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    restorer.clear();
+    providerLogPath = null;
+
     const cwd = ctx.cwd;
     const installedDirs = getScopeDirs(cwd);
+    let scopeLoadFailed = false;
 
     const globalConfig = installedDirs.globalDir
-      ? await loadScopeConfig("global", installedDirs.globalDir).catch(() => null)
+      ? await loadScopeConfig("global", installedDirs.globalDir).catch(() => {
+          scopeLoadFailed = true;
+          return null;
+        })
       : null;
     const projectConfig = installedDirs.projectDir
-      ? await loadScopeConfig("project", installedDirs.projectDir).catch(() => null)
+      ? await loadScopeConfig("project", installedDirs.projectDir).catch(() => {
+          scopeLoadFailed = true;
+          return null;
+        })
       : null;
     const merged = mergeScopeConfigs(globalConfig, projectConfig, installedDirs);
 
@@ -74,17 +84,17 @@ export default function replacePrompt(pi: ExtensionAPI) {
     }
 
     if (!result.changed) {
-      restorer.clear();
-      providerLogPath = null;
       return undefined;
     }
 
-    restorer.begin({
-      source: basePrompt,
-      result: result.systemPrompt,
-      context: createTransformationContext(cwd, ctx.model, process.env),
-    });
-    providerLogPath = logPath;
+    if (!scopeLoadFailed) {
+      restorer.begin({
+        source: basePrompt,
+        result: result.systemPrompt,
+        context: createTransformationContext(cwd, ctx.model, process.env),
+      });
+      providerLogPath = logPath;
+    }
 
     return { systemPrompt: result.systemPrompt };
   });

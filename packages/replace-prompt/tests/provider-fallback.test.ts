@@ -229,6 +229,61 @@ describe("provider fallback integration", () => {
     ).toBeUndefined();
   });
 
+  it("returns a valid scope replacement but disables restoration when another scope fails", async () => {
+    const { projectRoot } = configuredProject(`export default { rules: [
+      { id: "replace-opening", type: "literal", target: "Hello", replacement: "Hi" }
+    ] };`);
+    const globalConfigDir = path.join(process.env.HOME!, ".pi/agent/replace-prompt");
+    fs.mkdirSync(globalConfigDir, { recursive: true });
+    fs.writeFileSync(path.join(globalConfigDir, "rules.ts"), "export default {");
+    const handlers = registerHandlers();
+    const ctx = context(projectRoot);
+
+    expect(await transform(handlers.before_agent_start, "Hello", projectRoot, ctx)).toEqual({
+      systemPrompt: "Hi",
+    });
+    expect(
+      await handlers.before_provider_request(
+        { type: "before_provider_request", payload: { system: "Hi" } },
+        ctx,
+      ),
+    ).toBeUndefined();
+    expect(
+      await handlers.before_provider_request(
+        { type: "before_provider_request", payload: { system: "Hello" } },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("clears learned state before a later agent start throws while logging", async () => {
+    const { projectRoot, configDir } = configuredProject(`export default { rules: [
+      { id: "replace-opening", type: "literal", target: "Hello", replacement: "Hi" }
+    ] };`);
+    const handlers = registerHandlers();
+    const ctx = context(projectRoot);
+
+    await transform(handlers.before_agent_start, "Hello", projectRoot, ctx);
+    await handlers.before_provider_request(
+      { type: "before_provider_request", payload: { system: "Hi" } },
+      ctx,
+    );
+
+    fs.writeFileSync(path.join(configDir, "rules.ts"), `export default {
+      logging: { file: true },
+      rules: [{ id: "replace-opening", type: "literal", target: "Hello", replacement: "Hi" }]
+    };`);
+    fs.mkdirSync(path.join(configDir, "replace-prompt.log"));
+
+    await expect(transform(handlers.before_agent_start, "Hello", projectRoot, ctx)).rejects.toThrow();
+    expect(
+      await handlers.before_provider_request(
+        { type: "before_provider_request", payload: { system: "Hello" } },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
   it("does not reuse a conditional result across model, cwd, or environment changes", async () => {
     process.env.REPLACE_PROMPT_TEST_CONTEXT = "enabled";
     const { projectRoot } = configuredProject(`export default { rules: [
