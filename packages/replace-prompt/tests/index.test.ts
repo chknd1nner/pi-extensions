@@ -50,10 +50,16 @@ describe("replace-prompt extension", () => {
       },
     } as any);
 
-    const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot }, {});
+    const changed = await handler?.(
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot },
+    );
     expect(changed).toEqual({ systemPrompt: "Project hi there" });
 
-    const unchanged = await handler?.({ systemPrompt: "Nothing to replace", cwd: projectRoot }, {});
+    const unchanged = await handler?.(
+      { systemPrompt: "Nothing to replace" },
+      { cwd: projectRoot },
+    );
     expect(unchanged).toBeUndefined();
 
     const logPath = path.join(projectExtDir, "replace-prompt.log");
@@ -96,7 +102,10 @@ describe("replace-prompt extension", () => {
       },
     } as any);
 
-    const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot }, {});
+    const changed = await handler?.(
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot },
+    );
     expect(changed).toBeUndefined();
   });
 
@@ -126,7 +135,10 @@ describe("replace-prompt extension", () => {
       },
     } as any);
 
-    const changed = await handler?.({ systemPrompt: "Hello there", cwd: projectRoot }, {});
+    const changed = await handler?.(
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot },
+    );
     expect(changed).toEqual({ systemPrompt: "Global hi there" });
 
     const globalLogPath = path.join(globalExtDir, "replace-prompt.log");
@@ -146,11 +158,11 @@ describe("replace-prompt extension", () => {
       path.join(globalExtDir, "rules.ts"),
       `export default { logging: { file: true }, rules: [
       {
-        id: "claude-only",
+        id: "model-a-only",
         type: "literal",
         target: "Hello",
-        replacement: "Claude hi",
-        condition: (ctx) => ctx.model?.includes("claude") ?? false
+        replacement: "Model A hi",
+        condition: (ctx) => ctx.model === "model-a"
       }
     ] };`,
     );
@@ -165,20 +177,20 @@ describe("replace-prompt extension", () => {
     } as any);
 
     const changed = await handler?.(
-      { systemPrompt: "Hello there", cwd: projectRoot },
-      { model: { id: "claude-3-7-sonnet" } },
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot, model: { id: "model-a" } },
     );
-    expect(changed).toEqual({ systemPrompt: "Claude hi there" });
+    expect(changed).toEqual({ systemPrompt: "Model A hi there" });
 
     const skipped = await handler?.(
-      { systemPrompt: "Hello there", cwd: projectRoot },
-      { model: { id: "gpt-4o" } },
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot, model: { id: "model-b" } },
     );
     expect(skipped).toBeUndefined();
 
     const logText = fs.readFileSync(path.join(globalExtDir, "replace-prompt.log"), "utf8");
-    expect(logText).toContain("[info] [claude-only] rule applied");
-    expect(logText).toContain("[info] [claude-only] rule skipped by condition");
+    expect(logText).toContain("[info] [model-a-only] rule applied");
+    expect(logText).toContain("[info] [model-a-only] rule skipped by condition");
   });
 
   it("writes invalid-condition warnings collected during config loading", async () => {
@@ -212,8 +224,8 @@ describe("replace-prompt extension", () => {
     } as any);
 
     const result = await handler?.(
-      { systemPrompt: "Hello there", cwd: projectRoot },
-      { model: { id: "claude-3-7-sonnet" } },
+      { systemPrompt: "Hello there" },
+      { cwd: projectRoot, model: { id: "model-a" } },
     );
     expect(result).toBeUndefined();
 

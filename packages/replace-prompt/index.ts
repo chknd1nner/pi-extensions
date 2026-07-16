@@ -2,10 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { applyRulesToPrompt } from "./apply-rules";
+import { PromptFallbackRestorer } from "./fallback-restoration";
 import { appendLog } from "./logging";
 import { loadScopeConfig, selectLogPath } from "./load-config";
 import { mergeScopeConfigs } from "./merge-rules";
 import { resolveReplacementText } from "./resolve-replacement";
+import { createTransformationContext } from "./transformation-context";
 
 function getScopeDirs(cwd: string) {
   const globalCandidate = process.env.HOME
@@ -20,8 +22,16 @@ function getScopeDirs(cwd: string) {
 }
 
 export default function replacePrompt(pi: ExtensionAPI) {
-  pi.on("before_agent_start", async (event: any, ctx?: any) => {
-    const cwd = event.cwd ?? process.cwd();
+  const restorer = new PromptFallbackRestorer();
+  let providerLogPath: string | null = null;
+
+  pi.on("session_start", () => {
+    restorer.clear();
+    providerLogPath = null;
+  });
+
+  pi.on("before_agent_start", async (event, ctx) => {
+    const cwd = ctx.cwd;
     const installedDirs = getScopeDirs(cwd);
 
     const globalConfig = installedDirs.globalDir
@@ -46,27 +56,49 @@ export default function replacePrompt(pi: ExtensionAPI) {
               }),
             {
               cwd,
-              model: ctx?.model?.id,
+              model: ctx.model?.id,
               env: process.env,
             },
           );
 
     const allEvents = [...merged.events, ...result.events];
-
-    if (merged.logging.file) {
-      appendLog(
-        selectLogPath({
+    const logPath = merged.logging.file
+      ? selectLogPath({
           projectDir: merged.projectDir,
           globalDir: merged.globalDir,
-        }),
-        allEvents,
-      );
+        })
+      : null;
+
+    if (logPath) {
+      appendLog(logPath, allEvents);
     }
 
     if (!result.changed) {
+      restorer.clear();
+      providerLogPath = null;
       return undefined;
     }
 
+    restorer.begin({
+      source: basePrompt,
+      result: result.systemPrompt,
+      context: createTransformationContext(cwd, ctx.model, process.env),
+    });
+    providerLogPath = logPath;
+
     return { systemPrompt: result.systemPrompt };
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    const outcome = restorer.handleProviderPayload(
+      event.payload,
+      createTransformationContext(ctx.cwd, ctx.model, process.env),
+    );
+
+    if (providerLogPath) {
+      appendLog(providerLogPath, outcome.events);
+    }
+
+    return outcome.replacement;
   });
 }
