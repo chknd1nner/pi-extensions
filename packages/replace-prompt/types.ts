@@ -1,6 +1,15 @@
 export type RuleMode = "first" | "all";
 export type ScopeName = "global" | "project";
 
+export type PromptPathSegment = string | number;
+export type PromptPath = readonly PromptPathSegment[];
+
+export type TransformationContextIdentity = {
+  cwd: string;
+  modelKey: string;
+  environmentFingerprint: string;
+};
+
 export type ConditionContext = {
   model?: string;
   cwd: string;
