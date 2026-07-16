@@ -608,6 +608,22 @@ describe("PromptFallbackRestorer", () => {
     });
   });
 
+  it("does not learn a path when the environment changes before discovery", () => {
+    const restorer = new PromptFallbackRestorer();
+    begin(restorer);
+    const changedEnvironment = {
+      ...context,
+      environmentFingerprint: "changed-before-discovery",
+    };
+
+    expect(
+      restorer.handleProviderPayload({ system: { text: "RP" } }, changedEnvironment),
+    ).toEqual({ events: [] });
+    expect(
+      restorer.handleProviderPayload({ system: { text: "BP" } }, changedEnvironment),
+    ).toEqual({ events: [] });
+  });
+
   it("fails open when cwd, model, or environment identity differs", () => {
     const restorer = new PromptFallbackRestorer();
     begin(restorer);
@@ -717,8 +733,9 @@ export class PromptFallbackRestorer {
 
     if (active.promptPath === undefined) {
       const matches = findExactStringPaths(payload, active.result);
-      if (matches.length === 1) {
-        active.promptPath = matches[0];
+      const [promptPath] = matches;
+      if (matches.length === 1 && promptPath !== undefined) {
+        active.promptPath = promptPath;
         return {
           events: [{ level: "info", message: "provider prompt path learned" }],
         };
@@ -800,17 +817,62 @@ git commit -m "feat(replace-prompt): add prompt fallback restorer"
 
 **Files:**
 - Modify: `packages/replace-prompt/index.ts`
+- Modify: `packages/replace-prompt/tests/index.test.ts`
 - Create: `packages/replace-prompt/tests/provider-fallback.test.ts`
-- Verify: `packages/replace-prompt/tests/index.test.ts`
 
 **Interfaces:**
 - Consumes: `PromptFallbackRestorer` from Task 3 and `createTransformationContext()` from Task 2.
 - Produces: registered `session_start`, `before_agent_start`, and `before_provider_request` handlers in the package's existing default extension export.
 - Preserves the existing return contract: `before_agent_start` returns `{ systemPrompt } | undefined`; `before_provider_request` returns a replacement payload only when exact repair occurs.
+- Intentionally makes Pi's typed `ctx.cwd` authoritative for production config discovery, condition evaluation, and restoration isolation. The current implementation reads a non-typed `event.cwd` and therefore falls back to `process.cwd()` in real Pi; the test migration below pins the corrected source explicitly.
+- All automated tests invoke captured extension handlers with mocked payload/context objects. They must not contact a live provider or depend on installed provider credentials.
 
-- [ ] **Step 1: Write failing end-to-end hook tests**
+- [ ] **Step 1: Migrate cwd fixtures and write failing end-to-end hook tests**
 
-Create `packages/replace-prompt/tests/provider-fallback.test.ts`:
+In `packages/replace-prompt/tests/index.test.ts`, move every synthetic `cwd` from the event to the handler context. The simple calls become:
+
+```ts
+const changed = await handler?.(
+  { systemPrompt: "Hello there" },
+  { cwd: projectRoot },
+);
+const unchanged = await handler?.(
+  { systemPrompt: "Nothing to replace" },
+  { cwd: projectRoot },
+);
+```
+
+Apply the same event/context shape to the deprecated-directory and global-log tests. While updating the existing model-condition test, replace its provider/model-branded fixture with this provider-neutral rule:
+
+```ts
+{
+  id: "model-a-only",
+  type: "literal",
+  target: "Hello",
+  replacement: "Model A hi",
+  condition: (ctx) => ctx.model === "model-a"
+}
+```
+
+Use generic mocked model IDs and add cwd to the same context:
+
+```ts
+const changed = await handler?.(
+  { systemPrompt: "Hello there" },
+  { cwd: projectRoot, model: { id: "model-a" } },
+);
+expect(changed).toEqual({ systemPrompt: "Model A hi there" });
+
+const skipped = await handler?.(
+  { systemPrompt: "Hello there" },
+  { cwd: projectRoot, model: { id: "model-b" } },
+);
+expect(skipped).toBeUndefined();
+```
+
+Update that test's log assertions to use `[model-a-only]`. In the invalid-condition test, use `{ cwd: projectRoot, model: { id: "model-a" } }`; it is also a direct mocked hook call.
+
+Then create `packages/replace-prompt/tests/provider-fallback.test.ts`:
 
 ```ts
 import fs from "node:fs";
@@ -824,6 +886,7 @@ type Handler = (event: any, ctx: any) => unknown | Promise<unknown>;
 const tempDirs: string[] = [];
 const originalHome = process.env.HOME;
 const originalConditionValue = process.env.REPLACE_PROMPT_TEST_CONTEXT;
+const originalUnrelatedValue = process.env.REPLACE_PROMPT_TEST_UNRELATED;
 
 afterEach(() => {
   process.env.HOME = originalHome;
@@ -831,6 +894,11 @@ afterEach(() => {
     delete process.env.REPLACE_PROMPT_TEST_CONTEXT;
   } else {
     process.env.REPLACE_PROMPT_TEST_CONTEXT = originalConditionValue;
+  }
+  if (originalUnrelatedValue === undefined) {
+    delete process.env.REPLACE_PROMPT_TEST_UNRELATED;
+  } else {
+    process.env.REPLACE_PROMPT_TEST_UNRELATED = originalUnrelatedValue;
   }
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -892,6 +960,26 @@ describe("provider fallback integration", () => {
     expect(handlers.session_start).toEqual(expect.any(Function));
     expect(handlers.before_agent_start).toEqual(expect.any(Function));
     expect(handlers.before_provider_request).toEqual(expect.any(Function));
+  });
+
+  it("uses ctx.cwd as the authoritative config-discovery cwd", async () => {
+    const { projectRoot } = configuredProject(`export default { rules: [
+      { id: "replace-opening", type: "literal", target: "Hello", replacement: "Hi" }
+    ] };`);
+    const handlers = registerHandlers();
+
+    expect(
+      await handlers.before_agent_start(
+        {
+          type: "before_agent_start",
+          prompt: "test",
+          systemPrompt: "Hello",
+          systemPromptOptions: {},
+          cwd: path.join(projectRoot, "event-cwd-must-not-win"),
+        },
+        context(projectRoot),
+      ),
+    ).toEqual({ systemPrompt: "Hi" });
   });
 
   it("learns RP once and restores exact BP only at the learned path", async () => {
@@ -962,6 +1050,31 @@ describe("provider fallback integration", () => {
       ctx,
     );
     await handlers.session_start({ type: "session_start", reason: "resume" }, ctx);
+    expect(
+      await handlers.before_provider_request(
+        { type: "before_provider_request", payload: { system: "Hello" } },
+        ctx,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("skips path learning when an unrelated environment entry changes first", async () => {
+    process.env.REPLACE_PROMPT_TEST_UNRELATED = "before";
+    const { projectRoot } = configuredProject(`export default { rules: [
+      { id: "replace-opening", type: "literal", target: "Hello", replacement: "Hi" }
+    ] };`);
+    const handlers = registerHandlers();
+    const ctx = context(projectRoot);
+
+    await transform(handlers.before_agent_start, "Hello", projectRoot, ctx);
+    process.env.REPLACE_PROMPT_TEST_UNRELATED = "after";
+
+    expect(
+      await handlers.before_provider_request(
+        { type: "before_provider_request", payload: { system: "Hi" } },
+        ctx,
+      ),
+    ).toBeUndefined();
     expect(
       await handlers.before_provider_request(
         { type: "before_provider_request", payload: { system: "Hello" } },
@@ -1100,7 +1213,7 @@ Run:
 npx vitest run --cache=false packages/replace-prompt/tests/provider-fallback.test.ts
 ```
 
-Expected: FAIL because `session_start` and `before_provider_request` are not registered and fallback restoration is absent.
+Expected: FAIL because the current implementation still reads synthetic `event.cwd`, does not register `session_start` or `before_provider_request`, and has no fallback restoration.
 
 - [ ] **Step 3: Integrate the restorer and provider hook**
 
@@ -1140,8 +1253,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const compatibilityEvent = event as typeof event & { cwd?: string };
-    const cwd = ctx?.cwd ?? compatibilityEvent.cwd ?? process.cwd();
+    const cwd = ctx.cwd;
     const installedDirs = getScopeDirs(cwd);
 
     const globalConfig = installedDirs.globalDir
@@ -1166,7 +1278,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
               }),
             {
               cwd,
-              model: ctx?.model?.id,
+              model: ctx.model?.id,
               env: process.env,
             },
           );
@@ -1192,7 +1304,7 @@ export default function replacePrompt(pi: ExtensionAPI) {
     restorer.begin({
       source: basePrompt,
       result: result.systemPrompt,
-      context: createTransformationContext(cwd, ctx?.model, process.env),
+      context: createTransformationContext(cwd, ctx.model, process.env),
     });
     providerLogPath = logPath;
 
@@ -1238,7 +1350,7 @@ Expected: PASS with no TypeScript errors.
 - [ ] **Step 6: Commit Pi lifecycle integration**
 
 ```bash
-git add packages/replace-prompt/index.ts packages/replace-prompt/tests/provider-fallback.test.ts
+git add packages/replace-prompt/index.ts packages/replace-prompt/tests/index.test.ts packages/replace-prompt/tests/provider-fallback.test.ts
 git commit -m "fix(replace-prompt): restore prompt fallback at provider boundary"
 ```
 
@@ -1316,6 +1428,8 @@ Remembered transformations are isolated by:
 
 If any of these values changes, provider-boundary restoration is skipped until a later normal `before_agent_start` evaluates the rules and records a new transformation. The fingerprint is held in memory and logs neither environment names nor values.
 
+The environment fingerprint deliberately covers every environment entry because conditions receive the complete `process.env`. Consequently, even a change to an environment variable unrelated to a particular rule causes a conservative fail-open no-op. If the environment changes between `before_agent_start` and the first provider request, path learning is skipped for that request; a later normal agent start records a fresh identity.
+
 The exact source/result strings already capture conditions based on `originalSystemPrompt` and sequential `systemPrompt` state.
 
 Condition functions can technically read external process state through JavaScript closures. State outside the documented `ConditionContext` cannot be tracked and should not be used when reliable automatic fallback restoration matters.
@@ -1391,7 +1505,7 @@ git commit -m "docs(replace-prompt): explain automatic cache continuity"
 
 ## Manual regression check after implementation
 
-This check requires a configured provider and an automatic custom-message source, so it is intentionally performed after the deterministic implementation tasks:
+This optional check requires a configured provider and an automatic custom-message source, so it is intentionally performed after the deterministic mocked implementation tasks. If it is run, use only a model explicitly approved by the operator; never substitute a deprecated or otherwise unapproved model:
 
 1. Start a fresh Pi session with the local `pi-replace-prompt` package and file logging enabled.
 2. Send a normal prompt that invokes a tool, ensuring the first provider request can learn the transformed prompt path.
