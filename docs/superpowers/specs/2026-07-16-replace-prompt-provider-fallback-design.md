@@ -7,11 +7,11 @@
 
 ## Summary
 
-Pi 0.80.6 can switch from an extension-replaced system prompt to its unreplaced base prompt between the initial model response and a post-tool continuation when an idle custom message starts an automatic agent run. That switch breaks prompt-cache continuity and, in the observed Anthropic OAuth setup, changes usage classification.
+Pi 0.80.6 can switch from an extension-replaced system prompt to its unreplaced base prompt between the initial model response and a post-tool continuation when an idle custom message starts an automatic agent run. That switch breaks prompt-cache continuity for providers that support prompt caching.
 
-This change will harden `replace-prompt` without modifying Pi, `pi-processes`, or delegate tooling. The extension will remember each successful raw prompt transformation, learn the unique structural location where Pi serialized the replaced prompt in the next provider payload, and inspect only that location on subsequent requests. If Pi restores the original source prompt there, the extension will substitute the exact previously computed replacement.
+This provider-agnostic fix will harden `replace-prompt` without modifying Pi, `pi-processes`, or delegate tooling. The extension will remember each successful raw prompt transformation, learn the unique structural location where Pi serialized the replaced prompt in the next provider payload, and inspect only that location on subsequent requests. If Pi restores the original source prompt there, the extension will substitute the exact previously computed replacement.
 
-The design remains provider agnostic. It neither recognizes provider names nor encodes payload field names.
+The extension neither recognizes provider names nor encodes payload field names.
 
 ## Goals
 
