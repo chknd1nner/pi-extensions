@@ -382,6 +382,66 @@ Project opening text
 
 With no project `rules.ts` override at all, the inherited rule still uses the project file first if the project config folder exists.
 
+## Automatic post-tool cache continuity
+
+Some automatically triggered Pi turns can start with the replaced system prompt but restore Pi's base prompt after a tool result. That changes the provider's prompt prefix and can reduce cache hits.
+
+`replace-prompt` protects these continuations in three phases:
+
+1. `before_agent_start` applies configured rules once and remembers the exact source and result.
+2. The next provider request is scanned once to find the unique exact location containing the result.
+3. Later requests inspect only that learned location. An exact source value is replaced with the exact remembered result.
+
+Rules are never re-run at the provider boundary, so non-idempotent rules such as `foo → foobar` cannot become `foo → foobarbar`.
+
+### Provider independence and message safety
+
+The extension learns paths such as `system[1].text`, `instructions`, or `messages[0].content` from the outgoing payload. These examples are not hard-coded mappings.
+
+Path discovery succeeds only when the exact replaced prompt appears once. Zero matches or multiple matches are ambiguous and leave the payload unchanged. After discovery, the extension reads only the learned path, so an exact copy of the base prompt in a user message or tool result elsewhere in the payload is not rewritten.
+
+A missing path or a value other than the exact source/result also leaves the payload unchanged.
+
+### Conditional context isolation
+
+Remembered transformations are isolated by:
+
+- provider identity
+- API family
+- model ID
+- cwd
+- a secret-free fingerprint of the complete environment exposed to rule conditions
+
+If any of these values changes, provider-boundary restoration is skipped until a later normal `before_agent_start` evaluates the rules and records a new transformation. The fingerprint is held in memory and logs neither environment names nor values.
+
+The environment fingerprint deliberately covers every environment entry because conditions receive the complete `process.env`. Consequently, even a change to an environment variable unrelated to a particular rule causes a conservative fail-open no-op. If the environment changes between `before_agent_start` and the first provider request, path learning is skipped for that request; a later normal agent start records a fresh identity.
+
+The exact source/result strings already capture conditions based on `originalSystemPrompt` and sequential `systemPrompt` state.
+
+Condition functions can technically read external process state through JavaScript closures. State outside the documented `ConditionContext` cannot be tracked and should not be used when reliable automatic fallback restoration matters.
+
+### Extension ordering limitation
+
+Fallback restoration assumes `replace-prompt` is the only extension mutating the system prompt through `before_agent_start`.
+
+- An earlier mutator can make the recorded source differ from Pi's base fallback prompt.
+- A later mutator can make the recorded result differ from the final provider-facing prompt.
+
+Ordinary replacement still participates in Pi's normal extension chaining. This limitation applies specifically to the provider-boundary repair of automatic post-tool turns.
+
+### Dynamic tool loading
+
+Pi's dynamic tool loading lets an extension activate additional tools mid-run with `pi.setActiveTools()`. This interacts with restoration only when a newly activated tool contributes `promptSnippet` or `promptGuidelines`, because that metadata rebuilds the system prompt after a transformation has already been recorded.
+
+- Activating a tool whose definition changes only the payload tool block (no `promptSnippet` or `promptGuidelines`) does not affect the learned system-prompt path, and restoration continues normally.
+- Activating a tool that contributes `promptSnippet` or `promptGuidelines` rebuilds the system prompt. The recorded source and result then no longer match the rebuilt prompt, so the next provider request fails open with a single `provider prompt path was stale` log. Restoration resumes only after the next normal `before_agent_start` re-applies the rules to the new prompt.
+
+Tools that are active from session start are unaffected: their prompt metadata is part of the initial prefix and never triggers a mid-run rebuild.
+
+### Cache expectations
+
+Sending the same exact replaced prompt preserves a necessary cache-prefix invariant. Actual cache reads, accounting, and quota behavior still depend on the provider, model, request shape, and provider-side cache support.
+
 ## Logging behavior
 
 Logging is silent by default unless `logging.file: true` is enabled.
@@ -401,6 +461,12 @@ Typical events include:
 - rule disabled
 - rule did not match at application time
 - replacement file not found
+- provider prompt path learned
+- provider fallback prompt restored
+- provider prompt path was not found or was ambiguous
+- provider prompt path was stale
+
+Provider-boundary logs contain event descriptions only. They never include the source prompt, replacement prompt, provider payload, or environment contents. Discovery and stale-path warnings are emitted at most once per remembered transformation.
 
 ## Soft-failure behavior
 

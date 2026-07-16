@@ -9,6 +9,7 @@ It supports:
 - inline replacement text or `replacementFile`
 - `mode: "first" | "all"`
 - optional file logging
+- provider-agnostic cache continuity for automatic post-tool turns
 
 ## Install
 
@@ -66,6 +67,16 @@ If both files exist, Pi loads them like this:
 - project-only rules are appended after inherited user-scoped rules
 - a project rule can disable an inherited user rule with `{ id: "same-id", enabled: false }`
 - `replacementFile` resolves from the project scope first, then falls back to the user scope
+
+## Automatic post-tool cache continuity
+
+Pi can restore its base system prompt during a post-tool continuation of an automatically triggered turn. When a normal turn changes the system prompt, `replace-prompt` remembers the exact source and result and learns the unique provider-payload location containing that result. Later requests inspect only that learned location; if Pi restores the exact source there, the extension restores the exact result without running your rules again.
+
+This is provider agnostic: the extension learns the payload path at runtime and does not contain provider-specific field mappings. Ambiguous, missing, stale, or context-mismatched paths fail open and leave the request unchanged.
+
+This safety net assumes `replace-prompt` is the only extension mutating the system prompt through `before_agent_start`. If another extension also mutates the prompt, extension ordering can make the remembered source or result differ from Pi's actual fallback/final prompt. Ordinary rule chaining still follows Pi's normal extension order; the limitation matters specifically to automatic post-tool fallback restoration.
+
+Identical prompts can improve cache-hit behavior only for providers and request paths that support prompt caching. The extension does not guarantee cache accounting or quota outcomes.
 
 ## Logging
 
