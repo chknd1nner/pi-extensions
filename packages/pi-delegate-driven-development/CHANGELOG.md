@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.1 - 2026-07-24
+
+- Bug fix: normalize tool names to lowercase in delegate_start to handle
+  LLMs passing capital-case names like "Read", "Edit", "Write" in the
+  tools or denied_tools allowlists.
+
+## v0.3.1 - 2026-07-24
+
+- (describe changes — this line will be opened in $EDITOR)
+
 ## v0.3.0 - 2026-06-11
 
 - Add `delegate_pack` tool: compile ordered files (plus optional note) into a frozen, named context pack under `.pi/delegate/<date>/packs/<name>.jsonl`

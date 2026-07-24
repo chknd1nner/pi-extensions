@@ -1,6 +1,6 @@
 {
   "name": "pi-delegate-driven-development",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "description": "Subagent-driven workflow for π: delegate, session, and tickets extensions plus the delegate-driven-development skill.",
