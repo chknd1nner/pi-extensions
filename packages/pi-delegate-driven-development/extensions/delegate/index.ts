@@ -231,6 +231,15 @@ export default function delegate(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      // Normalize tool names to lowercase — LLMs often pass capital-case names
+      // like "Read", "Edit", "Write" which won't match the lowercase tool registry.
+      if (params.tools) {
+        params.tools = params.tools.map((t) => t.toLowerCase());
+      }
+      if (params.denied_tools) {
+        params.denied_tools = params.denied_tools.map((t) => t.toLowerCase());
+      }
+
       if (params.tools && params.denied_tools) {
         throw new Error(
           "Cannot specify both 'tools' (allowlist) and 'denied_tools' (denylist). Pick one.",
