@@ -5,7 +5,7 @@
 Proposed new Pi extension.
 
 Working package name: `pi-edit-tools`  
-Final package name: TBD.
+Final package name: `pi-edit-tools`.
 
 This extension is a new project. It does not replace or evolve `edit-field-guard`; that package remains a compatibility guard for Pi's native `edit` schema.
 
