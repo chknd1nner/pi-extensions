@@ -1,0 +1,30 @@
+{
+  "name": "pi-grep",
+  "version": "0.1.0",
+  "description": "Activate Pi's built-in rg-backed grep tool in ordinary sessions.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "grep",
+    "ripgrep",
+    "rg"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
