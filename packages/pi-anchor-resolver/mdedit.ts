@@ -58,8 +58,8 @@ export function mdeditHeadings(docPath: string): HeadingInfo[] {
   return JSON.parse(run(["headings", docPath, "--json"], [0])) as HeadingInfo[];
 }
 
-// `mdedit validate` exits 0 when clean and 5 when it finds error-severity issues; BOTH print the
-// JSON report to stdout, so accept either status.
+// `mdedit validate` exits 0 when clean and 5 when it reports issues (error- OR warning-severity); BOTH
+// print the JSON report to stdout, so accept either status.
 export function mdeditValidate(docPath: string): ValidateResult {
   return JSON.parse(run(["validate", docPath, "--json"], [0, 5])) as ValidateResult;
 }
