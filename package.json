@@ -10,6 +10,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "@ast-grep/napi": "^0.45.0",
     "@earendil-works/pi-ai": "latest",
     "@earendil-works/pi-coding-agent": "latest",
     "@earendil-works/pi-tui": "latest",
@@ -17,6 +18,7 @@
     "p-limit": "^6.2.0",
     "typebox": "latest",
     "typescript": "^5.9.3",
+    "yaml": "^2.9.0",
     "unpdf": "^1.6.2",
     "vitest": "^3.2.4"
   }
