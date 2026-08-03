@@ -1,0 +1,7 @@
+daemon/session-lifecycle:
+  - code:
+      language: typescript
+      rule: { kind: class_declaration, has: { field: name, regex: '^SessionTimeline$' } }
+      files: ["src/**/*.ts"]
+daemon/reducer-determinism:
+  - behavior: "test/reducer.test.ts::deterministic replay"

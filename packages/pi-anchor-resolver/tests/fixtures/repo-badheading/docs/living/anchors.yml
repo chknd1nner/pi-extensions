@@ -1,0 +1,2 @@
+daemon/not-a-heading:
+  - behavior: "x.test.ts::t"

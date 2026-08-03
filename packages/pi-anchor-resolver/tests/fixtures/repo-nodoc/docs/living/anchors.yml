@@ -1,0 +1,2 @@
+daemon/session-lifecycle:
+  - behavior: "x.test.ts::t"
