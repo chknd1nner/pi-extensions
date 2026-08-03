@@ -6,7 +6,7 @@
 
 **Architecture:** A stateless tool. Each call: load + validate `anchors.yml`, lint referenced living docs for duplicate heading-slugs (hard error), resolve each section's anchors — `code:` anchors via `@ast-grep/napi` structural match over globbed files, `behavior:` anchors via best-effort grep of `path::testName` — then classify drift with pure functions and render a compact markdown report. No session persistence; recompute every call.
 
-**Tech Stack:** TypeScript (ESM, `.js` import specifiers, Bundler resolution), Vitest, `@ast-grep/napi` (in-process TS grammar), `yaml`, `mdast-util-from-markdown` + `mdast-util-to-string` + `github-slugger` (GitHub-exact heading identity), Node built-in `fs.globSync`. Pi packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `typebox`) as `peerDependencies:"*"`.
+**Tech Stack:** TypeScript (ESM, `.js` import specifiers, Bundler resolution), Vitest, `@ast-grep/napi` (in-process TS grammar), `yaml`, the **`mdedit` CLI** (spawned for GitHub-exact heading identity — enumeration, rendered heading text, and slug-collision detection), Node built-in `fs.globSync`. Pi packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `typebox`) as `peerDependencies:"*"`.
 
 ## Global Constraints
 
@@ -17,8 +17,9 @@
 - ast-grep via `@ast-grep/napi` in-process (TS-only pilot; napi's built-in TS grammar suffices). Document a `@ast-grep/cli`-spawn fallback for a future Swift phase in the README only.
 - Line numbers in output are 1-indexed (napi `range()` is 0-indexed → add 1).
 - Node engine floor `>=22` (for `fs.globSync`). Add `"engines": { "node": ">=22" }`.
-- Deps: `@ast-grep/napi@^0.45.0`, `yaml@^2.9.0`, `github-slugger@^2.0.0`, `mdast-util-from-markdown@^2.0.3`, `mdast-util-to-string@^4.0.0` in the package `dependencies` AND root `devDependencies` (all already added to the root during de-risking; keep them). All but `@ast-grep/napi` are pure JS. Do not create a per-package lockfile.
-- **Do not hand-roll CommonMark.** Heading identity is derived with the real parser (`mdast-util-from-markdown` + `mdast-util-to-string`) and the real slugger (`github-slugger`). Hand-rolled regex scanning was tried and rejected: it kept producing wrong ids for fence runs, indented code, setext-vs-thematic-break, list interruption, and emphasis-delimiter runs.
+- Deps: `@ast-grep/napi@^0.45.0`, `yaml@^2.9.0` in the package `dependencies` AND root `devDependencies`. `yaml` is pure JS; `@ast-grep/napi` ships a prebuilt native binary. Do not create a per-package lockfile. (Heading identity is NOT a Node dependency — see the mdedit constraint below.)
+- **Heading identity is delegated to the `mdedit` CLI — do not parse Markdown in this package.** Enumeration, rendered heading text (links→label, code→contents, emphasis stripped, raw HTML dropped), GitHub-exact slugs, and slug-collision detection all come from `mdedit headings <doc> --json` and `mdedit validate <doc> --json`. Rationale: heading→anchor identity is deceptively hard (fences, indented code, setext-vs-thematic-break, list interruption, emphasis-delimiter runs, nested headings, inline HTML), and mdedit already owns it correctly via tree-sitter-md. A prior hand-rolled scanner *and* a from-scratch `mdast`+`github-slugger` reimplementation were both tried and rejected — every independent reimplementation of heading identity drifts. There is exactly one implementation, in mdedit.
+- **mdedit preflight (feature-detect, not version-gate).** mdedit is an unversioned single local build (`~/.cargo/bin/mdedit`, `--version` still reports `0.1.0` with or without the anchor features), so gating on `--version` is meaningless. `runResolve` calls `ensureMdedit()` once up front, which probes `mdedit headings --help` for the `--json` surface and throws a clear "build mdedit from ~/Documents/Projects/mdedit" error if mdedit is absent or too old. This mirrors how `pi-grep` depends on the `rg` binary being present.
 - `package.json`: `"type":"module"`, `keywords:["pi-package","pi-extension",…]`, `"license":"MIT"`, `"pi":{"extensions":["./index.ts"]}`, `files:["*.ts","README.md"]`, scripts `test:"vitest run"` / `typecheck:"tsc --noEmit -p tsconfig.json"`.
 - Copy `packages/pi-grep/tsconfig.json` **verbatim** (ES2022, ESNext, Bundler, strict, `types:["vitest/globals","node"]`, `include:["*.ts","tests/**/*.ts"]`). Do NOT add `resolveJsonModule`; tests that need `package.json` read it via `node:fs` + `JSON.parse`, not an import assertion.
 - Registration exemplar is `packages/brightdata/`. Registration test uses a hand-rolled fake `ExtensionAPI` cast `as unknown as ExtensionAPI`. Temp dirs via `mkdtempSync(tmpdir())` cleaned in `afterEach`.
@@ -54,11 +55,17 @@ export type ResolveMode = "full" | "changed" | "section";
 
 **Cross-module function signatures (producer task in parentheses):**
 ```ts
-// doc-lint.ts (Task 2)
-export function slugify(heading: string): string;               // github-slugger over ALREADY-RENDERED text; fresh slugger per call (no -1 dedupe)
-export function enumerateHeadings(markdown: string): string[];  // real CommonMark parse; rendered heading text, document order
-export function lintDoc(markdown: string, docLabel: string): void; // THROWS on duplicate heading-slug
-export function headingSlugs(markdown: string): Set<string>;    // slugs of every heading, for id↔heading checks
+// mdedit.ts (Task 2) — the ONLY Markdown-aware code; spawns the mdedit CLI.
+export interface HeadingInfo { slug: string; text: string; level: number; line: number; container: string; addressable: boolean; collides_with?: number; }
+export interface ValidateIssue { kind: string; line: number; message: string; severity: string; slug?: string; text?: string; collides_with_line?: number; collides_with_text?: string; }
+export interface ValidateResult { file: string; issues: ValidateIssue[]; valid: boolean; }
+export function ensureMdedit(): void;                           // one-time capability probe; THROWS if mdedit is absent or lacks `headings --json`
+export function mdeditHeadings(docPath: string): HeadingInfo[]; // `mdedit headings <doc> --json`
+export function mdeditValidate(docPath: string): ValidateResult;// `mdedit validate <doc> --json` (accepts exit 0 and 5)
+
+// doc-lint.ts (Task 2) — thin semantic layer over mdedit.ts (takes doc PATHS, not markdown strings)
+export function lintDoc(docPath: string, docLabel: string): void; // THROWS on duplicate heading-slug (delegates to mdeditValidate)
+export function headingSlugs(docPath: string): Set<string>;      // slugs of every ADDRESSABLE heading (real sections), for id↔heading checks
 
 // anchors.ts (Task 3)
 export function loadAnchors(absPath: string): AnchorRegistry;   // THROWS on any unusable registry (see Task 3)
@@ -101,7 +108,8 @@ packages/pi-anchor-resolver/
   tsconfig.json       # copy of pi-grep tsconfig (Task 1)
   README.md           # install + 3 usage modes + CLI-fallback note (Task 1 stub, Task 8 fill)
   types.ts            # shared interfaces (Task 2)
-  doc-lint.ts         # slugify / enumerateHeadings / lintDoc / headingSlugs (Task 2)
+  mdedit.ts           # spawn mdedit: ensureMdedit / mdeditHeadings / mdeditValidate (Task 2)
+  doc-lint.ts         # lintDoc / headingSlugs over mdedit.ts (Task 2)
   anchors.ts          # loadAnchors: read + parse + validate anchors.yml (Task 3)
   resolve-code.ts     # languageToLang + resolveCodeAnchor via @ast-grep/napi (Task 4)
   resolve-behavior.ts # resolveBehaviorAnchor via grep (Task 5)
@@ -110,7 +118,7 @@ packages/pi-anchor-resolver/
   render.ts           # renderCall / renderResult (@earendil-works/pi-tui) (Task 8)
   index.ts            # default export, registerTool("anchor_resolve") (Task 8)
   tests/
-    doc-lint.test.ts       (Task 2)
+    doc-lint.test.ts       (Task 2 — exercises mdedit.ts + doc-lint.ts against the real mdedit binary)
     anchors.test.ts        (Task 3)
     resolve-code.test.ts   (Task 4)
     resolve-behavior.test.ts (Task 5)
@@ -120,7 +128,7 @@ packages/pi-anchor-resolver/
     fixtures/ts/…          (Task 4/7 fixtures + anchors.yml + living doc)
 ```
 
-Root files touched: `.pi/settings.json` (local dogfood package, Task 8 — uncommitted). Root `package.json` + `package-lock.json` already carry all five runtime deps — `@ast-grep/napi`, `yaml`, `github-slugger`, `mdast-util-from-markdown`, `mdast-util-to-string` (added during de-risking); confirm, do not duplicate.
+Root files touched: `.pi/settings.json` (local dogfood package, Task 8 — uncommitted). Root `package.json` + `package-lock.json` gain the two runtime deps `@ast-grep/napi` and `yaml` when Task 1 runs `npm install`. External runtime tool: the `mdedit` CLI on `PATH` (not an npm dep; feature-detected at runtime, same posture as `pi-grep`'s dependency on `rg`).
 
 ---
 
@@ -180,9 +188,6 @@ Expected: FAIL — package.json / workspace does not exist yet.
   },
   "dependencies": {
     "@ast-grep/napi": "^0.45.0",
-    "github-slugger": "^2.0.0",
-    "mdast-util-from-markdown": "^2.0.3",
-    "mdast-util-to-string": "^4.0.0",
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
@@ -198,8 +203,9 @@ Expected: FAIL — package.json / workspace does not exist yet.
 and tooling (`typescript`, `vitest`) plus the development install live only in the ROOT `package.json`
 (follow `packages/pi-grep/package.json`, not the older `packages/brightdata/package.json`, which predates
 this policy). `@ast-grep/napi` and `yaml` are real runtime imports, so they belong in this package's
-`dependencies` for packaging **and** in root `devDependencies` for local dedup — both were already added
-to the root during de-risking, so no further root change is needed.
+`dependencies` for packaging **and** in root `devDependencies` for local dedup — add both to the root
+`devDependencies` and run `npm install` at the root (Step 7). Heading identity is handled by the external
+`mdedit` CLI (feature-detected at runtime), so there are NO Markdown npm deps here.
 
 - [ ] **Step 4: Create `tsconfig.json`** (verbatim copy of `packages/pi-grep/tsconfig.json`)
 
@@ -250,10 +256,11 @@ git commit -m "feat(anchor-resolver): scaffold pi-anchor-resolver package"
 
 ---
 
-### Task 2: Types + doc-lint
+### Task 2: Types + mdedit wrapper + doc-lint
 
 **Files:**
 - Create: `packages/pi-anchor-resolver/types.ts`
+- Create: `packages/pi-anchor-resolver/mdedit.ts`
 - Create: `packages/pi-anchor-resolver/doc-lint.ts`
 - Test: `packages/pi-anchor-resolver/tests/doc-lint.test.ts`
 
@@ -277,109 +284,104 @@ export interface DriftReport {
 export interface ResolveResult { responseId: string; sections: Record<string, ResolvedSection>; drift: DriftReport; }
 export type ResolveMode = "full" | "changed" | "section";
 ```
-- Produces (`doc-lint.ts`): `slugify(heading: string): string`, `enumerateHeadings(markdown: string): string[]`, `lintDoc(markdown: string, docLabel: string): void`, `headingSlugs(markdown: string): Set<string>` (used by Task 7 for id↔heading checks). See Shared Interfaces for the canonical signatures.
-- Consumes: `github-slugger`, `mdast-util-from-markdown`, `mdast-util-to-string`. **Division of labour:** `enumerateHeadings` resolves markdown → rendered heading text (links→label, code→contents, emphasis stripped); `slugify` is then pure `github-slugger`. Do not re-implement either half by hand.
+- Produces (`mdedit.ts`): `ensureMdedit()`, `mdeditHeadings(docPath)`, `mdeditValidate(docPath)`, and the `HeadingInfo`/`ValidateIssue`/`ValidateResult` interfaces (see Shared Interfaces). This is the ONLY Markdown-aware module; it just spawns the CLI and parses JSON.
+- Produces (`doc-lint.ts`): `lintDoc(docPath: string, docLabel: string): void` (THROWS on duplicate heading-slug) and `headingSlugs(docPath: string): Set<string>` (slugs of every ADDRESSABLE heading), used by Task 7 for id↔heading checks. See Shared Interfaces for the canonical signatures.
+- Consumes: the external `mdedit` CLI via `node:child_process` `spawnSync`. **No Markdown parsing in this package** (see Global Constraints). `doc-lint.ts` takes doc PATHS (mdedit reads files), not markdown strings — so Task 7 passes a path and no longer needs to read the doc itself. **Division of labour:** `mdedit.ts` owns the spawn/JSON/error surface; `doc-lint.ts` is a thin semantic layer (collision → throw; addressable slugs → set).
 
 - [ ] **Step 1: Write the failing test**
 
 `packages/pi-anchor-resolver/tests/doc-lint.test.ts`:
 ```ts
-import { describe, expect, it } from "vitest";
-import { slugify, enumerateHeadings, lintDoc, headingSlugs } from "../doc-lint.js";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ensureMdedit, mdeditHeadings } from "../mdedit.js";
+import { headingSlugs, lintDoc } from "../doc-lint.js";
 
-// slugify is exactly github-slugger over ALREADY-RENDERED heading text.
-// Inline markdown is resolved earlier, by enumerateHeadings.
-describe("slugify", () => {
-  it("lowercases, drops punctuation, hyphenates spaces without collapsing runs", () => {
-    expect(slugify("Session Lifecycle")).toBe("session-lifecycle");
-    expect(slugify("Reducer: Determinism!")).toBe("reducer-determinism");
-    expect(slugify("Multiple   Spaces")).toBe("multiple---spaces");
+// These tests exercise the REAL mdedit binary (the single source of heading identity).
+// mdedit must be on PATH — same posture as pi-grep's tests requiring `rg`. doc-lint takes
+// doc PATHS, so each case writes a temp .md file first.
+let dir: string;
+const write = (name: string, content: string): string => {
+  const p = join(dir, name);
+  writeFileSync(p, content);
+  return p;
+};
+beforeAll(() => { dir = mkdtempSync(join(tmpdir(), "anchor-doclint-")); });
+afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
+
+describe("ensureMdedit (capability preflight)", () => {
+  it("passes when the real mdedit CLI is present with --json support", () => {
+    expect(() => ensureMdedit()).not.toThrow();
   });
-  it("preserves underscores and authored hyphen runs", () => {
-    expect(slugify("foo_bar")).toBe("foo_bar");
-    expect(slugify("session_id lookup")).toBe("session_id-lookup");
-    expect(slugify("foo_bar_baz")).toBe("foo_bar_baz");
-    expect(slugify("foo__bar__")).toBe("foo__bar__");
-    expect(slugify("foo--bar")).toBe("foo--bar");
+  // The negative branches use vi.doMock + vi.resetModules to get a FRESH module instance
+  // (the real ensureMdedit caches success in a module-level `checked` flag) with spawnSync stubbed.
+  it("throws a build-mdedit error when the CLI is absent (ENOENT)", async () => {
+    vi.resetModules();
+    vi.doMock("node:child_process", () => ({
+      spawnSync: () => ({ error: Object.assign(new Error("spawn mdedit ENOENT"), { code: "ENOENT" }) }),
+    }));
+    const { ensureMdedit: fresh } = await import("../mdedit.js");
+    expect(() => fresh()).toThrow(/not found on PATH/i);
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
   });
-  it("preserves Unicode letters and digits", () => {
-    expect(slugify("café résumé")).toBe("café-résumé");
-    expect(slugify("Phase 2")).toBe("phase-2");
-  });
-  it("does not dedupe across calls (a fresh slugger per call)", () => {
-    expect(slugify("Same")).toBe("same");
-    expect(slugify("Same")).toBe("same"); // NOT "same-1"
+  it("throws when mdedit is present but lacks `headings --json`", async () => {
+    vi.resetModules();
+    vi.doMock("node:child_process", () => ({
+      spawnSync: () => ({ status: 0, stdout: "List headings\n\nUsage: mdedit headings <FILE>\n", stderr: "" }),
+    }));
+    const { ensureMdedit: fresh } = await import("../mdedit.js");
+    expect(() => fresh()).toThrow(/rebuild it/i);
+    vi.doUnmock("node:child_process");
+    vi.resetModules();
   });
 });
 
-describe("enumerateHeadings", () => {
-  it("returns ATX heading text and ignores headings inside fenced code", () => {
-    const md = ["# Title", "text", "## Session Lifecycle", "```", "## Not A Heading", "```", "### Reducer"].join("\n");
-    expect(enumerateHeadings(md)).toEqual(["Title", "Session Lifecycle", "Reducer"]);
+describe("mdeditHeadings", () => {
+  it("renders inline markdown to GitHub slugs and flags addressability", () => {
+    const p = write("h.md", "# Daemon\n\n## [Session](#x) flow\n\nb\n\n> ## Quoted\n\nb\n");
+    const hs = mdeditHeadings(p);
+    expect(hs.map((h) => h.slug)).toEqual(["daemon", "session-flow", "quoted"]);
+    expect(hs.find((h) => h.slug === "session-flow")!.addressable).toBe(true);
+    expect(hs.find((h) => h.slug === "quoted")!.addressable).toBe(false); // nested in a block quote
   });
-  it("does not let a ~~~ line close a ``` fence (fence char must match)", () => {
-    const md = ["```", "~~~", "## Still In Code", "```", "## Real Heading"].join("\n");
-    expect(enumerateHeadings(md)).toEqual(["Real Heading"]);
+});
+
+describe("headingSlugs", () => {
+  it("returns slugs of addressable headings, rendering inline markup like GitHub", () => {
+    const p = write("s.md", [
+      "# Daemon",
+      "## [Session](#d) flow",
+      "## `openSession` contract",
+      "## A <span>HTML</span> heading",
+      "## __Strong__ here",
+    ].join("\n\n"));
+    expect(headingSlugs(p)).toEqual(new Set([
+      "daemon", "session-flow", "opensession-contract", "a-html-heading", "strong-here",
+    ]));
   });
-  it("does not let a shorter backtick run close a longer opener", () => {
-    const md = ["````", "```", "## Still In Code", "````", "## Real Heading"].join("\n");
-    expect(enumerateHeadings(md)).toEqual(["Real Heading"]);
-  });
-  it("renders inline markdown to text (links, code, emphasis, nested runs)", () => {
-    expect(enumerateHeadings("## [Session](#details)")).toEqual(["Session"]);
-    expect(enumerateHeadings("## `openSession` flow")).toEqual(["openSession flow"]);
-    expect(enumerateHeadings("## **Bold** _text_")).toEqual(["Bold text"]);
-    expect(enumerateHeadings("## __Strong__ here")).toEqual(["Strong here"]);
-    expect(enumerateHeadings("## ____Strong____ here")).toEqual(["Strong here"]);
-  });
-  it("drops raw inline HTML tags, keeping their text (GitHub renders them)", () => {
-    expect(enumerateHeadings("## A <span>HTML</span> heading")).toEqual(["A HTML heading"]);
-  });
-  it("finds headings nested in block quotes and list items, in document order", () => {
-    expect(enumerateHeadings("> ## Quoted *Heading*")).toEqual(["Quoted Heading"]);
-    expect(enumerateHeadings("- # Listed `Heading`")).toEqual(["Listed Heading"]);
-    expect(enumerateHeadings("> Quoted Setext\n> ===")).toEqual(["Quoted Setext"]);
-    expect(enumerateHeadings("# A\n\n> ## B\n\n### C")).toEqual(["A", "B", "C"]);
-  });
-  it("recognizes ATX indented up to three spaces and setext headings", () => {
-    expect(enumerateHeadings("   ## Indented")).toEqual(["Indented"]);
-    expect(enumerateHeadings("Setext Title\n===\n\nBody\n\nSub\n---")).toEqual(["Setext Title", "Sub"]);
-  });
-  it("keeps a multiline setext heading's line break in its text", () => {
-    expect(enumerateHeadings("Line One\nLine Two\n===")).toEqual(["Line One\nLine Two"]);
-  });
-  it("distinguishes setext underlines from thematic breaks and other blocks", () => {
-    expect(enumerateHeadings("    code line\n---")).toEqual([]);      // indented code, then rule
-    expect(enumerateHeadings("# Real\n\n---\n\n# Also Real")).toEqual(["Real", "Also Real"]);
-    expect(enumerateHeadings("---\nText\n---")).toEqual(["Text"]);    // leading rule is not text
-    expect(enumerateHeadings("===\nText\n---")).toEqual(["===\nText"]); // `===` is NOT a rule
-    expect(enumerateHeadings("- item\n---")).toEqual([]);             // list, then rule
+  it("excludes non-addressable headings (block quotes, list items) from section ids", () => {
+    const p = write("n.md", "# Daemon\n\n## Real Section\n\nb\n\n> ## Quoted Aside\n\nb\n\n- # Listed Aside\n\nb\n");
+    expect(headingSlugs(p)).toEqual(new Set(["daemon", "real-section"]));
   });
 });
 
 describe("lintDoc", () => {
   it("passes when all heading slugs are unique", () => {
-    expect(() => lintDoc("# One\n## Two Words\n", "daemon.md")).not.toThrow();
+    const p = write("ok.md", "# One\n\n## Two Words\n");
+    expect(() => lintDoc(p, "daemon.md")).not.toThrow();
   });
-  it("throws on duplicate heading-slug within a doc (distinct text, same slug)", () => {
-    expect(() => lintDoc("## Session Lifecycle\n## session lifecycle\n", "daemon.md"))
-      .toThrow(/duplicate heading slug/i);
+  it("throws on a duplicate heading-slug (distinct text, same slug)", () => {
+    const p = write("dup.md", "## Session Lifecycle\n\n## session lifecycle\n");
+    expect(() => lintDoc(p, "daemon.md")).toThrow(/duplicate heading slug/i);
   });
-  it("detects duplicates across nesting levels and raw-HTML spellings", () => {
-    expect(() => lintDoc("> ## Same\n\n## same", "daemon.md")).toThrow(/duplicate heading slug/i);
-    expect(() => lintDoc("## <span>Same</span>\n\n## Same", "daemon.md")).toThrow(/duplicate heading slug/i);
-  });
-});
-
-describe("headingSlugs", () => {
-  it("returns the slug set for every heading", () => {
-    expect(headingSlugs("# Daemon\n## Session Lifecycle")).toEqual(new Set(["daemon", "session-lifecycle"]));
-  });
-  it("composes rendering + slugging the way GitHub does", () => {
-    expect(headingSlugs("## __Strong__ here")).toEqual(new Set(["strong-here"]));
-    expect(headingSlugs("## `openSession` flow")).toEqual(new Set(["opensession-flow"]));
-    expect(headingSlugs("## [Session](#details)")).toEqual(new Set(["session"]));
-    expect(headingSlugs("## A <span>HTML</span> heading")).toEqual(new Set(["a-html-heading"]));
+  it("detects collisions across nesting and raw-HTML spellings (mdedit considers every heading)", () => {
+    const q = write("q.md", "> ## Same\n\n## same\n");
+    expect(() => lintDoc(q, "daemon.md")).toThrow(/duplicate heading slug/i);
+    const h = write("hh.md", "## <span>Same</span>\n\n## Same\n");
+    expect(() => lintDoc(h, "daemon.md")).toThrow(/duplicate heading slug/i);
   });
 });
 ```
@@ -387,91 +389,116 @@ describe("headingSlugs", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npm test -w pi-anchor-resolver -- doc-lint`
-Expected: FAIL — `../doc-lint.js` not found.
+Expected: FAIL — `../mdedit.js` / `../doc-lint.js` not found.
 
 - [ ] **Step 3: Write `types.ts`** (exact content from the Shared Interfaces `types.ts` block above).
 
-- [ ] **Step 4: Write `doc-lint.ts`**
+- [ ] **Step 4: Write `mdedit.ts`** (the only Markdown-aware module — spawn + JSON, no parsing)
 
 ```ts
-import GithubSlugger from "github-slugger";
-import { fromMarkdown } from "mdast-util-from-markdown";
-import { toString } from "mdast-util-to-string";
+import { spawnSync } from "node:child_process";
 
-// Heading identity must match GitHub exactly, because a section id IS the heading
-// anchor an author sees. Rather than hand-roll CommonMark (fences, indented code,
-// setext underlines vs thematic breaks, list interruption, emphasis-delimiter runs),
-// we use the real parser + the real slugger. See Global Constraints for why.
+export interface HeadingInfo {
+  slug: string;
+  text: string;
+  level: number;
+  line: number;
+  container: string;        // "section" | "block_quote" | "list_item" | …
+  addressable: boolean;     // true only for real document sections (top-level headings)
+  collides_with?: number;   // line of the first heading sharing this slug, if any
+}
+export interface ValidateIssue {
+  kind: string;             // e.g. "slug-collision"
+  line: number;
+  message: string;
+  severity: string;         // "error" | "warning" | "info"
+  slug?: string;
+  text?: string;
+  collides_with_line?: number;
+  collides_with_text?: string;
+}
+export interface ValidateResult { file: string; issues: ValidateIssue[]; valid: boolean; }
 
-// EVERY heading in document order, as RENDERED text (inline markdown resolved:
-// links -> label, code -> contents, emphasis stripped, raw HTML tags dropped).
-// Code blocks are never headings because the parser, not a regex, decides what a
-// heading is.
-//
-// Two subtleties, both load-bearing:
-//  1. Recursive walk, not `tree.children`: CommonMark allows headings inside
-//     block quotes and list items (`> ## Quoted`, `- # Listed`). A root-only scan
-//     silently drops them, which would reject valid ids and miss duplicates.
-//     Depth-first pre-order preserves document order.
-//  2. `includeHtml: false`: mdast-util-to-string defaults to `true` and would
-//     emit raw tag source, so `## A <span>HTML</span> heading` would slug as
-//     `a-spanhtmlspan-heading` instead of GitHub's `a-html-heading`.
-export function enumerateHeadings(markdown: string): string[] {
-  const headings: string[] = [];
-  const walk = (nodes: readonly unknown[]): void => {
-    for (const node of nodes as Array<{ type: string; children?: unknown[] }>) {
-      if (node.type === "heading") {
-        headings.push(toString(node as never, { includeHtml: false }));
-        continue;
-      }
-      if (Array.isArray(node.children)) walk(node.children);
-    }
-  };
-  walk(fromMarkdown(markdown).children);
-  return headings;
+const MDEDIT = "mdedit";
+const NOT_FOUND =
+  "mdedit CLI not found on PATH. pi-anchor-resolver delegates heading/anchor identity to mdedit; " +
+  "build it from ~/Documents/Projects/mdedit (`cargo install --path .`) and ensure ~/.cargo/bin is on PATH.";
+
+function run(args: string[], okStatuses: number[]): string {
+  const r = spawnSync(MDEDIT, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) {
+    if ((r.error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(NOT_FOUND);
+    throw r.error;
+  }
+  if (!okStatuses.includes(r.status ?? -1)) {
+    throw new Error(`mdedit ${args.join(" ")} failed (exit ${r.status}): ${r.stderr.trim()}`);
+  }
+  return r.stdout;
 }
 
-// A FRESH slugger per call: GithubSlugger instances dedupe across calls by
-// appending "-1", which would silently mask the duplicate-slug error we must throw.
-export function slugify(heading: string): string {
-  return new GithubSlugger().slug(heading);
+// One-time capability probe. mdedit is an unversioned single local build, so we feature-detect
+// the `headings … --json` surface rather than gate on --version (see Global Constraints).
+let checked = false;
+export function ensureMdedit(): void {
+  if (checked) return;
+  const r = spawnSync(MDEDIT, ["headings", "--help"], { encoding: "utf8" });
+  if (r.error) {
+    if ((r.error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(NOT_FOUND);
+    throw r.error;
+  }
+  if ((r.status ?? -1) !== 0 || !/--json/.test(`${r.stdout}${r.stderr}`)) {
+    throw new Error(`${NOT_FOUND}\n(mdedit is present but lacks \`headings … --json\`; rebuild it.)`);
+  }
+  checked = true;
 }
 
-export function headingSlugs(markdown: string): Set<string> {
+export function mdeditHeadings(docPath: string): HeadingInfo[] {
+  return JSON.parse(run(["headings", docPath, "--json"], [0])) as HeadingInfo[];
+}
+
+// `mdedit validate` exits 0 when clean and 5 when it finds error-severity issues; BOTH print the
+// JSON report to stdout, so accept either status.
+export function mdeditValidate(docPath: string): ValidateResult {
+  return JSON.parse(run(["validate", docPath, "--json"], [0, 5])) as ValidateResult;
+}
+```
+
+- [ ] **Step 5: Write `doc-lint.ts`** (thin semantic layer over `mdedit.ts`)
+
+```ts
+import { mdeditHeadings, mdeditValidate } from "./mdedit.js";
+
+// Slugs of every ADDRESSABLE heading (real document sections). Headings nested in block quotes or
+// list items get anchors on GitHub but are not sections, so they can never be section ids.
+export function headingSlugs(docPath: string): Set<string> {
   const slugs = new Set<string>();
-  for (const heading of enumerateHeadings(markdown)) {
-    const slug = slugify(heading);
-    if (slug) slugs.add(slug);
+  for (const h of mdeditHeadings(docPath)) {
+    if (h.addressable && h.slug) slugs.add(h.slug);
   }
   return slugs;
 }
 
-export function lintDoc(markdown: string, docLabel: string): void {
-  const seen = new Map<string, string>();
-  for (const heading of enumerateHeadings(markdown)) {
-    const slug = slugify(heading);
-    if (!slug) continue;
-    const prior = seen.get(slug);
-    if (prior !== undefined) {
-      throw new Error(
-        `${docLabel}: duplicate heading slug "${slug}" (from "${prior}" and "${heading}") — ids must be unique within a doc.`,
-      );
-    }
-    seen.set(slug, heading);
+// THROWS on a duplicate heading-slug within the doc. Collision detection is mdedit's — it considers
+// EVERY heading (nested included), exactly as GitHub assigns anchors, so a block-quote heading that
+// collides with a section is still caught.
+export function lintDoc(docPath: string, docLabel: string): void {
+  const collision = mdeditValidate(docPath).issues.find((i) => i.kind === "slug-collision");
+  if (collision) {
+    throw new Error(`${docLabel}: duplicate heading slug "${collision.slug}" — ${collision.message}`);
   }
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `npm test -w pi-anchor-resolver -- doc-lint`
-Expected: PASS (all cases).
+Expected: PASS (all cases; requires the real `mdedit` on PATH).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/pi-anchor-resolver/types.ts packages/pi-anchor-resolver/doc-lint.ts packages/pi-anchor-resolver/tests/doc-lint.test.ts
-git commit -m "feat(anchor-resolver): add types and doc-lint (slug uniqueness)"
+git add packages/pi-anchor-resolver/types.ts packages/pi-anchor-resolver/mdedit.ts packages/pi-anchor-resolver/doc-lint.ts packages/pi-anchor-resolver/tests/doc-lint.test.ts
+git commit -m "feat(anchor-resolver): add types + mdedit-backed doc-lint"
 ```
 
 ---
@@ -1127,12 +1154,12 @@ git commit -m "feat(anchor-resolver): pure drift classification and report"
 - Test: `packages/pi-anchor-resolver/tests/resolve.test.ts`
 
 **Interfaces:**
-- Consumes: `anchors.ts` (`loadAnchors`), `doc-lint.ts` (`lintDoc`, `headingSlugs`), `resolve-code.ts` (`resolveCodeAnchor`), `resolve-behavior.ts` (`resolveBehaviorAnchor`), `drift.ts` (`classifyDrift`, `buildSections`), `types.ts`. Signatures are in Shared Interfaces.
+- Consumes: `anchors.ts` (`loadAnchors`), `mdedit.ts` (`ensureMdedit`), `doc-lint.ts` (`lintDoc`, `headingSlugs`), `resolve-code.ts` (`resolveCodeAnchor`), `resolve-behavior.ts` (`resolveBehaviorAnchor`), `drift.ts` (`classifyDrift`, `buildSections`), `types.ts`. Signatures are in Shared Interfaces.
 - Produces: `runResolve(params: RunResolveParams, cwd: string): ResolveResult`, `generateResponseId(): string`, and the exported `RunResolveParams` interface (all per Shared Interfaces).
 
 Behavior:
-1. Load the registry (`loadAnchors` throws on any structural problem).
-2. **Registry-integrity pass (throwing), for every id in the registry regardless of mode.** Group ids by domain (segment before `/`). For each domain: the doc `docs/living/<domain>.md` **must exist** (else throw “referenced living doc not found”); run `lintDoc` (throws on duplicate slug); compute `headingSlugs(doc)` and require each id’s slug to be present (else throw “has no matching heading”). This makes “the heading *is* the id” an enforced invariant, so a stale key can never masquerade as clean drift.
+1. **Preflight:** `ensureMdedit()` — throws a clear build-mdedit error if the CLI is absent or lacks `headings --json`. Then load the registry (`loadAnchors` throws on any structural problem).
+2. **Registry-integrity pass (throwing), for every id in the registry regardless of mode.** Group ids by domain (segment before `/`). For each domain: the doc `docs/living/<domain>.md` **must exist** (else throw “referenced living doc not found”); run `lintDoc(docPath, …)` (delegates to `mdedit validate`, throws on duplicate slug); compute `headingSlugs(docPath)` (addressable headings from `mdedit headings`) and require each id’s slug to be present (else throw “has no matching heading”). This makes “the heading *is* the id” an enforced invariant, so a stale key can never masquerade as clean drift. The slug check uses **addressable** headings only, so a section id cannot point at a heading nested inside a block quote or list item (an anchor, but not a document section).
 3. Select ids per mode — `full`/`changed`: all; `section`: only `params.section` (throw “unknown section” if absent).
 4. Resolve every selected id’s anchors into `AnchorResolution[]`.
 5. For `changed`: keep only sections with a location whose canonical repo-relative path is in the canonicalized `changed` set (`relative(cwd, resolve(cwd, p))` → POSIX; handles `./`, `..`, duplicate and native separators, and absolute inputs).
@@ -1301,10 +1328,11 @@ Expected: FAIL — `../resolve.js` not found.
 - [ ] **Step 4: Write `resolve.ts`**
 
 ```ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadAnchors } from "./anchors.js";
+import { ensureMdedit } from "./mdedit.js";
 import { headingSlugs, lintDoc } from "./doc-lint.js";
 import { classifyDrift, buildSections } from "./drift.js";
 import { resolveCodeAnchor } from "./resolve-code.js";
@@ -1346,19 +1374,19 @@ function assertRegistryIntegrity(ids: string[], cwd: string): void {
     if (!existsSync(docPath)) {
       throw new Error(`referenced living doc not found: docs/living/${domain}.md (required by ${domainIds[0]}).`);
     }
-    const markdown = readFileSync(docPath, "utf8");
-    lintDoc(markdown, `docs/living/${domain}.md`); // throws on duplicate slug
-    const slugs = headingSlugs(markdown);
+    lintDoc(docPath, `docs/living/${domain}.md`); // delegates to `mdedit validate`; throws on duplicate slug
+    const slugs = headingSlugs(docPath);          // addressable heading slugs from `mdedit headings`
     for (const id of domainIds) {
       const slug = id.slice(domain.length + 1);
       if (!slugs.has(slug)) {
-        throw new Error(`section "${id}" has no matching heading in docs/living/${domain}.md.`);
+        throw new Error(`section "${id}" has no matching heading in docs/living/${domain}.md (a heading nested in a block quote or list item is not addressable and cannot be a section id).`);
       }
     }
   }
 }
 
 export function runResolve(params: RunResolveParams, cwd: string): ResolveResult {
+  ensureMdedit(); // single preflight: fail fast + clear if the mdedit CLI is missing/too old
   const anchorsPath = join(cwd, params.anchorsPath ?? "docs/living/anchors.yml");
   const registry = loadAnchors(anchorsPath);
 
@@ -1654,6 +1682,10 @@ can add a `@ast-grep/cli`-spawn fallback for languages napi does not bundle.
 
 ## Install
 
+**Requires the `mdedit` CLI on `PATH`.** Heading/anchor identity is delegated to mdedit (not reimplemented
+in JS): build it from source (`cargo install --path .` in the mdedit repo) so `mdedit headings <doc> --json`
+works. The tool feature-detects mdedit at runtime and errors clearly if it is missing or too old.
+
 Add to `.pi/settings.json`:
 
 \`\`\`json
@@ -1703,7 +1735,8 @@ git commit -m "feat(anchor-resolver): register anchor_resolve tool + README"
 `anchor_resolve` registered and working against the TS fixture repo: resolves code + behavior anchors to
 precise locations; `mode=changed` filters sections by canonical file path; an integration run classifies
 a renamed rule as DANGLING and an over-broad rule as LOOSE(count); duplicate heading-slug, missing
-referenced doc, unknown heading-slug, bad id shape, and malformed `anchors.yml` all throw; the registered
+referenced doc, unknown heading-slug, bad id shape, and malformed `anchors.yml` all throw; a missing/too-old `mdedit`
+CLI throws a clear preflight error; the registered
 tool executes end-to-end returning capped `content[0].text` + full `details{responseId,sections,drift}`
 and never calls `appendEntry`; all tests + typecheck green; README documents install + the three usage
 modes. Radius consumes it later via the git mirror (Phase 3 — out of scope for this plan).
@@ -1715,17 +1748,58 @@ modes. Radius consumes it later via the git mirror (Phase 3 — out of scope for
   `details{responseId,sections,drift}` (Tasks 6–8), three modes (Task 7), warnings-only + throw-on-unusable
   (Tasks 3/7), doc-lint duplicate-slug hard error + "heading is the id" enforcement (Tasks 2/7),
   `@ast-grep/napi` in-process (Task 4), behavior best-effort grep (Task 5), stateless — no
-  appendEntry/restore (Task 8), deps added (Task 1; all five already installed at the root). All covered.
+  appendEntry/restore (Task 8), deps added (Task 1: `@ast-grep/napi` + `yaml`; heading identity via the
+  external `mdedit` CLI, feature-detected at runtime). All covered.
 - **Type consistency:** all shared types live once in Shared Interfaces (`types.ts`, Task 2) and are reused
   verbatim; `runResolve`/`RunResolveParams`/`generateResponseId` (Task 7) match their Task 8 consumption;
-  `slugify`/`enumerateHeadings`/`lintDoc`/`headingSlugs`, `resolveCodeAnchor`/`resolveBehaviorAnchor`,
+  `ensureMdedit`/`mdeditHeadings`/`mdeditValidate`, `lintDoc`/`headingSlugs`, `resolveCodeAnchor`/`resolveBehaviorAnchor`,
   `classifyDrift`/`buildSections`/`formatReport` names match across producer/consumer tasks and the
   Shared Interfaces block.
-- **Open questions resolved:** behavior granularity = grep (Task 5); doc-lint = self-parse Node heading
-  scan via the real CommonMark parser + `github-slugger`, not a hand-rolled scanner (Task 2); symbol =
+- **Open questions resolved:** behavior granularity = grep (Task 5); doc-lint = delegate heading identity
+  to the `mdedit` CLI (`headings`/`validate --json`), not any in-package Markdown parser (Task 2); symbol =
   `field("name")` (Task 4); changed matching = canonical repo-relative path (Task 7).
 
 ## Review Concerns Addressed (openai-codex/gpt-5.6-sol, high)
+
+### Round 6 — heading identity delegated to the `mdedit` CLI (supersedes the whole Task 2 parser saga)
+
+The repo owner pointed out that a project-local Rust tool, **`mdedit`** (tree-sitter-md backed, the
+designated home for all Markdown handling), already owns document structure — and the design spec itself
+said authoring "uses `mdedit`" and that heading enumeration "may reuse `mdedit outline`". A field-report
+issue was filed against mdedit; the owner then added two commands (`mdedit headings --json`, `mdedit
+validate --json`) that expose GitHub-exact slugs, rendered heading text, nested-heading enumeration with
+an `addressable` flag, and slug-collision detection. **Task 2 no longer parses Markdown at all:**
+
+- Deleted from the package: `slugify`, `enumerateHeadings`, the `mdast`/`github-slugger` deps, and their
+  entire edge-case regression battery (Rounds 2–5 below). Heading identity now lives in exactly one place.
+- New `mdedit.ts` spawns the CLI (`ensureMdedit`/`mdeditHeadings`/`mdeditValidate`); `doc-lint.ts`
+  (`lintDoc`/`headingSlugs`) is a thin semantic layer that takes doc PATHS, not markdown strings.
+- `lintDoc` → `mdedit validate` (catches collisions across nesting/HTML spellings, verified);
+  `headingSlugs` → addressable slugs from `mdedit headings`; Task 7 passes paths and drops its
+  `readFileSync` of docs.
+- Preflight is **feature-detect, not version-gate** — mdedit is an unversioned single local build
+  (`--version` == `0.1.0` regardless), so `ensureMdedit()` probes the `headings --json` surface. This
+  is deliberate and correct for the current single-copy reality; a real version contract is Phase 3.
+- Verified against the real binary before finalising: the new `mdedit.ts` + `doc-lint.ts` logic passes a
+  6-case smoke run (inline rendering, addressable filtering, unique-pass, case/nested/HTML collisions).
+
+**Rounds 1–5 below are retained for traceability. All Task-2 heading-parser findings in them are now moot
+(the code they critique no longer exists); the non-Task-2 findings still stand.**
+
+### Round 7 — review of the reshaped plan: APPROVE-WITH-NITS (both nits folded in)
+
+The reviewer reconstructed Task 2 verbatim and ran it (tsc clean; 7/7 + 3/3 adversarial passing) and
+machine-verified every mdedit wire claim against the real binary (exit 0 clean / 5 collision, JSON on
+stdout, `session-flow`/`a-html-heading` inline rendering, nested `addressable:false`, block-quote-vs-
+section collision). Two items, both addressed here:
+
+- **MINOR — negative preflight branches lacked permanent coverage.** Task 2's `ensureMdedit` describe
+  block now covers the ENOENT and missing-`--json` branches via `vi.doMock("node:child_process")` +
+  `vi.resetModules()` (fresh module instance, since success is cached in a module-level `checked` flag).
+  Verified: tsc clean, 3/3 preflight tests pass.
+- **NIT — imprecise “no matching heading” error.** Task 7's message now notes that a heading nested in a
+  block quote or list item is not addressable and cannot be a section id (kept the “no matching heading”
+  substring so the existing `resolve.test.ts` regex still matches).
 
 - **BLOCKER — renderResult/details typecheck:** `execute` now returns `details` as a fresh object literal
   `{ responseId, sections, drift }` (assignable to the renderer's `Record<string, unknown>`), codified in
