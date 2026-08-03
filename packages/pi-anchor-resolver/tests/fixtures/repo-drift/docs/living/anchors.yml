@@ -1,0 +1,10 @@
+daemon/dangling-class:
+  - code:
+      language: typescript
+      rule: { kind: class_declaration, has: { field: name, regex: '^Renamed$' } }
+      files: ["src/**/*.ts"]
+daemon/loose-funcs:
+  - code:
+      language: typescript
+      rule: { kind: function_declaration }
+      files: ["src/**/*.ts"]
