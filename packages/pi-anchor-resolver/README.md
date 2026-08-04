@@ -54,6 +54,23 @@ Resolves in-process via `@ast-grep/napi`. Supported languages:
 > single `class_declaration` kind (e.g. `struct Envelope` matches `kind: class_declaration`). When an anchor
 > must distinguish them, disambiguate with additional child filters rather than relying on the kind alone.
 
+### Parse failures (`UNPARSEABLE` drift)
+
+When a `code:` anchor yields 0 matches, the resolver re-scans the anchor's file(s) for tree-sitter
+`ERROR` nodes. If any exist it reports **`UNPARSEABLE`** (naming the first error file+line) instead of
+`DANGLING`, so you can tell a grammar-level parse failure apart from a genuine rename/typo — the symbol
+may be perfectly correct while the grammar simply couldn't build the node. This is language-agnostic:
+a syntactically broken TS/JS file surfaces the same signal.
+
+> **Swift `#if` caveat:** tree-sitter-swift (0.7.1) mis-parses a compile-time `#if … #endif` directive
+> placed **inside a type body**; error recovery can swallow the *entire* enclosing declaration, so an anchor
+> to it reports `UNPARSEABLE` (upstream: alex-pinkus/tree-sitter-swift#298). Prefer `behavior:` anchors for
+> such files — they resolve by grep and never invoke the parser.
+>
+> **Known limitation:** the `ERROR` re-scan runs only on the 0-match path, so a broad-glob anchor that has a
+> parse error in one file but still matches its symbol in another (≥1 match) is **not** flagged and can
+> silently under-resolve. Again, prefer `behavior:` anchors in files using `#if` inside a type body.
+
 ## Install
 
 **Requires the `mdedit` CLI on `PATH`.** Heading/anchor identity is delegated to mdedit (not reimplemented

@@ -5,7 +5,7 @@ import { loadAnchors } from "./anchors.js";
 import { ensureMdedit } from "./mdedit.js";
 import { headingSlugs, lintDoc } from "./doc-lint.js";
 import { classifyDrift, buildSections } from "./drift.js";
-import { resolveCodeAnchor } from "./resolve-code.js";
+import { findParseErrors, resolveCodeAnchor } from "./resolve-code.js";
 import { resolveBehaviorAnchor } from "./resolve-behavior.js";
 import type { Anchor, AnchorResolution, ResolveMode, ResolveResult } from "./types.js";
 
@@ -26,10 +26,15 @@ function toRel(p: string, cwd: string): string {
 }
 
 function resolveAnchor(section: string, anchor: Anchor, cwd: string): AnchorResolution {
-  const locations = anchor.kind === "code"
-    ? resolveCodeAnchor(anchor.code, cwd)
-    : (() => { const loc = resolveBehaviorAnchor(anchor.behavior, cwd); return loc ? [loc] : []; })();
-  return { section, anchor, locations };
+  if (anchor.kind === "behavior") {
+    const loc = resolveBehaviorAnchor(anchor.behavior, cwd);
+    return { section, anchor, locations: loc ? [loc] : [] };
+  }
+  const locations = resolveCodeAnchor(anchor.code, cwd);
+  // Only on the 0-match (drift) path do we re-scan for tree-sitter ERROR nodes, so the
+  // ERROR scan stays off the healthy common path. Distinguishes parse failure from rename.
+  const parseErrors = locations.length === 0 ? findParseErrors(anchor.code, cwd) : [];
+  return { section, anchor, locations, ...(parseErrors.length > 0 ? { parseErrors } : {}) };
 }
 
 // Registry integrity: enforce "the heading is the id" before resolving anything.

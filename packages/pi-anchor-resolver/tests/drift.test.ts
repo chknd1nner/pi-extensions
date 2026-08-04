@@ -22,7 +22,19 @@ describe("classifyDrift", () => {
   it("reports no drift for a clean single-match resolution", () => {
     const r: AnchorResolution[] = [{ section: "d/a", anchor: codeAnchor("R"), locations: [{ file: "a.ts", startLine: 1, endLine: 3 }] }];
     const d = classifyDrift(r);
-    expect([d.dangling, d.loose, d.unresolvedBehavior]).toEqual([[], [], []]);
+    expect([d.dangling, d.loose, d.unresolvedBehavior, d.unparseable]).toEqual([[], [], [], []]);
+  });
+  it("classifies a 0-match code anchor with parse errors as unparseable, not dangling", () => {
+    const r: AnchorResolution[] = [{ section: "d/a", anchor: codeAnchor("R"), locations: [], parseErrors: [{ file: "x.swift", line: 3 }] }];
+    const d = classifyDrift(r);
+    expect(d.dangling).toEqual([]);
+    expect(d.unparseable).toEqual([{ section: "d/a", anchor: "R", file: "x.swift", line: 3 }]);
+  });
+  it("still classifies a 0-match code anchor with no parse errors as dangling (genuine rename)", () => {
+    const r: AnchorResolution[] = [{ section: "d/a", anchor: codeAnchor("R"), locations: [], parseErrors: [] }];
+    const d = classifyDrift(r);
+    expect(d.unparseable).toEqual([]);
+    expect(d.dangling).toEqual([{ section: "d/a", anchor: "R" }]);
   });
 });
 
@@ -55,6 +67,7 @@ describe("formatReport", () => {
         dangling: [{ section: "d/z", anchor: "R" }],
         loose: [{ section: "d/l", anchor: "F", count: 3 }],
         unresolvedBehavior: [{ section: "d/b", id: "p::t" }],
+        unparseable: [{ section: "d/u", anchor: "S", file: "T.swift", line: 3 }],
       },
     });
     expect(text).toContain("DANGLING d/z");
@@ -62,9 +75,14 @@ describe("formatReport", () => {
     expect(text).toContain("3 matches");
     expect(text).toContain("UNRESOLVED d/b");
     expect(text).toContain("a.ts:1 (X)");
+    // unparseable is a distinct signal, names file+line, and is counted in the summary total.
+    expect(text).toContain("UNPARSEABLE d/u");
+    expect(text).toContain("0 matches for `S`");
+    expect(text).toContain("T.swift:3");
+    expect(text).toContain("4 drift signal(s)");
   });
   it("states clean and (none) when there is no drift and no sections", () => {
-    const text = formatReport({ responseId: "r1", sections: {}, drift: { dangling: [], loose: [], unresolvedBehavior: [] } });
+    const text = formatReport({ responseId: "r1", sections: {}, drift: { dangling: [], loose: [], unresolvedBehavior: [], unparseable: [] } });
     expect(text).toMatch(/no drift/i);
     expect(text).toContain("(none)");
   });
@@ -72,7 +90,7 @@ describe("formatReport", () => {
     const text = formatReport({
       responseId: "r1",
       sections: { "d/a": { type: "code", locations: [] } },
-      drift: { dangling: [], loose: [], unresolvedBehavior: [] },
+      drift: { dangling: [], loose: [], unresolvedBehavior: [], unparseable: [] },
     });
     expect(text).toContain("(unresolved)");
   });

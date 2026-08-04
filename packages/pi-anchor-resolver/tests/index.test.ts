@@ -40,7 +40,7 @@ describe("anchor-resolver extension", () => {
     expect(full.content[0].text).toContain("anchor_resolve");
     expect(full.details.responseId).toMatch(/^anchor_/);
     expect(Object.keys(full.details.sections)).toContain("daemon/session-lifecycle");
-    expect(full.details.drift).toEqual({ dangling: [], loose: [], unresolvedBehavior: [] });
+    expect(full.details.drift).toEqual({ dangling: [], loose: [], unresolvedBehavior: [], unparseable: [] });
     const terse = await tools[0].execute("id", { mode: "full", report: false }, undefined, undefined, { cwd: repo });
     expect(terse.content[0].text).toMatch(/section\(s\) resolved/);
     expect(appendEntry).not.toHaveBeenCalled();

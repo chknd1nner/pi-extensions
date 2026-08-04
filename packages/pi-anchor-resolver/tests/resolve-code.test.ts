@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { languageToLang, resolveCodeAnchor } from "../resolve-code.js";
+import { findParseErrors, languageToLang, resolveCodeAnchor } from "../resolve-code.js";
 import type { CodeAnchor } from "../types.js";
 
 const cwd = join(__dirname, "fixtures", "ts");
 const swiftCwd = join(__dirname, "fixtures", "swift");
+const parseCwd = join(__dirname, "fixtures", "parse");
 
 describe("languageToLang", () => {
   it("maps typescript and throws on unknown", () => {
@@ -111,5 +112,32 @@ describe("resolveCodeAnchor", () => {
       files: ["split.ts"],
     };
     expect(resolveCodeAnchor(anchor, cwd).length).toBeGreaterThan(1);
+  });
+});
+
+describe("findParseErrors", () => {
+  it("reports the file + first error line for a Swift `#if` inside a type body (0 matches, real repro)", () => {
+    // The tree-sitter-swift #if-in-type-body bug: error recovery swallows the whole
+    // struct, so a `class_declaration` anchor to it yields 0 matches. The ERROR nodes
+    // are what distinguishes this parse failure from a genuine rename.
+    const anchor: CodeAnchor = { language: "swift", rule: { kind: "class_declaration" }, files: ["struct-ifdef.swift"] };
+    expect(resolveCodeAnchor(anchor, parseCwd)).toHaveLength(0);
+    expect(findParseErrors(anchor, parseCwd)).toEqual([{ file: "struct-ifdef.swift", line: 3 }]);
+  });
+
+  it("detects ERROR nodes language-agnostically (broken TypeScript, universal ERROR kind)", () => {
+    // Not Swift-specific: the mechanism is the universal tree-sitter ERROR node.
+    const anchor: CodeAnchor = { language: "typescript", rule: { kind: "class_declaration" }, files: ["broken.ts"] };
+    expect(findParseErrors(anchor, parseCwd)).toEqual([{ file: "broken.ts", line: 3 }]);
+  });
+
+  it("returns no errors for a cleanly-parsing Swift file", () => {
+    const anchor: CodeAnchor = { language: "swift", rule: { kind: "class_declaration" }, files: ["sample.swift"] };
+    expect(findParseErrors(anchor, swiftCwd)).toEqual([]);
+  });
+
+  it("returns no errors for a cleanly-parsing TypeScript file", () => {
+    const anchor: CodeAnchor = { language: "typescript", rule: { kind: "class_declaration" }, files: ["session.ts"] };
+    expect(findParseErrors(anchor, cwd)).toEqual([]);
   });
 });
