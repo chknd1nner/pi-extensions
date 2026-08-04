@@ -4,11 +4,53 @@ import { languageToLang, resolveCodeAnchor } from "../resolve-code.js";
 import type { CodeAnchor } from "../types.js";
 
 const cwd = join(__dirname, "fixtures", "ts");
+const swiftCwd = join(__dirname, "fixtures", "swift");
 
 describe("languageToLang", () => {
   it("maps typescript and throws on unknown", () => {
     expect(() => languageToLang("typescript")).not.toThrow();
     expect(() => languageToLang("cobol")).toThrow(/unsupported language/i);
+  });
+
+  it("maps swift (case-insensitive)", () => {
+    expect(() => languageToLang("swift")).not.toThrow();
+    expect(() => languageToLang("Swift")).not.toThrow();
+  });
+});
+
+describe("resolveCodeAnchor (swift)", () => {
+  it("resolves a Swift struct to file, 1-indexed line, and symbol", () => {
+    const anchor: CodeAnchor = {
+      language: "swift",
+      rule: { kind: "class_declaration", has: { field: "name", regex: "^Envelope$" } },
+      files: ["sample.swift"],
+    };
+    const locs = resolveCodeAnchor(anchor, swiftCwd);
+    expect(locs).toHaveLength(1);
+    expect(locs[0].file).toBe("sample.swift");
+    expect(locs[0].startLine).toBe(9);
+    expect(locs[0].symbol).toBe("Envelope");
+  });
+
+  it("resolves a Swift final class via the same class_declaration kind", () => {
+    const anchor: CodeAnchor = {
+      language: "swift",
+      rule: { kind: "class_declaration", has: { field: "name", regex: "^TranscriptStore$" } },
+      files: ["sample.swift"],
+    };
+    const locs = resolveCodeAnchor(anchor, swiftCwd);
+    expect(locs).toHaveLength(1);
+    expect(locs[0].symbol).toBe("TranscriptStore");
+    expect(locs[0].startLine).toBe(3);
+  });
+
+  it("returns zero matches when the rule matches nothing (dangling case)", () => {
+    const anchor: CodeAnchor = {
+      language: "swift",
+      rule: { kind: "class_declaration", has: { field: "name", regex: "^DoesNotExist$" } },
+      files: ["sample.swift"],
+    };
+    expect(resolveCodeAnchor(anchor, swiftCwd)).toHaveLength(0);
   });
 });
 

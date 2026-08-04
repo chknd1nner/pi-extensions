@@ -1,17 +1,34 @@
 import { globSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { Lang, parse } from "@ast-grep/napi";
+import { Lang, parse, registerDynamicLanguage } from "@ast-grep/napi";
+import swift from "@ast-grep/lang-swift";
 import type { CodeAnchor, ResolvedLocation } from "./types.js";
 
-const LANG_MAP: Record<string, Lang> = {
+// `parse(lang, src)` accepts `NapiLang = Lang | (string & {})`, so built-in enum
+// members and dynamically-registered language names (e.g. "swift") coexist here.
+const LANG_MAP: Record<string, string> = {
   typescript: Lang.TypeScript,
   ts: Lang.TypeScript,
   tsx: Lang.Tsx,
   javascript: Lang.JavaScript,
   js: Lang.JavaScript,
+  swift: "swift",
 };
 
-export function languageToLang(language: string): Lang {
+// `registerDynamicLanguage` should be called exactly once per process, but vitest
+// isolates per test file so it can be reached more than once; guard it idempotently.
+let swiftRegistered = false;
+function ensureSwift(): void {
+  if (swiftRegistered) return;
+  try {
+    registerDynamicLanguage({ swift });
+  } catch {
+    // already registered in this process; treat as success
+  }
+  swiftRegistered = true;
+}
+
+export function languageToLang(language: string): string {
   const lang = LANG_MAP[language.toLowerCase()];
   if (lang === undefined) {
     throw new Error(`unsupported language "${language}"; supported: ${Object.keys(LANG_MAP).join(", ")}.`);
@@ -26,6 +43,7 @@ function toPosixRelative(file: string, cwd: string): string {
 
 export function resolveCodeAnchor(anchor: CodeAnchor, cwd: string): ResolvedLocation[] {
   const lang = languageToLang(anchor.language);
+  if (lang === "swift") ensureSwift();
   // anchors.ts guarantees repo-relative globs; globSync yields cwd-relative matches.
   const files = new Set<string>();
   for (const pattern of anchor.files) {

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@ast-grep/lang-swift": "0.0.8",
     "@ast-grep/napi": "^0.45.0",
     "yaml": "^2.9.0"
   },

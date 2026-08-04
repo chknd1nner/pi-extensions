@@ -45,8 +45,14 @@ daemon/reducer-determinism:
 
 ## Language support
 
-v1 uses `@ast-grep/napi`'s built-in grammars (TypeScript/TSX/JavaScript) in-process. A future Swift phase
-can add a `@ast-grep/cli`-spawn fallback for languages napi does not bundle.
+Resolves in-process via `@ast-grep/napi`. Supported languages:
+
+- **TypeScript / TSX / JavaScript** — napi's built-in grammars (`typescript`, `ts`, `tsx`, `javascript`, `js`).
+- **Swift** — via the prebuilt `@ast-grep/lang-swift` grammar, registered dynamically (`swift`).
+
+> **Swift authoring caveat:** the tree-sitter-swift grammar folds `class`, `struct`, and `actor` into a
+> single `class_declaration` kind (e.g. `struct Envelope` matches `kind: class_declaration`). When an anchor
+> must distinguish them, disambiguate with additional child filters rather than relying on the kind alone.
 
 ## Install
 
