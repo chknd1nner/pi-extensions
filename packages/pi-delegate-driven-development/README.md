@@ -13,7 +13,7 @@ A Pi package bundling a subagent-driven workflow:
 // .pi/settings.json
 {
   "packages": [
-    "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0"
+    "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.2"
   ]
 }
 ```
@@ -21,7 +21,7 @@ A Pi package bundling a subagent-driven workflow:
 Or via CLI:
 
 ```bash
-pi install git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0
+pi install git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.2
 ```
 
 To install just one extension from the bundle:
@@ -30,13 +30,25 @@ To install just one extension from the bundle:
 {
   "packages": [
     {
-      "source": "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.0",
+      "source": "git:github.com/chknd1nner/pi-delegate-driven-development@v0.3.2",
       "extensions": ["extensions/delegate/index.ts"],
       "skills": []
     }
   ]
 }
 ```
+
+## Delegate worker concurrency
+
+The delegate extension allows up to five concurrent workers by default. Set
+`DELEGATE_MAX_WORKERS` to a positive integer before starting Pi to override the
+limit:
+
+```bash
+DELEGATE_MAX_WORKERS=8 pi
+```
+
+Unset, empty, invalid, and non-positive values fall back to the default of five.
 
 ## Delegate worker monitoring
 

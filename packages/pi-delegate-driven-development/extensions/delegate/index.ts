@@ -160,7 +160,7 @@ export default function delegate(pi: ExtensionAPI) {
   });
 
   const manager = new WorkerManager({
-    maxWorkers: 2,
+    maxWorkers: 5,
     projectRoot,
     maxWorkersEnv: process.env.DELEGATE_MAX_WORKERS,
   });
@@ -180,7 +180,7 @@ export default function delegate(pi: ExtensionAPI) {
       "Avoid tight polling loops around delegate_check; if polling is unavoidable, use a slow cadence.",
       "Use delegate_steer to send instructions to a running worker and delegate_abort to stop one.",
       "Use delegate_pack + context_pack to give many workers an identical frozen file-based prefix (spec/plan); context_pack composes with inherit_context (anchor first, pack appended).",
-      "Maximum 2 concurrent workers by default.",
+      "Maximum 5 concurrent workers by default.",
     ],
     parameters: Type.Object({
       task: Type.String({ description: "Prompt/instructions for the worker" }),
