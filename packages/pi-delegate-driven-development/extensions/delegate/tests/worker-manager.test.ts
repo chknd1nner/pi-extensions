@@ -114,12 +114,30 @@ describe("WorkerManager", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("reads max workers from env var", () => {
-    const envManager = new WorkerManager({ maxWorkers: 2, projectRoot: "/tmp", maxWorkersEnv: "5" });
-    for (let i = 1; i <= 5; i++) {
+  it.each([
+    ["5", 5],
+    [" 5 ", 5],
+    ["", 3],
+    ["0", 3],
+    ["-1", 3],
+    ["garbage", 3],
+    ["5workers", 3],
+    ["1.5", 3],
+    ["1e2", 3],
+    ["9007199254740992", 3],
+  ])("uses only complete positive integer env values (%j)", (maxWorkersEnv, expectedLimit) => {
+    const envManager = new WorkerManager({
+      maxWorkers: 3,
+      projectRoot: "/tmp",
+      maxWorkersEnv,
+    });
+
+    for (let i = 1; i <= expectedLimit; i++) {
+      expect(envManager.canStart()).toBe(true);
       envManager.register(`w${i}`, baseParams);
     }
+
     expect(envManager.canStart()).toBe(false);
-    expect(envManager.activeCount()).toBe(5);
+    expect(envManager.activeCount()).toBe(expectedLimit);
   });
 });

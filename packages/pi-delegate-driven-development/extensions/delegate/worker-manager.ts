@@ -31,13 +31,11 @@ export class WorkerManager {
 
   constructor(options: WorkerManagerOptions) {
     this.projectRoot = options.projectRoot;
-    const envMax = options.maxWorkersEnv;
-    if (envMax) {
-      const parsed = parseInt(envMax, 10);
-      this.maxWorkers = parsed > 0 ? parsed : options.maxWorkers;
-    } else {
-      this.maxWorkers = options.maxWorkers;
-    }
+    const envMax = options.maxWorkersEnv?.trim() ?? "";
+    const parsed = /^\d+$/.test(envMax) ? Number(envMax) : Number.NaN;
+    this.maxWorkers = Number.isSafeInteger(parsed) && parsed > 0
+      ? parsed
+      : options.maxWorkers;
   }
 
   nextTaskId(): string {
