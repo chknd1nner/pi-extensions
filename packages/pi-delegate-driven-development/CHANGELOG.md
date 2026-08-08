@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.3.2 - 2026-08-08
+
+- Raise the default delegate worker concurrency limit from two to five.
+- Document and strictly validate the `DELEGATE_MAX_WORKERS` positive-integer override.
+
 ## v0.3.1 - 2026-07-24
 
 - Bug fix: normalize tool names to lowercase in delegate_start to handle
