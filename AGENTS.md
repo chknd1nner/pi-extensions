@@ -53,4 +53,5 @@ The monorepo retains tags of the form `<bundle>-v<version>` (e.g. `pi-delegate-d
 
 ## Tool usage notes
 
+- Use `codemode` to chain tool calls when only the final output is required in order to save context and tokens.
 - `edit`: each `edits[]` entry accepts **only** `oldText` and `newText` (schema is `additionalProperties: false`). Never add extra keys like `newText2` or `_` — any stray key fails the entire call. To stage variants, finalize the value in `newText`; don't park drafts in extra fields.
