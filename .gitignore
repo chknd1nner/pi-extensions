@@ -9,6 +9,7 @@ Icon?
 
 # Project-local / agent files
 .pi/
+tmp/
 .claude/
 .opencode/
 .agent/
