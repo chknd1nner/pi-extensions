@@ -9,7 +9,7 @@ Final package name: `pi-agent-mesh`.
 
 This is new infrastructure. It does not replace, evolve, or modify `pi-delegate-driven-development`. The `delegate_*` tools, the ticket tools, and the delegate-driven-development skill stay exactly as they are. A revised DDD workflow that sits on top of the mesh is a separate project and explicitly out of scope here.
 
-The research that informed several decisions in this document is recorded in `tmp/cc-inter-session-research.md` (Claude Code cross-session messaging, implementation-level findings with 41 sources). Primary-source claims from that report are cited inline as `[CC]`. Facts we verified against the installed Pi build are in Appendix A.
+The research that informed several decisions in this document is recorded in `docs/research/2026-10-19-claude-code-cross-session-messaging.md` (Claude Code cross-session messaging, implementation-level findings with 41 sources). Primary-source claims from that report are cited inline as `[CC]`. Facts we verified against the installed Pi build are in Appendix A.
 
 ---
 
@@ -452,4 +452,4 @@ Adopted: idle-receiver auto-turn, between-tool-call delivery, the authority rule
 
 Rejected: memory-only mail that dies with the process, socket presence as the only durability story, generated names with a 1-byte suffix that collide, silent resolution of ambiguous names, and the approval-dialog gate that makes mail to headless workers undeliverable.
 
-Full findings with sources: `tmp/cc-inter-session-research.md`.
+Full findings with sources: `docs/research/2026-10-19-claude-code-cross-session-messaging.md`.
