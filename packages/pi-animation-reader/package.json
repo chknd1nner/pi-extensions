@@ -1,0 +1,40 @@
+{
+  "name": "pi-animation-reader",
+  "version": "0.1.0",
+  "description": "Read animated GIFs and APNGs in Pi: metadata, numbered thumbnail grids, and full-resolution frame extraction.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "gif",
+    "apng",
+    "animation"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "types.ts",
+    "cache.ts",
+    "gif-decoder.ts",
+    "apng-decoder.ts",
+    "png-encode.ts",
+    "bitmap-font.ts",
+    "grid.ts",
+    "metadata.ts",
+    "tools.ts",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
+  }
+}

@@ -1,0 +1,138 @@
+import { afterAll, describe, expect, it } from "vitest";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildGif, buildPng, splitRows } from "./helpers.js";
+import { animationFrames, animationGrid, animationInfo } from "../tools.js";
+import type { FramesDetails, GridDetails, InfoDetails, ToolOutput } from "../tools.js";
+
+const dir = mkdtempSync(join(tmpdir(), "pi-animation-reader-test-"));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+function writeFixture(name: string, bytes: Uint8Array): string {
+  const p = join(dir, name);
+  writeFileSync(p, bytes);
+  return p;
+}
+
+const textOf = (r: ToolOutput): string =>
+  (r.content.find((c) => c.type === "text") as { type: "text"; text: string } | undefined)?.text ?? "";
+
+const gifBytes = buildGif({
+  width: 4,
+  height: 4,
+  globalColorTable: Uint8Array.from([0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]),
+  frames: [
+    { pixels: new Uint8Array(16).fill(1), delay: 10 },
+    { pixels: new Uint8Array(16).fill(2), delay: 10 },
+    { pixels: new Uint8Array(16).fill(1), delay: 10 },
+  ],
+  loop: 0,
+});
+
+describe("animation_info tool", () => {
+  it("reports format, frames, delays, loop, duration, and palindrome", () => {
+    const r = animationInfo({ path: writeFixture("anim.gif", gifBytes) });
+    expect(r.isError).toBeUndefined();
+    expect((r.details as InfoDetails).frames).toBe(3);
+    const text = textOf(r);
+    expect(text).toMatch(/format:\s*gif/);
+    expect(text).toMatch(/frames:\s*3/);
+    expect(text).toMatch(/loop:\s*infinite/);
+    expect(text).toMatch(/duration:\s*300ms/);
+    expect(text).toMatch(/palindrome:\s*yes/i);
+    expect(text).toMatch(/half:\s*2/);
+  });
+
+  it("rejects a static PNG with a helpful message", () => {
+    const rows = splitRows(new Uint8Array(2 * 2 * 4), 2);
+    const p = writeFixture("static.png", buildPng({ width: 2, height: 2, bitDepth: 8, colorType: 6, scanlines: rows }));
+    const r = animationInfo({ path: p });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/GIF/i);
+    expect(textOf(r)).toMatch(/APNG/i);
+  });
+
+  it("reports a missing file with the resolved path", () => {
+    const r = animationInfo({ path: join(dir, "nope.gif") });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("nope.gif");
+  });
+});
+
+describe("animation_grid tool", () => {
+  it("returns one PNG image block and a text line naming the sampled frames", () => {
+    const r = animationGrid({ path: writeFixture("grid.gif", gifBytes), start: 0, end: 2 });
+    const images = r.content.filter((c) => c.type === "image");
+    const png = images[0] as { type: "image"; data: string; mimeType: string };
+    expect(images.length).toBe(1);
+    expect(png.mimeType).toBe("image/png");
+    expect(Buffer.from(png.data, "base64").slice(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(textOf(r)).toMatch(/frames 0-2/i);
+  });
+
+  it("samples uniformly when the range exceeds max_frames", () => {
+    const r = animationGrid({ path: join(dir, "grid.gif"), start: 0, end: 2, max_frames: 2 });
+    expect((r.details as GridDetails).indices).toEqual([0, 2]);
+  });
+
+  it("clamps out-of-range requests and notes it", () => {
+    const r = animationGrid({ path: join(dir, "grid.gif"), start: 0, end: 99 });
+    expect((r.details as GridDetails).clamped).toBe(true);
+    expect(textOf(r)).toMatch(/clamped/i);
+  });
+
+  it("rejects start greater than end", () => {
+    const r = animationGrid({ path: join(dir, "grid.gif"), start: 5, end: 1 });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/greater than/i);
+  });
+});
+
+describe("animation_frames tool", () => {
+  it("writes full-resolution PNGs named by physical frame index", () => {
+    const r = animationFrames({ path: join(dir, "grid.gif"), start: 0, end: 2 });
+    const d = r.details as FramesDetails;
+    const files = readdirSync(d.dir!).sort();
+    expect(files).toEqual(["frame_0.png", "frame_1.png", "frame_2.png"]);
+    const first = readFileSync(join(d.dir!, "frame_0.png"));
+    expect(first.slice(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(textOf(r)).toContain(d.dir!);
+  });
+
+  it("returns at most 4 frames inline", () => {
+    const big = buildGif({
+      width: 2,
+      height: 2,
+      globalColorTable: Uint8Array.from([0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]),
+      frames: Array.from({ length: 10 }, (_, i) => ({
+        pixels: Uint8Array.from([i % 4, (i + 1) % 4, (i + 2) % 4, (i + 3) % 4]),
+        delay: 10,
+      })),
+    });
+    const r = animationFrames({ path: writeFixture("big.gif", big), start: 0, end: 9, max_frames: 32 });
+    expect((r.details as FramesDetails).files!.length).toBe(10);
+    expect(r.content.filter((c) => c.type === "image").length).toBeLessThanOrEqual(4);
+  });
+
+  it("samples down when the range exceeds the default max_frames", () => {
+    const r = animationFrames({ path: join(dir, "big.gif"), start: 0, end: 9 });
+    const d = r.details as FramesDetails;
+    expect(d.files!.length).toBe(8);
+    expect(d.indices).toEqual([0, 1, 3, 4, 5, 6, 8, 9]);
+  });
+});
+
+describe("real-world sample", () => {
+  const real = "/Users/martinkuek/Desktop/Emoji.gif";
+  const t = it.skipIf(!existsSync(real));
+  t("decodes the real Emoji.gif (216 frames, matching ffmpeg's extraction)", () => {
+    const r = animationInfo({ path: real });
+    expect(r.isError).toBeUndefined();
+    const text = textOf(r);
+    expect(text).toMatch(/canvas: 128x128/);
+    expect(text).toMatch(/frames:\s*216/);
+    expect(text).toMatch(/loop:\s*infinite/);
+    expect(text).toMatch(/partial frames: yes/);
+  });
+});
