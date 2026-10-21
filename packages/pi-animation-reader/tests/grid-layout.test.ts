@@ -1,5 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { defaultCellWidth, gridLayout } from "../grid.js";
+import { defaultCellWidth, gridLayout, resolveGridShape } from "../grid.js";
+
+describe("resolveGridShape", () => {
+  it("defaults to 8 columns with rows derived from the frame count", () => {
+    expect(resolveGridShape(46, { maxFrames: 46 })).toEqual({ cols: 8, rows: 6, count: 46, limitedBy: null });
+  });
+
+  it("caps the frame count when max_rows cannot hold them all", () => {
+    expect(resolveGridShape(46, { maxFrames: 46, maxRows: 3 })).toEqual({
+      cols: 8,
+      rows: 3,
+      count: 24,
+      limitedBy: "max_rows",
+    });
+  });
+
+  it("narrows the grid without dropping frames when only columns is set", () => {
+    expect(resolveGridShape(46, { maxFrames: 46, columns: 4 })).toEqual({ cols: 4, rows: 12, count: 46, limitedBy: null });
+  });
+
+  it("applies both bounds together", () => {
+    expect(resolveGridShape(46, { maxFrames: 46, columns: 4, maxRows: 3 })).toEqual({
+      cols: 4,
+      rows: 3,
+      count: 12,
+      limitedBy: "max_rows",
+    });
+  });
+
+  it("reports max_frames as the binding limit when it is tighter than the shape", () => {
+    expect(resolveGridShape(46, { maxFrames: 10, maxRows: 3 })).toEqual({ cols: 8, rows: 2, count: 10, limitedBy: "max_frames" });
+  });
+
+  it("clamps an oversized column request", () => {
+    const s = resolveGridShape(46, { maxFrames: 46, columns: 20 });
+    expect(s.cols).toBe(16);
+    expect(s.rows).toBe(3);
+    expect(s.count).toBe(46);
+  });
+
+  it("never asks for more columns than there are frames", () => {
+    expect(resolveGridShape(3, { maxFrames: 46, columns: 8 })).toEqual({ cols: 3, rows: 1, count: 3, limitedBy: null });
+  });
+});
 
 describe("defaultCellWidth", () => {
   it("keeps square canvases at the 160px floor", () => {

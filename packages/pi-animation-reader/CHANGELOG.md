@@ -12,6 +12,8 @@
   the canvas aspect ratio (~135px thumbnail short edge), so 16:9 sources get 240px cells rather
   than 160px.
 - Full-resolution frame extraction to disk with up to four frames returned inline.
+- `columns` and `max_rows` as layout bounds on `animation_grid`; when a shape cannot hold the
+  requested range, fewer frames are sampled and the response names the bound that applied.
 - Advisory palindrome detection from composited-frame hashes.
 - APNG frames whose `blend_op=SOURCE` patch does not cover its own rectangle are composited
   source-over rather than erasing the canvas (encoders tag sparse patches SOURCE); the count is

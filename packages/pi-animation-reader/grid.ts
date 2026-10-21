@@ -3,6 +3,41 @@ import { drawText, glyphHeightFor } from "./bitmap-font.js";
 import { encodePng } from "./png-encode.js";
 
 export const MAX_COLUMNS = 8;
+/** Ceiling on an explicitly requested column count, so a bad request cannot make a 100-wide grid. */
+export const MAX_COLUMNS_CEIL = 16;
+export const MAX_ROWS_CEIL = 16;
+
+export interface GridShape {
+  cols: number;
+  rows: number;
+  count: number;
+  /** Which bound reduced the frame count, if any. */
+  limitedBy: "max_frames" | "columns" | "max_rows" | null;
+}
+
+/**
+ * Decide how many frames to show and in what shape. `columns` and `max_rows` are bounds rather
+ * than exact dimensions, so they cannot contradict each other: the frame count is
+ * min(available, maxFrames, columns * maxRows) and the shape follows from that count. Whatever
+ * binds, the caller reports it, so a silently reduced sweep is never a surprise.
+ */
+export function resolveGridShape(
+  available: number,
+  opts: { maxFrames: number; columns?: number; maxRows?: number },
+): GridShape {
+  const columns = Math.max(1, Math.min(MAX_COLUMNS_CEIL, opts.columns ?? MAX_COLUMNS));
+  const maxRows = Math.max(1, Math.min(MAX_ROWS_CEIL, opts.maxRows ?? MAX_ROWS_CEIL));
+  const capacity = columns * maxRows;
+  const count = Math.min(available, opts.maxFrames, capacity);
+
+  let limitedBy: GridShape["limitedBy"] = null;
+  if (count < available) {
+    limitedBy = capacity < opts.maxFrames ? (opts.maxRows !== undefined ? "max_rows" : "columns") : "max_frames";
+  }
+
+  const cols = Math.min(count, columns);
+  return { cols, rows: Math.ceil(count / Math.max(1, cols)), count, limitedBy };
+}
 
 /**
  * Default thumbnail cell width for a canvas of the given size. Cell width alone under-serves
@@ -28,9 +63,10 @@ export interface GridLayout {
 export function gridLayout(
   count: number,
   cell: { cellWidth: number; cellHeight: number; labelHeight: number },
+  columns = MAX_COLUMNS,
 ): GridLayout {
-  const cols = Math.min(count, MAX_COLUMNS);
-  const rows = Math.ceil(count / MAX_COLUMNS);
+  const cols = Math.min(count, columns);
+  const rows = Math.ceil(count / Math.max(1, cols));
   const padding = 8;
   const gap = 6;
   return {
@@ -89,10 +125,11 @@ export function renderGrid(
   frameWidth: number,
   frameHeight: number,
   cellWidth: number,
+  columns = MAX_COLUMNS,
 ): Uint8Array {
   const cellH = Math.max(1, Math.round((frameHeight / frameWidth) * cellWidth));
   const labelH = glyphHeightFor(cellWidth) + 6;
-  const layout = gridLayout(frames.length, { cellWidth, cellHeight: cellH, labelHeight: labelH });
+  const layout = gridLayout(frames.length, { cellWidth, cellHeight: cellH, labelHeight: labelH }, columns);
 
   const canvas = new Uint8Array(layout.canvasWidth * layout.canvasHeight * 4);
   // dark neutral background so transparency reads as dark

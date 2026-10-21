@@ -113,6 +113,26 @@ describe("animation_grid tool", () => {
     expect((fixed.details as GridDetails).cellWidth).toBe(100);
   });
 
+  it("honours columns and max_rows as bounds and reports the layout", () => {
+    const many = buildGif({
+      width: 4,
+      height: 4,
+      globalColorTable: Uint8Array.from([0, 0, 0, 255, 255, 255, 0, 255, 0, 0, 255, 255]),
+      frames: Array.from({ length: 12 }, (_, i) => ({ pixels: new Uint8Array(16).fill((i % 3) + 1), delay: 10 })),
+      loop: 0,
+    });
+    const p = writeFixture("many.gif", many);
+    const r = animationGrid({ path: p, start: 0, end: 11, max_frames: 12, columns: 3, max_rows: 2 });
+    const d = r.details as GridDetails;
+    expect([d.cols, d.rows]).toEqual([3, 2]);
+    expect(d.indices).toEqual([0, 2, 4, 7, 9, 11]); // uniform over 12, both endpoints pinned
+    expect(textOf(r)).toContain("3x2");
+    expect(textOf(r)).toContain("limited by max_rows");
+    // columns alone reshapes without dropping frames
+    const wide = animationGrid({ path: p, start: 0, end: 11, max_frames: 12, columns: 4 });
+    expect([wide.details as GridDetails].map((x) => [x.cols, x.rows])).toEqual([[4, 3]]);
+  });
+
   it("clamps out-of-range requests and notes it", () => {
     const r = animationGrid({ path: join(dir, "grid.gif"), start: 0, end: 99 });
     expect((r.details as GridDetails).clamped).toBe(true);

@@ -4,7 +4,7 @@ import { basename, extname, join, resolve } from "node:path";
 import { getAnimation } from "./cache.js";
 import { decodeGif } from "./gif-decoder.js";
 import { decodeApng, isAnimatedPng } from "./apng-decoder.js";
-import { defaultCellWidth, renderGrid } from "./grid.js";
+import { defaultCellWidth, renderGrid, resolveGridShape } from "./grid.js";
 import { clampFrameRange, detectPalindrome, formatDelayRuns, frameHashes, sampleIndices } from "./metadata.js";
 import { encodePng } from "./png-encode.js";
 import type { DecodedAnimation } from "./types.js";
@@ -29,6 +29,9 @@ export interface GridDetails {
   indices?: number[];
   clamped?: boolean;
   cellWidth?: number;
+  cols?: number;
+  rows?: number;
+  limitedBy?: "max_frames" | "columns" | "max_rows";
   error?: boolean;
 }
 
@@ -142,6 +145,8 @@ export interface GridParams {
   end: number;
   max_frames?: number;
   cell_width?: number;
+  columns?: number;
+  max_rows?: number;
 }
 
 export function animationGrid(params: GridParams): ToolOutput {
@@ -153,20 +158,24 @@ export function animationGrid(params: GridParams): ToolOutput {
   const { start, end, clamped } = clampFrameRange(params.start, params.end, anim.frames.length);
   const maxFrames = Math.max(1, Math.min(64, params.max_frames ?? 16));
   const cellWidth = Math.max(32, Math.min(480, params.cell_width ?? defaultCellWidth(anim.width, anim.height)));
-  const indices = sampleIndices(start, end, maxFrames);
+  const available = end - start + 1;
+  const shape = resolveGridShape(available, { maxFrames, columns: params.columns, maxRows: params.max_rows });
+  const indices = sampleIndices(start, end, shape.count);
   const png = renderGrid(
     indices.map((i) => ({ rgba: anim.frames[i].rgba, index: i })),
     anim.width,
     anim.height,
     cellWidth,
+    shape.cols,
   );
 
   const notes: string[] = [];
   if (clamped) notes.push(`range clamped to 0-${anim.frames.length - 1}`);
+  if (shape.limitedBy) notes.push(`limited by ${shape.limitedBy} — ${shape.cols}x${shape.rows} holds ${shape.count} frames`);
   if (anim.errors.length) notes.push(...anim.errors);
   const text =
     `grid of sampled frames ${indices[0]}-${indices[indices.length - 1]} ` +
-    `(${indices.length} of ${end - start + 1} in range; cell ${cellWidth}px). ` +
+    `(${indices.length} of ${available} in range; ${shape.cols}x${shape.rows} cells; cell ${cellWidth}px). ` +
     `Numbers under each thumbnail are physical frame indices. ` +
     `Use animation_frames with those indices to zoom. ${notes.join("; ")}`.trimEnd();
 
@@ -175,7 +184,7 @@ export function animationGrid(params: GridParams): ToolOutput {
       { type: "text", text },
       { type: "image", data: Buffer.from(png).toString("base64"), mimeType: "image/png" },
     ],
-    details: { indices, clamped, cellWidth },
+    details: { indices, clamped, cellWidth, cols: shape.cols, rows: shape.rows, limitedBy: shape.limitedBy ?? undefined },
   };
 }
 

@@ -39,11 +39,11 @@ it never changes how frame ranges are interpreted.
 ### `animation_grid`
 
 ```
-animation_grid({ path, start, end, max_frames = 16, cell_width })
+animation_grid({ path, start, end, max_frames = 16, cell_width, columns, max_rows })
 ```
 
-Composites frames `start..end`, downscales to thumbnails, tiles them (max 8 columns), and
-returns **one PNG** with the physical frame number rendered under each cell:
+Composites frames `start..end`, downscales to thumbnails, tiles them (8 columns by default, up
+to 16), and returns **one PNG** with the physical frame number rendered under each cell:
 
 ```
 grid of sampled frames 0-215 (16 of 216 in range; cell 160px).
@@ -58,6 +58,17 @@ the pixels, so they survive any downstream image resizing.
 keeps a ~135px short edge: 160px for square sources, 240px for 16:9, floored at 160 and capped
 at 480. Pass it explicitly to override. Either way, a cell wider than the file's native
 resolution just upscales — for real detail use `animation_frames`.
+
+`columns` and `max_rows` are **bounds, not exact dimensions**, so they can never contradict each
+other. The frame count is `min(max_frames, columns × max_rows)` and the shape follows from that,
+which means a shape that cannot hold the range samples fewer frames rather than failing:
+
+```
+grid of sampled frames 0-45 (24 of 46 in range; 8x3 cells; cell 160px). ... limited by max_rows — 8x3 holds 24 frames
+```
+
+Rows are never set directly — they fall out of the frame count and the column bound. The layout
+actually used is always in the response text, so a reduced sweep is never silent.
 
 ### `animation_frames`
 

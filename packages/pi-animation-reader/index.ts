@@ -20,6 +20,15 @@ const gridSchema = Type.Object({
         "Thumbnail cell width in px. Default scales with the canvas aspect ratio (160px floor, 480px ceiling) so wide sources keep detail.",
     }),
   ),
+  columns: Type.Optional(
+    Type.Number({ description: "Max columns per row (default 8, max 16). Fewer columns gives a narrower, taller grid." }),
+  ),
+  max_rows: Type.Optional(
+    Type.Number({
+      description:
+        "Max rows. Bounds are advisory: if columns x max_rows cannot hold the requested frames, fewer frames are sampled uniformly and the response says which bound applied.",
+    }),
+  ),
 });
 
 const framesSchema = Type.Object({
@@ -34,6 +43,7 @@ const framesSchema = Type.Object({
 const GUIDELINES = [
   "Reading animations: call animation_info first (frame count, delays, palindrome hint), then animation_grid to skim a frame range (numbers under thumbnails are frame indices), then animation_frames to zoom into specific frames at full resolution.",
   "Frame indices are physical file order and are shared by all three tools; animation_info reports whether the file is a palindrome so you can skip the mirrored half.",
+  "If a grid comes back unreadable, re-call animation_grid with fewer columns, a larger cell_width, or max_rows to change the layout; the layout used is reported in the response text.",
 ];
 
 export default function piAnimationReader(pi: ExtensionAPI): void {
