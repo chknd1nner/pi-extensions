@@ -4,7 +4,7 @@ import { basename, extname, join, resolve } from "node:path";
 import { getAnimation } from "./cache.js";
 import { decodeGif } from "./gif-decoder.js";
 import { decodeApng, isAnimatedPng } from "./apng-decoder.js";
-import { renderGrid } from "./grid.js";
+import { defaultCellWidth, renderGrid } from "./grid.js";
 import { clampFrameRange, detectPalindrome, formatDelayRuns, frameHashes, sampleIndices } from "./metadata.js";
 import { encodePng } from "./png-encode.js";
 import type { DecodedAnimation } from "./types.js";
@@ -152,7 +152,7 @@ export function animationGrid(params: GridParams): ToolOutput {
 
   const { start, end, clamped } = clampFrameRange(params.start, params.end, anim.frames.length);
   const maxFrames = Math.max(1, Math.min(64, params.max_frames ?? 16));
-  const cellWidth = Math.max(32, Math.min(480, params.cell_width ?? 160));
+  const cellWidth = Math.max(32, Math.min(480, params.cell_width ?? defaultCellWidth(anim.width, anim.height)));
   const indices = sampleIndices(start, end, maxFrames);
   const png = renderGrid(
     indices.map((i) => ({ rgba: anim.frames[i].rgba, index: i })),

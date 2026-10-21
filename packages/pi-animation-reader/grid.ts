@@ -4,6 +4,18 @@ import { encodePng } from "./png-encode.js";
 
 export const MAX_COLUMNS = 8;
 
+/**
+ * Default thumbnail cell width for a canvas of the given size. Cell width alone under-serves
+ * wide sources — a 16:9 frame in a 160px cell is only 90px tall — so the default is derived
+ * from the aspect ratio to keep the thumbnail's short edge near 135px, floored at 160 and
+ * capped at the 480px ceiling.
+ */
+export function defaultCellWidth(frameWidth: number, frameHeight: number): number {
+  const targetShortEdge = 135;
+  const scaled = Math.ceil((targetShortEdge * frameWidth) / Math.max(1, frameHeight));
+  return Math.max(160, Math.min(480, scaled));
+}
+
 export interface GridLayout {
   cols: number;
   rows: number;

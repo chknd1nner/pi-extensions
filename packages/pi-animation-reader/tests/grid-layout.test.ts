@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { gridLayout } from "../grid.js";
+import { defaultCellWidth, gridLayout } from "../grid.js";
+
+describe("defaultCellWidth", () => {
+  it("keeps square canvases at the 160px floor", () => {
+    expect(defaultCellWidth(220, 220)).toBe(160);
+  });
+
+  it("widens cells for wide canvases so the thumbnail keeps its short edge", () => {
+    expect(defaultCellWidth(480, 270)).toBe(240); // 16:9 -> 240x135
+    expect(defaultCellWidth(1280, 720)).toBe(240); // same ratio, same answer
+  });
+
+  it("does not shrink below the floor for tall canvases", () => {
+    expect(defaultCellWidth(270, 480)).toBe(160);
+  });
+
+  it("caps at the 480px ceiling for extreme aspect ratios", () => {
+    expect(defaultCellWidth(1000, 100)).toBe(480);
+  });
+});
 
 describe("gridLayout", () => {
   it("caps columns at 8", () => {

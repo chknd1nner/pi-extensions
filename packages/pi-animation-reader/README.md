@@ -39,7 +39,7 @@ it never changes how frame ranges are interpreted.
 ### `animation_grid`
 
 ```
-animation_grid({ path, start, end, max_frames = 16, cell_width = 160 })
+animation_grid({ path, start, end, max_frames = 16, cell_width })
 ```
 
 Composites frames `start..end`, downscales to thumbnails, tiles them (max 8 columns), and
@@ -54,8 +54,10 @@ If the range holds more frames than `max_frames`, frames are sampled uniformly a
 endpoints are always included. Numbers are drawn with a built-in bitmap font directly into
 the pixels, so they survive any downstream image resizing.
 
-`cell_width` above the file's native resolution just upscales — for real detail use
-`animation_frames`.
+`cell_width` defaults to a value derived from the canvas aspect ratio, sized so the thumbnail
+keeps a ~135px short edge: 160px for square sources, 240px for 16:9, floored at 160 and capped
+at 480. Pass it explicitly to override. Either way, a cell wider than the file's native
+resolution just upscales — for real detail use `animation_frames`.
 
 ### `animation_frames`
 

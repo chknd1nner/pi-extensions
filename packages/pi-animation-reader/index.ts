@@ -14,7 +14,12 @@ const gridSchema = Type.Object({
   max_frames: Type.Optional(
     Type.Number({ description: "Uniformly sample at most this many frames from the range (default 16, max 64)" }),
   ),
-  cell_width: Type.Optional(Type.Number({ description: "Thumbnail cell width in px (default 160, max 480)" })),
+  cell_width: Type.Optional(
+    Type.Number({
+      description:
+        "Thumbnail cell width in px. Default scales with the canvas aspect ratio (160px floor, 480px ceiling) so wide sources keep detail.",
+    }),
+  ),
 });
 
 const framesSchema = Type.Object({

@@ -95,6 +95,24 @@ describe("animation_grid tool", () => {
     expect(textOf(r)).toContain("sparse SOURCE patches: 1 (composited as overlay, not replacement)");
   });
 
+  it("sizes default cells from the canvas aspect ratio", () => {
+    const wide = buildGif({
+      width: 32,
+      height: 18,
+      globalColorTable: Uint8Array.from([0, 0, 0, 255, 255, 255, 0, 255, 0, 0, 255, 255]),
+      frames: [
+        { pixels: new Uint8Array(32 * 18).fill(1), delay: 10 },
+        { pixels: new Uint8Array(32 * 18).fill(2), delay: 10 },
+      ],
+      loop: 0,
+    });
+    const r = animationGrid({ path: writeFixture("wide.gif", wide), start: 0, end: 1 });
+    expect((r.details as GridDetails).cellWidth).toBe(240);
+    // an explicit cell_width still wins
+    const fixed = animationGrid({ path: join(dir, "wide.gif"), start: 0, end: 1, cell_width: 100 });
+    expect((fixed.details as GridDetails).cellWidth).toBe(100);
+  });
+
   it("clamps out-of-range requests and notes it", () => {
     const r = animationGrid({ path: join(dir, "grid.gif"), start: 0, end: 99 });
     expect((r.details as GridDetails).clamped).toBe(true);
