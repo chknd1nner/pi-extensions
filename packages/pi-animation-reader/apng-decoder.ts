@@ -222,6 +222,8 @@ function collectParts(chunks: Array<{ type: string; data: Uint8Array }>, canvasD
       idats.push(c.data);
     } else if (c.type === "fdAT") {
       idats.push(c.data.subarray(4));
+    } else if (c.type === "fdAT") {
+      idats.push(c.data.subarray(4));
     }
   }
   flush();
@@ -256,6 +258,7 @@ export function decodeApng(data: Uint8Array): DecodedAnimation {
   let backup: Uint8Array | null = null;
   let backupRect = { x: 0, y: 0, w: 0, h: 0 };
   let prevDispose = 0;
+  let lenientBlend = 0;
   let usesPartialFrames = false;
 
   const clipRect = (r: { x: number; y: number; w: number; h: number }) => {
@@ -298,6 +301,20 @@ export function decodeApng(data: Uint8Array): DecodedAnimation {
       backup.set(canvas.subarray(((rect.y + y) * canvasDesc.width + rect.x) * 4, ((rect.y + y) * canvasDesc.width + rect.x + rect.w) * 4), y * rect.w * 4);
     }
 
+    // blend_op=SOURCE says "replace the rectangle". Encoders that tag mostly-transparent
+    // patches that way (ffmpeg, apngasm) are relying on the canvas underneath surviving, and
+    // every mainstream player composites them source-over. Follow the intent when a SOURCE
+    // patch clearly does not cover its own rectangle.
+    let replace = fctl.blendOp === 1;
+    if (replace) {
+      let opaque = 0;
+      for (let s = 3; s < img.length; s += 4) if (img[s] > 0) opaque++;
+      if (opaque < img.length / 8) {
+        replace = false;
+        lenientBlend++;
+      }
+    }
+
     for (let py = 0; py < fctl.height; py++) {
       const gy = fctl.y + py;
       if (gy < 0 || gy >= canvasDesc.height) continue;
@@ -307,7 +324,7 @@ export function decodeApng(data: Uint8Array): DecodedAnimation {
         const s = (py * fctl.width + px) * 4;
         const sr = img[s], sg = img[s + 1], sb = img[s + 2], sa = img[s + 3];
         const o = (gy * canvasDesc.width + gx) * 4;
-        if (fctl.blendOp === 1) {
+        if (replace) {
           canvas[o] = sr;
           canvas[o + 1] = sg;
           canvas[o + 2] = sb;
@@ -343,8 +360,10 @@ export function decodeApng(data: Uint8Array): DecodedAnimation {
     width: canvasDesc.width,
     height: canvasDesc.height,
     frames,
-    loopCount: actl ? u32(actl.data, 8) : undefined,
+    // acTL is num_frames then num_plays; 0 plays = loop forever.
+    loopCount: actl ? u32(actl.data, 4) : undefined,
     usesPartialFrames,
+    lenientBlendFrames: lenientBlend || undefined,
     errors,
   };
 }

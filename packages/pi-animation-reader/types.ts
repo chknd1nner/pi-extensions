@@ -13,6 +13,11 @@ export interface DecodedAnimation {
   loopCount?: number;
   /** True when frames are partial patches/blended overlays (naive per-frame extraction breaks). */
   usesPartialFrames: boolean;
+  /**
+   * Count of APNG frames whose blend_op=SOURCE patch does not cover its own rectangle, composited
+   * source-over instead of replacing so the canvas is not erased. Present only when non-zero.
+   */
+  lenientBlendFrames?: number;
   /** Non-fatal per-frame problems, e.g. "frame 7: truncated image data". */
   errors: string[];
 }

@@ -126,6 +126,9 @@ export function animationInfo(params: { path: string }): ToolOutput {
     `duration: ${duration}ms`,
     `delays: ${formatDelayRuns(anim.frames.map((f) => f.delayMs))}`,
     `partial frames: ${anim.usesPartialFrames ? "yes (frames are patches/overlays; per-frame extraction needs compositing)" : "no"}`,
+    ...(anim.lenientBlendFrames
+      ? [`sparse SOURCE patches: ${anim.lenientBlendFrames} (composited as overlay, not replacement)`]
+      : []),
     `palindrome: ${palLine(detectPalindrome(hashes))}`,
     `frame hashes: ${hashes.join(" ")}`,
   ];

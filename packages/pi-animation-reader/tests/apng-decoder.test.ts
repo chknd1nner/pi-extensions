@@ -64,6 +64,44 @@ describe("decodeApng", () => {
     expect(px(1, 1)).toEqual(BLUE50); // replaced, not blended
   });
 
+  it("reports the APNG loop count from num_plays", () => {
+    const apng = buildApng({
+      width: 4,
+      height: 4,
+      numFrames: 2,
+      numPlays: 3,
+      frames: [
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 100, data: apngFrameData(4, 4, frame(4, 4, RED)) },
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 100, data: apngFrameData(4, 4, frame(4, 4, RED)) },
+      ],
+    });
+    expect(decodeApng(apng).loopCount).toBe(3);
+  });
+
+  it("treats a sparse SOURCE patch as an overlay instead of blanking the canvas", () => {
+    // ffmpeg and apngasm emit mostly-transparent patches tagged blend_op=1. Read literally that
+    // erases the canvas, which no mainstream player does — they keep what is underneath.
+    const sparse = new Uint8Array(4 * 4 * 4);
+    sparse.set(BLUE50, 0); // only the patch's own (0,0) is painted
+    const apng = buildApng({
+      width: 4,
+      height: 4,
+      numFrames: 2,
+      numPlays: 0,
+      frames: [
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 100, data: apngFrameData(4, 4, frame(4, 4, RED)) },
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 50, blendOp: 1, data: apngFrameData(4, 4, sparse) },
+      ],
+    });
+    const anim = decodeApng(apng);
+    const px = (x: number, y: number) => Array.from(anim.frames[1].rgba.slice((y * 4 + x) * 4, (y * 4 + x) * 4 + 4));
+    expect(px(3, 3)).toEqual(RED); // canvas preserved, not blanked
+    const p = px(0, 0); // the patch's own pixel still lands on top
+    expect(p[2]).toBeGreaterThanOrEqual(126);
+    expect(Math.abs(p[0] - 128)).toBeLessThanOrEqual(2);
+    expect(anim.lenientBlendFrames).toBe(1);
+  });
+
   it("dispose op 1 restores the pre-patch canvas for the next frame", () => {
     const apng = buildApng({
       width: 4,

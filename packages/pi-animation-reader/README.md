@@ -105,12 +105,17 @@ file are cheap.
 
 ### A note on APNG disposal
 
-Frames are resolved exactly as the APNG specification defines `dispose_op` and `blend_op`
-(`SOURCE` replaces the frame rectangle, `BACKGROUND` clears it to transparent). Some encoders
-emit sparse patches marked `SOURCE`, which under a strict reading blanks the canvas — players
-disagree on those files: ffmpeg and Pillow both composite them as if they were `OVER`, which
-is why the same file can look different in different viewers. If a grid shows an unexpectedly
-blank frame, that is the file's metadata being ambiguous, not the decode losing pixels.
+Frames are resolved as the APNG specification defines `dispose_op` and `blend_op`, with one
+documented exception. `blend_op=SOURCE` means "replace the frame rectangle", but encoders
+(ffmpeg, apngasm) routinely tag mostly-transparent patches that way, and read literally the
+instruction erases the canvas — no mainstream player does that, and the animation comes out
+with blank frames. So a SOURCE patch that covers less than half its own rectangle is
+composited source-over instead. Well-formed files keep spec behaviour; the lenient frames are
+counted and reported by `animation_info`:
+
+```
+sparse SOURCE patches: 47 (composited as overlay, not replacement)
+```
 
 ## Install
 

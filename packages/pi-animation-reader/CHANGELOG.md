@@ -11,3 +11,6 @@
   font; uniform sampling for ranges larger than `max_frames`.
 - Full-resolution frame extraction to disk with up to four frames returned inline.
 - Advisory palindrome detection from composited-frame hashes.
+- APNG frames whose `blend_op=SOURCE` patch does not cover its own rectangle are composited
+  source-over rather than erasing the canvas (encoders tag sparse patches SOURCE); the count is
+  reported by `animation_info`.

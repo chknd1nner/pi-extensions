@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildGif, buildPng, splitRows } from "./helpers.js";
+import { buildApng, apngFrameData, buildGif, buildPng, splitRows } from "./helpers.js";
 import { animationFrames, animationGrid, animationInfo } from "../tools.js";
 import type { FramesDetails, GridDetails, InfoDetails, ToolOutput } from "../tools.js";
 
@@ -74,6 +74,25 @@ describe("animation_grid tool", () => {
   it("samples uniformly when the range exceeds max_frames", () => {
     const r = animationGrid({ path: join(dir, "grid.gif"), start: 0, end: 2, max_frames: 2 });
     expect((r.details as GridDetails).indices).toEqual([0, 2]);
+  });
+
+  it("reports sparse SOURCE patches that were composited as overlays", () => {
+    const solid = new Uint8Array(4 * 4 * 4);
+    for (let i = 0; i < 16; i++) solid.set([255, 0, 0, 255], i * 4);
+    const sparse = new Uint8Array(4 * 4 * 4);
+    sparse.set([0, 0, 255, 255], 0);
+    const apng = buildApng({
+      width: 4,
+      height: 4,
+      numFrames: 2,
+      numPlays: 0,
+      frames: [
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 100, data: apngFrameData(4, 4, solid) },
+        { x: 0, y: 0, width: 4, height: 4, delayNum: 1, delayDen: 100, blendOp: 1, data: apngFrameData(4, 4, sparse) },
+      ],
+    });
+    const r = animationInfo({ path: writeFixture("lenient.apng", apng) });
+    expect(textOf(r)).toContain("sparse SOURCE patches: 1 (composited as overlay, not replacement)");
   });
 
   it("clamps out-of-range requests and notes it", () => {
