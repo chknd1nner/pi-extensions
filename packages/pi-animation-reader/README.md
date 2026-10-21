@@ -91,7 +91,7 @@ animation_frames(158-162)            -> full-res frames to read the expression
 | Format | Status |
 | --- | --- |
 | GIF87a / GIF89a (incl. partial frames, disposal methods, transparency, NETSCAPE loops) | yes |
-| APNG (fcTL dispose/blend, multi-IDAT frames, bit depth 8/16, colour types 0/2/3/6) | yes |
+| APNG (fcTL dispose/blend, IDAT + fdAT frames, multi-chunk frames, bit depth 8/16, colour types 0/2/3/6) | yes |
 | Static PNG | rejected on purpose — `read` already handles it |
 | Interlaced PNG/GIF | rejected with a clear message |
 | Animated WebP, AVIF, mp4/webm | not yet |
@@ -102,6 +102,15 @@ dependencies, no native binaries, no external commands.**
 
 Decoding is cached per session keyed by path + mtime + size, so repeated grids over the same
 file are cheap.
+
+### A note on APNG disposal
+
+Frames are resolved exactly as the APNG specification defines `dispose_op` and `blend_op`
+(`SOURCE` replaces the frame rectangle, `BACKGROUND` clears it to transparent). Some encoders
+emit sparse patches marked `SOURCE`, which under a strict reading blanks the canvas — players
+disagree on those files: ffmpeg and Pillow both composite them as if they were `OVER`, which
+is why the same file can look different in different viewers. If a grid shows an unexpectedly
+blank frame, that is the file's metadata being ambiguous, not the decode losing pixels.
 
 ## Install
 

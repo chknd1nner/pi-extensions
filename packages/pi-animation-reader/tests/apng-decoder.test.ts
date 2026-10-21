@@ -86,8 +86,9 @@ describe("decodeApng", () => {
     expect(px(1, 1)).toEqual(RED);
   });
 
-  it("joins a frame split across multiple IDAT chunks", () => {
-    // Real encoders split a frame's IDAT stream across chunks: one deflate stream, two chunks.
+  it("joins a frame split across multiple fdAT chunks", () => {
+    // Real encoders split a frame's data across chunks: one deflate stream, several fdAT chunks,
+    // each carrying its own sequence number.
     const px = frame(4, 4, RED);
     const rows: number[] = [];
     for (let y = 0; y < 4; y++) rows.push(0, ...px.slice(y * 16, y * 16 + 16));
@@ -96,15 +97,41 @@ describe("decodeApng", () => {
     const bytes = [
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
       ...pngChunk("IHDR", [...u32be(4), ...u32be(4), 8, 6, 0, 0, 0]),
-      ...pngChunk("acTL", [...u32be(1), ...u32be(0)]),
+      ...pngChunk("acTL", [...u32be(2), ...u32be(0)]),
       ...pngChunk("fcTL", [...u32be(0), ...u32be(4), ...u32be(4), ...u32be(0), ...u32be(0), 0, 1, 0, 100, 0, 0]),
-      ...pngChunk("IDAT", [...deflated.slice(0, cut)]),
-      ...pngChunk("IDAT", [...deflated.slice(cut)]),
+      ...pngChunk("IDAT", [...apngFrameData(4, 4, px)]),
+      ...pngChunk("fcTL", [...u32be(1), ...u32be(4), ...u32be(4), ...u32be(0), ...u32be(0), 0, 1, 0, 100, 0, 0]),
+      ...pngChunk("fdAT", [...u32be(2), ...deflated.slice(0, cut)]),
+      ...pngChunk("fdAT", [...u32be(3), ...deflated.slice(cut)]),
       ...pngChunk("IEND", []),
     ];
     const anim = decodeApng(Uint8Array.from(bytes));
-    expect(anim.frames.length).toBe(1);
-    expect(Array.from(anim.frames[0].rgba.slice(0, 4))).toEqual(RED);
+    expect(anim.frames.length).toBe(2);
+    expect(Array.from(anim.frames[1].rgba.slice(0, 4))).toEqual(RED);
+  });
+
+  it("decodes frames carried in fdAT chunks (spec-conformant APNG)", () => {
+    // Only the default image uses IDAT; later frames use fdAT with a 4-byte sequence number.
+    const red = frame(4, 4, RED);
+    const greenPatch = frame(2, 2, [0, 255, 0, 255]);
+    const bytes = [
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      ...pngChunk("IHDR", [...u32be(4), ...u32be(4), 8, 6, 0, 0, 0]),
+      ...pngChunk("acTL", [...u32be(2), ...u32be(0)]),
+      ...pngChunk("fcTL", [...u32be(0), ...u32be(4), ...u32be(4), ...u32be(0), ...u32be(0), 0, 1, 0, 100, 0, 0]),
+      ...pngChunk("IDAT", [...apngFrameData(4, 4, red)]),
+      ...pngChunk("fcTL", [...u32be(1), ...u32be(2), ...u32be(2), ...u32be(1), ...u32be(1), 0, 1, 0, 100, 0, 1]),
+      ...pngChunk("fdAT", [...u32be(2), ...deflateSync(Uint8Array.from(
+        [0, ...greenPatch.slice(0, 8), 0, ...greenPatch.slice(8, 16)],
+      ))]),
+      ...pngChunk("IEND", []),
+    ];
+    const anim = decodeApng(Uint8Array.from(bytes));
+    expect(anim.frames.length).toBe(2);
+    const px = (x: number, y: number) =>
+      Array.from(anim.frames[1].rgba.slice((y * 4 + x) * 4, (y * 4 + x) * 4 + 4));
+    expect(px(0, 0)).toEqual(RED); // default image still forms the base canvas
+    expect(px(1, 1)).toEqual([0, 255, 0, 255]); // fdAT frame blended (blend_op 1 = over region)
   });
 
   it("rejects interlaced APNG with a clear error", () => {

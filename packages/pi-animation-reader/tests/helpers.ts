@@ -278,7 +278,7 @@ export function buildApng(o: {
     ...pngChunk("acTL", [...u32be(o.numFrames), ...u32be(o.numPlays ?? 0)]),
   );
   let seq = 0;
-  for (const f of o.frames) {
+  o.frames.forEach((f, idx) => {
     bytes.push(
       ...pngChunk("fcTL", [
         ...u32be(seq++),
@@ -292,8 +292,12 @@ export function buildApng(o: {
         f.blendOp ?? 0,
       ]),
     );
-    bytes.push(...f.data);
-  }
+    if (idx === 0) {
+      bytes.push(...pngChunk("IDAT", [...f.data])); // the default image
+    } else {
+      bytes.push(...pngChunk("fdAT", [...u32be(seq++), ...f.data]));
+    }
+  });
   bytes.push(...pngChunk("IEND", []));
   return Uint8Array.from(bytes);
 }
@@ -303,14 +307,10 @@ function u16be(n: number): number[] {
   return [(n >> 8) & 0xff, n & 0xff];
 }
 
-/** Build the IDAT chunk for one APNG frame image (RGBA 8-bit, filter 0).
- *  Real APNG frames carry no IHDR — dimensions come from fcTL, pixel format from the canvas IHDR. */
+/** Build the deflate payload for one APNG frame image (RGBA 8-bit, filter 0).
+ *  buildApng wraps it in IDAT for the default image and fdAT (with a sequence number) for the rest. */
 export function apngFrameData(width: number, height: number, rgba: Uint8Array): Uint8Array {
-  return Uint8Array.from(
-    pngChunk("IDAT", [
-      ...imageData({ width, height, bitDepth: 8, colorType: 6, scanlines: splitRows(rgba, width) }),
-    ]),
-  );
+  return imageData({ width, height, bitDepth: 8, colorType: 6, scanlines: splitRows(rgba, width) });
 }
 
 export function splitRows(rgba: Uint8Array, width: number): Uint8Array[] {

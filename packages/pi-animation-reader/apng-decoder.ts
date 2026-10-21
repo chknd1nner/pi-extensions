@@ -220,6 +220,8 @@ function collectParts(chunks: Array<{ type: string; data: Uint8Array }>, canvasD
       };
     } else if (c.type === "IDAT") {
       idats.push(c.data);
+    } else if (c.type === "fdAT") {
+      idats.push(c.data.subarray(4));
     }
   }
   flush();
