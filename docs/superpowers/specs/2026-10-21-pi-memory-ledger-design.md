@@ -1,7 +1,7 @@
-# pi-memory-ledger — Design Specification v0.1
+# pi-memory-ledger — Design Specification v0.2
 
 **Working title:** pi-memory-ledger (formerly pi-session-context)  
-**Status:** Initial engineering draft — 21 October 2026  
+**Status:** Revised engineering draft — 21 October 2026 (v0.1 preserved in Git history)  
 **Target:** Pi 0.87.1+ / current Pi 1.x, TypeScript extension  
 **Scope:** One active Pi session and its branches; cross-session memory deferred  
 **Principal idea:** *The working agent proposes memories. An auditor reconciles them against evidence and all prior memories. Compaction deterministically materialises the current state of knowledge.*
@@ -18,7 +18,7 @@ A memory is **not** necessarily a completed task. It may concern an insight, a c
 
 ## 2. Goals and non-goals
 
-### Goals (v0.1)
+### Goals (v0.2)
 
 - Model-initiated memory proposals via a simple `remember` tool, with no mandatory task-boundary semantics.
 - First-class **audit and cross-memory reconciliation for every committed memory**.
@@ -30,8 +30,10 @@ A memory is **not** necessarily a completed task. It may concern an insight, a c
 - Model-callable, source-accurate, bounded retrieval of raw messages/tool results using Pi entry IDs.
 - Low-noise TUI and Radius/RPC presentation; useful status, inspection and diagnostics commands.
 - Same-model auditing by default, optional separate model/provider; no dedicated model requirement.
+- Capture file reads, writes and edits in a deterministic, append-only **session activity ledger**, independent of model-authored memories.
+- Render a cumulative session-activity footer during compaction and store complete structured metadata in the compaction entry.
 
-### Non-goals (v0.1)
+### Non-goals (v0.2)
 
 - Cross-session, workspace-wide, or global memory; semantic vector search; embeddings.
 - Automatically saving every conversation turn or periodically summarising without model intent.
@@ -39,6 +41,8 @@ A memory is **not** necessarily a completed task. It may concern an insight, a c
 - Modifying the original message content, deleting historical evidence, or rewriting existing memory records.
 - Invisible autonomous changes to the user's actual files or decisions.
 - Relying on an auditor's opinions as independent proof of external-world truth.
+- Perfect detection of arbitrary shell/subprocess or external filesystem mutations in v0.2; activity coverage limitations must be explicit.
+- Treating activity events as substitutes for audited narrative coverage.
 
 ## 3. Non-negotiable invariants
 
@@ -52,6 +56,8 @@ A memory is **not** necessarily a completed task. It may concern an insight, a c
 8. **Source-first retrieval.** All carried memories and reconciliation operations have usable source references. A model can request precise original evidence rather than trusting a paraphrase.
 9. **Branch locality.** Events from an abandoned `/tree` branch do not silently become authoritative on another branch.
 10. **Fail closed, recover explicitly.** A partial audit, corrupted record, unavailable provider, or over-budget ledger must not fabricate success.
+11. **Activity is evidence, not memory.** A successful tool operation is deterministic evidence that it reported success, not proof a file's current contents remain modified or correct.
+12. **Activity is materialized afresh.** Derive every activity footer from active-branch records, never by appending to the previous footer.
 
 ## 4. User experience
 
@@ -72,7 +78,7 @@ The visible acknowledgement is tied to **successful audit commit**, not merely i
 
 ```
 [Compacting]
-[Context compacted · 9 active memories · 2 superseded · 1 unresolved]
+[Context compacted · 9 active memories · 2 superseded · 1 unresolved · 4 files modified]
 ```
 
 Compaction may be initiated via native `/compact`, Pi's threshold policy, or an overflow-recovery hook, subject to configuration and safety checks. Any claim about exact placement *beneath* the final assistant response in TUI/Radius is a UI integration requirement, not something guaranteed by a generic hidden custom-entry flag.
@@ -110,7 +116,7 @@ Keep the primary interface deliberately small; no user-supplied source IDs, cate
 4. Do not claim tests passed, decisions were final, or facts were verified unless the conversation supports that claim.
 5. You may propose a revision of earlier thinking without identifying an earlier memory; reconciliation is the auditor's responsibility.
 
-**Tool result:** small machine-readable acknowledgement with candidate/committed memory ID and status; TUI renderer hides the proposal body and displays a subtle status indicator. The raw Pi assistant tool-call arguments and result remain in the source transcript even if the UI hides them. They still count toward model context until compaction; v0.1 does not use per-unit `context_edit` to erase them and thereby invalidate cached prefixes.
+**Tool result:** small machine-readable acknowledgement with candidate/committed memory ID and status; TUI renderer hides the proposal body and displays a subtle status indicator. The raw Pi assistant tool-call arguments and result remain in the source transcript even if the UI hides them. They still count toward model context until compaction; v0.2 does not use per-unit `context_edit` to erase them and thereby invalidate cached prefixes.
 
 ### `memory_recall({ id, view?, anchor?, cursor?, limit? })`
 
@@ -182,7 +188,7 @@ A claim can be verified-but-superseded, unverified-but-active, or disputed-but-a
 
 ### Trigger
 
-Every `remember` call writes a proposal, then runs a mandatory audit before acknowledging a committed memory. Default **synchronous audit**: the memory tool awaits the audit and persistence of the reconciliation commit. This is a deliberate v0.1 trade-off: correctness and clear UX versus latency. A queued/background mode is a later feature; it must show pending status rather than claiming success early.
+Every `remember` call writes a proposal, then runs a mandatory audit before acknowledging a committed memory. Default **synchronous audit**: the memory tool awaits the audit and persistence of the reconciliation commit. This remains a deliberate v0.2 trade-off: correctness and clear UX versus latency. A queued/background mode is a later feature; it must show pending status rather than claiming success early.
 
 ### Auditor context
 
@@ -196,7 +202,7 @@ The audit input contains:
 
 Default to the **same underlying model** as the working agent, in a separate audit inference context. Permit a configured alternative model/provider. Do not modify shared global Pi settings to launch an audit; audit is read-only and runs with strictly limited capabilities. Protect user privacy: do not silently route private session data to a different external provider.
 
-If the full ledger index cannot fit the audit window, perform documented multi-pass auditing with deterministic partitioning and a final reconciliation pass **or** fail the audit as incomplete. A truncated one-pass ledger is *not* an acceptable successful audit. This is a material v0.1 implementation constraint.
+If the full ledger index cannot fit the audit window, perform documented multi-pass auditing with deterministic partitioning and a final reconciliation pass **or** fail the audit as incomplete. A truncated one-pass ledger is *not* an acceptable successful audit. This remains a material v0.2 implementation constraint.
 
 ### Audit questions
 
@@ -232,28 +238,109 @@ At compaction time:
 4. If coverage is insufficient, move the cut point backwards to the earliest uncovered entry **if** the resulting context fits, otherwise refuse the ledger-based compaction with a clear reason. A deliberate operator fallback to native `/compact` can be offered, but must never be falsely described as fully audited or deterministic.
 5. Render the authoritative active and disputed claim set, with current status and evidence pointers; include open questions and materially relevant prior decisions. Omit superseded/retired full bodies from active context, but preserve minimal lineage pointers as needed.
 6. Verify projected post-compaction token budget. If all required memories cannot fit, do **not** silently drop active claims: refuse and require reconciliation/retirement or an explicit user-selected degradation policy.
-7. Return `CompactionResult` with `summary`, validated `firstKeptEntryId`, `tokensBefore`, optional `estimatedTokensAfter`, and audit/coverage/provenance data in `details`. Do not invoke a model.
-8. Confirm `session_compact` success before displaying a successful-compaction acknowledgement.
+7. Build a deterministic session-activity footer from active-branch activity events and include the structured snapshot in compaction `details` (section 9). Activity never widens the audited conversation coverage frontier.
+8. Return `CompactionResult` with `summary`, validated `firstKeptEntryId`, `tokensBefore`, optional `estimatedTokensAfter`, and audit/coverage/provenance/activity data in `details`. Do not invoke a model.
+9. Confirm `session_compact` success before displaying a successful-compaction acknowledgement.
 
 **Repeated compaction:** the effective ledger is the single source of truth. Do not blindly concatenate `previousSummary` with a fresh memory stack, because it may contain decisions that were subsequently superseded. Import/track any pre-existing non-ledger compaction summary explicitly as legacy context or require an opt-in bootstrap; do not assume it is reconciled.
 
 **Automatic compaction:** use Pi's existing threshold and overflow lifecycle. The extension's choice to intercept must respect Pi's own auto-compaction settings. Avoid global settings mutations or a conflicting independent threshold loop. A memory-based compaction cannot be safe if the required audit is still pending and the cut would lose uncovered content.
 
-## 9. UI and Radius integration
+## 9. Session activity ledger (new in v0.2)
+
+### Purpose and independence
+
+Add a separate append-only, **deterministic activity stream** for observable operations carried out during the session. File operations are the initial type. This makes file bookkeeping both faster and more reliable than requiring the agent to spend its `remember` budget listing touched paths. Collection does **not** require a model call or an audit; the auditor may later consult recorded activity as supporting evidence.
+
+Activity records are not authoritative statements that a task succeeded, that a file is presently dirty, or that a span is safe to discard. Narrative preservation and audited source coverage remain separate responsibilities. Raw tool outputs and original session entries remain ground truth.
+
+### Initial scope and provenance
+
+- **Supported native tools:** instrument Pi `read`, `write` and `edit` with path arguments and the associated results. A successful read enters the read set; successful writes/edits enter the modified set. Failed tool operations must not count as successful modifications.
+- **Success means reported operation success, not a verified filesystem diff.** A tool might make no material change; later operations could revert it. Label the footer as files operated on during this session, not as current Git working-tree state.
+- **Nested calls, shell commands and third-party tools:** Pi's native file extractor recognizes `read`/`write`/`edit` by name and a string `path` argument, including recorded nested calls. It does not reliably establish success or the filesystem effects of arbitrary shell scripts. Keep unknown/inferred operations separately with an explicit provenance class. Never promote inferred changes to confirmed file modifications.
+- **Canonical paths:** normalize against the session's recorded cwd and retain original path spelling, distinguish paths outside that cwd, and avoid collapsing distinct targets. Read-only and modified sets are deduplicated; if a file was both read and edited, show it only under modified.
+- **Privacy:** do not store file contents, command stdout or credentials in activity events. Apply configured path-redaction rules to footer output and diagnostics.
+
+### Capture, durable association and recovery
+
+Observe `tool_result` or `tool_execution_end` for success status, inputs, name, and `toolCallId`. Do **not** assume the result message has already been persisted when those callbacks fire. Stage the observation until `turn_end` or `agent_before_settle` can associate it with durable Pi message/result entry IDs. Multiple tool calls can execute concurrently; do not rely on completion order.
+
+Append versioned Pi `custom` events with `pi.appendEntry("pi-memory-ledger", event)` after durable association. An illustrative event is:
+
+```json
+{
+  "v": 1,
+  "kind": "activity.file",
+  "activityId": "act_007",
+  "operation": "edit",
+  "path": "src/auth.ts",
+  "originalPath": "./src/auth.ts",
+  "outcome": "tool-succeeded",
+  "confidence": "observed",
+  "cwd": "<session working directory>",
+  "source": {
+    "toolName": "edit",
+    "toolCallId": "call_123",
+    "resultEntryId": "<Pi message entry ID>"
+  }
+}
+```
+
+Deduplicate by stable source identity (result/call ID, operation, canonical path), not by arbitrary callback ordering. On restart, replay **the active branch** including records older than a prior compaction boundary. Where a crash occurred after a persisted successful native result but before its activity record, scan the persisted tool-call/result pairs and backfill idempotently. Branch switching rebuilds from that branch only; sibling-branch activities do not leak into the new effective ledger.
+
+Never cause a user-facing tool operation to fail solely because activity tracking failed. Record or surface a tracking-coverage gap rather than claiming perfect observation.
+
+### Pure reducer and repeated compactions
+
+Implement `reduceActivity(branchEntries, configuration)` as a deterministic, schema-versioned reducer. Validate provenance, canonicalize paths, deduplicate observations, and produce stably sorted `readFiles`, `modifiedFiles`, counts, and tracking limitations.
+
+**Never treat an older text footer as the source for the next one.** Pi exposes `event.preparation.fileOps`, which can aid bootstrap/compatibility, but its native extractor examines projected messages and previous *Pi-generated* compaction metadata. Extension-generated compactions cannot rely on automatic native file-list carry-forward. Our full active-branch activity records are canonical, so repeated compactions neither duplicate nor lose paths.
+
+Render one recognizable model-visible footer, after the audited-memory materialization:
+
+```xml
+<session-activity schema="1">
+  <read-files>
+    src/config.ts
+  </read-files>
+  <modified-files>
+    src/auth.ts
+    src/session.ts
+  </modified-files>
+</session-activity>
+```
+
+The footer is **text in the compaction summary**; separately persist the complete structured snapshot in `CompactionResult.details`, e.g. `details.memoryLedger.activity = { schemaVersion: 1, readFiles, modifiedFiles, counts, trackingLimitations }`. Pi does not automatically expose `details` to the model. Use stable ordering and escaping, and ensure the full summary plus footer fits the configured token budget.
+
+For v0.2, do not silently truncate the modified-file list if the full configured footer exceeds the budget: refuse this ledger-based compaction explicitly. A future bounded-footer mode must first supply a model-callable mechanism to retrieve the omitted full list.
+
+### Audit interaction, operator interface and extension points
+
+The auditor may consult activity when checking claims like "I modified `auth.ts`". It must still check relevant source outputs or current filesystem state before declaring the *effect* verified. Absence of an activity event does not prove no file changed; shell commands or uninstrumented tools may bypass observation.
+
+Expose `/memory activity` to inspect file events, normalized paths, source IDs and tracking gaps. Passive activity collection emits no `[Memory saved]` acknowledgement; compaction success may show activity counts.
+
+Keep event envelopes extensible for later deterministic adapters: Git commits/branches, test execution results, consulted resources, and output artifacts. Each new type needs explicit observation semantics, privacy rules, reducer behavior and tests before it is rendered into the model's context.
+
+## 10. UI and Radius integration
 
 - Custom `remember` tool renderer (`renderCall`/`renderResult`) displays only a short status, not memory text or auditor payload; raw tool arguments remain inspectable in session history/exports.
 - In TUI, show a subtle success/pending/error notification. A persistent inline entry under the last agent response may require a custom entry renderer or client-specific handling; avoid claiming `custom` invisibility automatically gives that placement.
 - For Radius/RPC, surface the committed custom entry or an extension notification with a stable `memoryId` and `status`; Radius can render `[Memory saved]` as a lightweight annotation on the relevant assistant turn, with click-through details later.
-- During native compaction, show `[Compacting]`; after success, show counts and savings. Never call a memory `verified` if the audit only classified it as plausible or unverified.
+- During native compaction, show `[Compacting]`; after success, show counts and savings, optionally including deduplicated file-operation counts. Never call a memory `verified` if the audit only classified it as plausible or unverified.
 - Avoid verbose tool chatter in normal operation. Operator inspection and diagnostic tracing are explicit commands.
 
-## 10. Pi integration map
+## 11. Pi integration map
 
 | Capability | Pi integration |
 |---|---|
 | Model-initiated memory | `pi.registerTool({ name: "remember", ... })` |
 | Persistent, non-contextual memory | `pi.appendEntry("pi-memory-ledger", event)` |
 | Model-initiated retrieval | `pi.registerTool({ name: "memory_recall", ... })` |
+| Native tool activity observation | `tool_result` / `tool_execution_end` for inputs, result, outcome and tool-call IDs |
+| Durable activity recording | `turn_end` / `agent_before_settle` to associate source entry IDs, then `pi.appendEntry` |
+| Activity replay and inspection | Active-branch `activity.file` reducer; `/memory activity` |
 | Current branch state | `ctx.sessionManager.getBranch()` and entry-ID lookups |
 | Audit inference | `ctx.modelRegistry.streamSimple()` or equivalent current SDK facility; isolate audit request/context |
 | Custom tool presentation | `renderCall`, `renderResult`, `ctx.ui.notify`, registered entry renderer where supported |
@@ -263,9 +350,9 @@ At compaction time:
 | Process lifetime | `session_shutdown`, cancel pending audit, preserve recoverable proposal |
 | Pi client transport | Extension events/custom entries; Radius adapts display |
 
-Pi's `custom` entries are *not* included in the model's message projection. They are suitable for the ledger, while model-visible active memory is carried in the compaction summary. A separate `custom_message` would enter the prompt and is not required for ordinary memory writes. Pi's `context_edit` is **not** used for routine v0.1 memory formation: changing an old projected message can invalidate prompt-prefix caching despite preserving append-only raw history.
+Pi's `custom` entries are *not* included in the model's message projection. They are suitable for the ledger, while model-visible active memory is carried in the compaction summary. A separate `custom_message` would enter the prompt and is not required for ordinary memory writes. Pi's `context_edit` is **not** used for routine v0.2 memory formation: changing an old projected message can invalidate prompt-prefix caching despite preserving append-only raw history.
 
-## 11. Configuration (proposed)
+## 12. Configuration (proposed)
 
 ```json
 {
@@ -289,6 +376,15 @@ Pi's `custom` entries are *not* included in the model's message projection. They
     "defaultMaxChars": 8000,
     "allowRawSources": true
   },
+  "activity": {
+    "enabled": true,
+    "trackReads": true,
+    "trackWritesAndEdits": true,
+    "nativeTools": ["read", "write", "edit"],
+    "recordUncertainNestedOperations": true,
+    "includeInCompactionFooter": true,
+    "onFooterOverflow": "refuse"
+  },
   "ui": {
     "compactNotifications": true,
     "showMemoryBodyByDefault": false
@@ -298,20 +394,22 @@ Pi's `custom` entries are *not* included in the model's message projection. They
 
 Values are **initial proposals**, not confirmed Pi setting names or benchmark-tuned defaults. Configuration must specify the data-sharing implications if a separate remote auditor is selected.
 
-## 12. Failure, concurrency and security
+## 13. Failure, concurrency and security
 
 - **Audit timeout/crash:** retain `memory.proposed` and append `memory.audit_failed`; no active-memory commit; user sees failure/pending. Optional retry later is explicit and idempotent.
 - **Crash after successful audit, before commit:** replay treats proposal as pending; rerun or resume. The reconciliation event is a single append-only logical transaction.
 - **Multiple `remember` calls in one turn:** serialize reconciliation commits against a versioned ledger snapshot. Reject stale audits and rerun against newer state; do not lose supersession updates.
-- **Multiple Pi processes or Radius clients:** Pi session file concurrency needs an explicit policy: v0.1 single active writer per session or a tested append/locking strategy; never assume arbitrary concurrent append is safe.
+- **Multiple Pi processes or Radius clients:** Pi session file concurrency needs an explicit policy: v0.2 single active writer per session or a tested append/locking strategy; never assume arbitrary concurrent append is safe.
 - **Tree navigation:** replay branch-local state and coverage; do not make memories from abandoned sibling branches active without an explicit merge process.
 - **Compaction while audit runs:** ensure no uncommitted proposal is counted toward coverage; coordinate with any compaction event without waiting indefinitely or deadlocking Pi.
+- **Activity callback failure/retries:** persist observations only with valid source provenance, recover missed native operations on restart, and deduplicate parallel or retried callbacks.
+- **Uninstrumented file changes:** shell commands, scripts and external processes may bypass native tools. Report incomplete tracking; never infer confirmed modified paths from command text alone.
 - **Foreign compaction extensions:** detect competing `session_before_compact` implementations where possible and warn/refuse rather than stack incompatible takeovers.
 - **Untrusted tool outputs / prompt injection:** auditor sees source records as data, not instructions. Disallow dangerous tools or autonomous file/network writes in its context. Strictly validate JSON and permitted update operations.
 - **Privacy:** memory data and raw source can contain secrets; avoid logging them, do not send to unexpected audit providers, avoid embedding file contents in UI notifications.
 - **Audit reliability:** the same model re-checking its own summary is a consistency check, not an independent guarantee. Measure and label evidence support; support cross-model audits later.
 
-## 13. Acceptance tests
+## 14. Acceptance tests
 
 1. **Conversation memory:** a brainstorming exchange produces a useful tentative idea without any completed task; memory audit preserves tentative wording and source references.
 2. **Decision revision:** an explicit WebSockets → SSE user decision supersedes only the transport claim and keeps the authentication claim active.
@@ -329,8 +427,15 @@ Values are **initial proposals**, not confirmed Pi setting names or benchmark-tu
 14. **Cache instrumentation:** storing a memory does not inject/replace historical model-visible messages; compaction may cause expected KV-prefix re-prefill.
 15. **TUI/RPC parity:** memory statuses and errors are accessible in Pi TUI and Radius; hidden memory bodies do not leak into routine screen output.
 16. **Concurrent writes:** two proposals or a proposal plus compaction do not produce partial, reordered, or contradictory commits.
+17. **File capture:** successful `read`, `write` and `edit` results generate replayable records; failed writes never become successful modified-file claims.
+18. **Read/edit overlap:** a file read and later edited appears exactly once in the sorted modified list.
+19. **Recovery:** restarting between tool-result persistence and activity-event append backfills exactly once.
+20. **Branch/repeated compact:** two compactions retain the same cumulative active-branch file ledger without duplicate footers; abandoned sibling changes never leak.
+21. **Unknown shell effects:** arbitrary `bash` invocations do not generate fabricated successful file changes, and the diagnostics expose their coverage gap.
+22. **Footer fidelity:** configured files appear in model-visible summary text and in `details`; overflow refuses safely rather than silently truncating modified files.
+23. **Separate authority:** activity can exist with zero `remember` calls and never advances audited narrative coverage.
 
-## 14. Suggested implementation slices
+## 15. Suggested implementation slices
 
 **Slice A — Event store and inspection:** schema, append-only session events, active-branch reducer, typed validation, `/memory status/list/show`, source-range extraction, unit tests.
 
@@ -340,9 +445,11 @@ Values are **initial proposals**, not confirmed Pi setting names or benchmark-tu
 
 **Slice D — Raw retrieval and Radius polish:** `memory_recall`, exact source/anchor/pagination, RPC events and Radius annotation, audit review UI.
 
-Slices are implementation order only; **do not ship a v0.1 that commits memory without auditing**. Slice B is a prerequisite for user-facing memory creation.
+**Slice E — Activity ledger (v0.2):** observe successful native file operations, stage durable provenance, append and replay idempotent activity events, expose `/memory activity`, and render a cumulative activity footer plus structured `details`. Ship early capture wiring so v0.2 includes working file metadata; no LLM is involved.
 
-## 15. Open decisions for v0.2 discussion
+Slices are implementation order only; **do not ship a v0.2 that commits memory without auditing**. Slice B is a prerequisite for user-facing memory creation.
+
+## 16. Open decisions
 
 1. **Audited coverage:** should `remember` audit only the proposed fact and source span, or explicitly review *everything* since the last coverage frontier? This draft requires the latter for advancing coverage, but that can increase audit cost.
 2. **Audit resource policy:** synchronous same-model audit avoids a separate model but may contend with local inference/KV caches; determine operational timeouts and interruption semantics.
@@ -352,18 +459,21 @@ Slices are implementation order only; **do not ship a v0.1 that commits memory w
 6. **Compaction under hard overflow:** formalise safe refusal/recovery when retaining all uncovered text still exceeds the model window.
 7. **Branch merges:** whether and how to reconcile memories across sibling branches without merging unrelated conversations.
 8. **Retention and deletion policy:** user privacy, session exports, explicit redaction requests, and the distinction between logical retirement and actual removal of sensitive raw data.
+9. **Activity completeness:** whether future adapters verify filesystem changes using hashes/Git diffs, or instrument shell/subprocess effects.
+10. **Large activity lists:** an opt-in bounded footer must include model-callable full-list retrieval before replacing the v0.2 fail-on-overflow policy.
 
-## 16. Source references
+## 17. Source references
 
 - [Pi extension APIs](https://pi.dev/docs/latest/extensions)
 - [Pi session file format (CustomEntry, ContextEditEntry, CompactionEntry)](https://pi.dev/docs/latest/session-format)
 - [Pi compaction reference and `session_before_compact`](https://pi.dev/docs/latest/compaction)
 - [Pi session manager source](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts)
 - [Pi extension event and tool types](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts)
+- [Pi native file-operation extraction and footer formatting](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/utils.ts)
 - [SAM reference](https://github.com/LePrau/pi-self-aware-memory)
 - [POM reference](https://github.com/elpapi42/pi-observational-memory)
 - [Blackhole reference](https://github.com/k0valik/pi-blackhole)
 
 ---
 
-**Guiding principle:** The working model decides what might matter. The auditor decides what the evidence supports and how the existing knowledge changes. The extension deterministically preserves the resulting knowledge across context compaction. The original transcript is always the source of truth.
+**Guiding principle:** The working model decides what might matter. The auditor decides what the evidence supports and how the existing knowledge changes. The extension deterministically preserves the resulting knowledge and recorded session activity across context compaction. The original transcript is always the source of truth.
