@@ -5,6 +5,7 @@ import { getAnimation } from "./cache.js";
 import { decodeGif } from "./gif-decoder.js";
 import { decodeApng, isAnimatedPng } from "./apng-decoder.js";
 import { defaultCellWidth, renderGrid, resolveGridShape } from "./grid.js";
+import type { GridLimit } from "./grid.js";
 import { clampFrameRange, detectPalindrome, formatDelayRuns, frameHashes, sampleIndices } from "./metadata.js";
 import { encodePng } from "./png-encode.js";
 import type { DecodedAnimation } from "./types.js";
@@ -31,7 +32,7 @@ export interface GridDetails {
   cellWidth?: number;
   cols?: number;
   rows?: number;
-  limitedBy?: "max_frames" | "columns" | "max_rows";
+  limitedBy?: GridLimit;
   error?: boolean;
 }
 

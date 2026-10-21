@@ -24,8 +24,13 @@ describe("resolveGridShape", () => {
       cols: 4,
       rows: 3,
       count: 12,
-      limitedBy: "max_rows",
+      limitedBy: "columns x max_rows",
     });
+  });
+
+  it("names only the bound that was actually set", () => {
+    expect(resolveGridShape(46, { maxFrames: 46, maxRows: 3 }).limitedBy).toBe("max_rows");
+    expect(resolveGridShape(200, { maxFrames: 200, columns: 2 }).limitedBy).toBe("columns");
   });
 
   it("reports max_frames as the binding limit when it is tighter than the shape", () => {

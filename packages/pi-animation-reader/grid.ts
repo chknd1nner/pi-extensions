@@ -7,12 +7,14 @@ export const MAX_COLUMNS = 8;
 export const MAX_COLUMNS_CEIL = 16;
 export const MAX_ROWS_CEIL = 16;
 
+export type GridLimit = "max_frames" | "columns" | "max_rows" | "columns x max_rows";
+
 export interface GridShape {
   cols: number;
   rows: number;
   count: number;
-  /** Which bound reduced the frame count, if any. */
-  limitedBy: "max_frames" | "columns" | "max_rows" | null;
+  /** Which bound reduced the frame count, if any. Names only bounds that were actually set. */
+  limitedBy: GridLimit | null;
 }
 
 /**
@@ -32,7 +34,16 @@ export function resolveGridShape(
 
   let limitedBy: GridShape["limitedBy"] = null;
   if (count < available) {
-    limitedBy = capacity < opts.maxFrames ? (opts.maxRows !== undefined ? "max_rows" : "columns") : "max_frames";
+    if (capacity < opts.maxFrames) {
+      limitedBy =
+        opts.columns !== undefined && opts.maxRows !== undefined
+          ? "columns x max_rows"
+          : opts.maxRows !== undefined
+            ? "max_rows"
+            : "columns";
+    } else {
+      limitedBy = "max_frames";
+    }
   }
 
   const cols = Math.min(count, columns);

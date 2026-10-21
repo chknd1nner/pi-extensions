@@ -127,7 +127,11 @@ describe("animation_grid tool", () => {
     expect([d.cols, d.rows]).toEqual([3, 2]);
     expect(d.indices).toEqual([0, 2, 4, 7, 9, 11]); // uniform over 12, both endpoints pinned
     expect(textOf(r)).toContain("3x2");
-    expect(textOf(r)).toContain("limited by max_rows");
+    expect(textOf(r)).toContain("limited by columns x max_rows");
+    // only one bound set -> only that bound is named (max_rows: 1 gives capacity 8 < 12 frames)
+    const oneBound = animationGrid({ path: p, start: 0, end: 11, max_frames: 12, max_rows: 1 });
+    expect(textOf(oneBound)).toContain("limited by max_rows");
+    expect(textOf(oneBound)).not.toContain("columns x max_rows");
     // columns alone reshapes without dropping frames
     const wide = animationGrid({ path: p, start: 0, end: 11, max_frames: 12, columns: 4 });
     expect([wide.details as GridDetails].map((x) => [x.cols, x.rows])).toEqual([[4, 3]]);
