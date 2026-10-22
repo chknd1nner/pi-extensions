@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 - 2026-10-22
 
 - **Fix:** `animation_info` reported `palindrome: no` on seamless boomerangs. Detection only
   recognised a literal mirror (`a b c b a`), where the seam frame is duplicated; encoders drop
