@@ -3,11 +3,46 @@ import { clampFrameRange, detectPalindrome, formatDelayRuns, sampleIndices } fro
 
 describe("detectPalindrome", () => {
   it("detects a mirrored hash sequence", () => {
-    expect(detectPalindrome(["a", "b", "c", "b", "a"])).toEqual({ detected: true, halfLength: 3 });
+    expect(detectPalindrome(["a", "b", "c", "b", "a"])).toEqual({
+      detected: true, kind: "mirror", halfLength: 3,
+    });
   });
 
   it("detects an even mirror", () => {
-    expect(detectPalindrome(["a", "b", "b", "a"])).toEqual({ detected: true, halfLength: 2 });
+    expect(detectPalindrome(["a", "b", "b", "a"])).toEqual({
+      detected: true, kind: "mirror", halfLength: 2,
+    });
+  });
+
+  it("detects a cyclic boomerang (seam frame deduped, pivot on the loop boundary)", () => {
+    // a b c d c b — the list is NOT a palindrome (h[0]=a vs h[5]=b), but the cycle is.
+    expect(detectPalindrome(["a", "b", "c", "d", "c", "b"])).toEqual({
+      detected: true, kind: "cyclic", halfLength: 4,
+    });
+  });
+
+  it("detects the minimal cyclic boomerang", () => {
+    expect(detectPalindrome(["a", "b", "c", "b"])).toEqual({
+      detected: true, kind: "cyclic", halfLength: 3,
+    });
+  });
+
+  it("counts both pivots as unique in a cyclic boomerang", () => {
+    // Real-world shape (118 frames) compressed to 12: forward pass f0..f6, then f5..f1.
+    // Both pivots (f0 at the loop seam, f6 at n/2) are stored once, so 7 of 12 are unique.
+    const forward = ["f0", "f1", "f2", "f3", "f4", "f5", "f6"];
+    const hashes = [...forward, ...forward.slice(1, -1).reverse()];
+    expect(hashes.length).toBe(12);
+    expect(detectPalindrome(hashes)).toEqual({ detected: true, kind: "cyclic", halfLength: 7 });
+  });
+
+  it("rejects a cyclic near-miss", () => {
+    expect(detectPalindrome(["a", "b", "c", "d", "c", "x"])).toEqual({ detected: false });
+  });
+
+  it("rejects an odd-length sequence that mirrors except at the seam", () => {
+    // a b c d c — no integer self-pair at n/2, so a clean cyclic boomerang is impossible.
+    expect(detectPalindrome(["a", "b", "c", "d", "c"])).toEqual({ detected: false });
   });
 
   it("rejects a non-mirrored sequence", () => {
@@ -19,8 +54,12 @@ describe("detectPalindrome", () => {
     expect(detectPalindrome([])).toEqual({ detected: false });
   });
 
-  it("treats all-identical frames as a palindrome", () => {
-    expect(detectPalindrome(["a", "a", "a", "a"])).toEqual({ detected: true, halfLength: 2 });
+  it("treats all-identical frames as a mirror (the only input matching both forms)", () => {
+    // Satisfying mirror AND cyclic forces h[j] === h[j-1] for every j, so only constant
+    // sequences match both; this pins the mirror-first precedence.
+    expect(detectPalindrome(["a", "a", "a", "a"])).toEqual({
+      detected: true, kind: "mirror", halfLength: 2,
+    });
   });
 });
 

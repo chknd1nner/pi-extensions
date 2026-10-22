@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Fix:** `animation_info` reported `palindrome: no` on seamless boomerangs. Detection only
+  recognised a literal mirror (`a b c b a`), where the seam frame is duplicated; encoders drop
+  that duplicate to avoid a one-frame hitch at the loop seam (`a b c d c b`), which makes the
+  frame list non-palindromic even though the loop is out-and-back. Both forms are now detected
+  and named in the output (`mirror` / `cyclic`).
+- **Changed:** the hint line now reads `palindrome: yes, <kind> (<n> unique frames — analyze
+  0-<n-1>, …)` instead of `yes (half: <n> frames …)`. For the cyclic form the count is
+  `n/2 + 1`, since both pivots are stored once. Fixes #4.
+
 ## v0.1.0 - 2026-10-21
 
 - Initial release: `animation_info`, `animation_grid`, and `animation_frames` tools for reading

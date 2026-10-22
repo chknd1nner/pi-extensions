@@ -5,22 +5,49 @@ export function frameHashes(frames: AnimationFrame[]): string[] {
   return frames.map((f) => createHash("sha256").update(f.rgba).digest("hex").slice(0, 12));
 }
 
+export type PalindromeKind = "mirror" | "cyclic";
+
 export interface PalindromeResult {
   detected: boolean;
+  /** Count of UNIQUE frames — the forward pass, both pivots included. */
   halfLength?: number;
+  kind?: PalindromeKind;
 }
 
 /**
- * Advisory mirror detection: true when the frame sequence reads the same forwards and
- * backwards (palindrome GIFs store the reversed sequence literally — the format has no
- * ping-pong flag). Never changes how frame ranges are interpreted.
+ * Advisory boomerang detection: true when the frame sequence replays itself in reverse.
+ * GIF has no ping-pong playback flag, so an out-and-back animation stores the reversed
+ * frames literally — and there are two ways authoring tools do that, both of which must
+ * be recognised:
+ *
+ *   mirror  a b c b a     the seam frame is duplicated, so the LIST is a palindrome:
+ *                         h[i] === h[n-1-i]. Looping it emits the same frame twice at the
+ *                         seam (a one-frame hitch), so encoders avoid this form.
+ *   cyclic  a b c d c b   the duplicated seam frame is dropped, so a pivot sits exactly on
+ *                         the loop boundary and the sequence is a palindrome only AS A
+ *                         CYCLE: h[i] === h[n-i] for i in 1..n-1, with pivots at 0 and n/2
+ *                         each stored once. This is what modern encoders emit.
+ *
+ * The two forms overlap only on constant sequences (both together force h[j] === h[j-1]);
+ * mirror is checked first, so those report as mirror.
+ *
+ * halfLength is the count of unique frames, so "analyze 0..halfLength-1" holds for both
+ * kinds. Advisory only — never changes how frame ranges are interpreted.
  */
 export function detectPalindrome(hashes: string[]): PalindromeResult {
-  if (hashes.length < 3) return { detected: false };
-  for (let i = 0; i < hashes.length; i++) {
-    if (hashes[i] !== hashes[hashes.length - 1 - i]) return { detected: false };
+  const n = hashes.length;
+  if (n < 3) return { detected: false };
+
+  if (hashes.every((h, i) => h === hashes[n - 1 - i])) {
+    return { detected: true, kind: "mirror", halfLength: Math.ceil(n / 2) };
   }
-  return { detected: true, halfLength: Math.ceil(hashes.length / 2) };
+
+  // The cyclic form needs a self-paired frame at i === n/2, so n must be even.
+  if (n % 2 === 0 && hashes.every((h, i) => i === 0 || i === n / 2 || h === hashes[n - i])) {
+    return { detected: true, kind: "cyclic", halfLength: n / 2 + 1 };
+  }
+
+  return { detected: false };
 }
 
 export function formatDelayRuns(delays: number[]): string {

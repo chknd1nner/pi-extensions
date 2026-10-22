@@ -7,6 +7,7 @@ import { decodeApng, isAnimatedPng } from "./apng-decoder.js";
 import { defaultCellWidth, renderGrid, resolveGridShape } from "./grid.js";
 import type { GridLimit } from "./grid.js";
 import { clampFrameRange, detectPalindrome, formatDelayRuns, frameHashes, sampleIndices } from "./metadata.js";
+import type { PalindromeResult } from "./metadata.js";
 import { encodePng } from "./png-encode.js";
 import type { DecodedAnimation } from "./types.js";
 
@@ -108,9 +109,13 @@ function rangeError(start: number, end: number): ToolOutput {
   return errorOut(`start (${start}) is greater than end (${end})`);
 }
 
-function palLine(pal: { detected: boolean; halfLength?: number }): string {
+function palLine(pal: PalindromeResult): string {
   if (!pal.detected || pal.halfLength === undefined) return "no";
-  return `yes (half: ${pal.halfLength} frames — analyze 0-${pal.halfLength - 1}, the rest mirrors it)`;
+  const kind = pal.kind ? `, ${pal.kind}` : "";
+  // A cyclic boomerang's tail is the forward pass replayed one frame off the seam, not a
+  // literal mirror of the list — say so, or the frame numbers read as a contradiction.
+  const tail = pal.kind === "cyclic" ? "the rest replays them in reverse" : "the rest mirrors them";
+  return `yes${kind} (${pal.halfLength} unique frames — analyze 0-${pal.halfLength - 1}, ${tail})`;
 }
 
 export function animationInfo(params: { path: string }): ToolOutput {

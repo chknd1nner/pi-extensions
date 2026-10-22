@@ -41,7 +41,32 @@ describe("animation_info tool", () => {
     expect(text).toMatch(/loop:\s*infinite/);
     expect(text).toMatch(/duration:\s*300ms/);
     expect(text).toMatch(/palindrome:\s*yes/i);
-    expect(text).toMatch(/half:\s*2/);
+    expect(text).toMatch(/palindrome:\s*yes, mirror \(/);
+    expect(text).toMatch(/\(2 unique frames/);
+  });
+
+  it("detects a seamless (cyclic) boomerang end to end", () => {
+    // a b c d c b: the reverse pass is stored with the seam frame dropped, so the frame
+    // list is not a palindrome even though the loop is an out-and-back.
+    const cyclic = buildGif({
+      width: 4,
+      height: 4,
+      globalColorTable: Uint8Array.from([0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]),
+      frames: [0, 1, 2, 3, 2, 1].map((p) => ({
+        pixels: new Uint8Array(16).fill(p),
+        delay: 10,
+      })),
+      loop: 0,
+    });
+    const r = animationInfo({ path: writeFixture("cyclic.gif", cyclic) });
+    expect(r.isError).toBeUndefined();
+    expect((r.details as InfoDetails).frames).toBe(6);
+    const text = textOf(r);
+    expect(text).toMatch(/palindrome:\s*yes, cyclic \(/);
+    // 6 frames, 4 unique: both pivots (0 and n/2) are stored once.
+    expect(text).toMatch(/\(4 unique frames/);
+    expect(text).toMatch(/analyze 0-3/);
+    expect(text).toMatch(/replays them in reverse/);
   });
 
   it("rejects a static PNG with a helpful message", () => {

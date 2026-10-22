@@ -32,9 +32,21 @@ frame hashes: 3f9a1c2b8d40 ...
 
 **Palindrome hint.** GIF has no ping-pong playback flag, so a "breathe out, breathe in"
 animation stores the reversed frame sequence literally. The decoder already composites every
-frame, so hashing is nearly free and the mirror pattern can be reported:
-`palindrome: yes (half: 108 frames — analyze 0-107, the rest mirrors it)`. Advisory only —
-it never changes how frame ranges are interpreted.
+frame, so hashing is nearly free and the boomerang pattern can be reported. Two authoring
+conventions exist and both are detected:
+
+- `mirror` — the seam frame is duplicated (`a b c b a`), so the frame list itself is a
+  palindrome. Looping it shows one frame twice at the seam, a visible hitch.
+- `cyclic` — the duplicated seam frame is dropped (`a b c d c b`), which is what encoders
+  emit to get a seamless loop. The list is **not** a palindrome; the cycle is, with pivots at
+  frame `0` and frame `n/2` each stored once.
+
+```
+palindrome: yes, cyclic (112 unique frames — analyze 0-111, the rest replays them in reverse)
+```
+
+The count covers both pivots, so `0..count-1` is every distinct frame. Advisory only — it never changes how frame ranges are
+interpreted.
 
 ### `animation_grid`
 
