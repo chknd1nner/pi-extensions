@@ -28,6 +28,9 @@ export interface PalindromeResult {
  *                         CYCLE: h[i] === h[n-i] for i in 1..n-1, with pivots at 0 and n/2
  *                         each stored once. This is what modern encoders emit.
  *
+ * The two forms overlap only on constant sequences (both together force h[j] === h[j-1]);
+ * mirror is checked first, so those report as mirror.
+ *
  * halfLength is the count of unique frames, so "analyze 0..halfLength-1" holds for both
  * kinds. Advisory only — never changes how frame ranges are interpreted.
  */

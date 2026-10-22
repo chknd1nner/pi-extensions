@@ -111,11 +111,11 @@ function rangeError(start: number, end: number): ToolOutput {
 
 function palLine(pal: PalindromeResult): string {
   if (!pal.detected || pal.halfLength === undefined) return "no";
-  const kind = pal.kind ? `${pal.kind}: ` : "";
+  const kind = pal.kind ? `, ${pal.kind}` : "";
   // A cyclic boomerang's tail is the forward pass replayed one frame off the seam, not a
   // literal mirror of the list — say so, or the frame numbers read as a contradiction.
   const tail = pal.kind === "cyclic" ? "the rest replays them in reverse" : "the rest mirrors them";
-  return `yes (${kind}half: ${pal.halfLength} frames — analyze 0-${pal.halfLength - 1}, ${tail})`;
+  return `yes${kind} (${pal.halfLength} unique frames — analyze 0-${pal.halfLength - 1}, ${tail})`;
 }
 
 export function animationInfo(params: { path: string }): ToolOutput {

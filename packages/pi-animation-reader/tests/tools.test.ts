@@ -41,8 +41,8 @@ describe("animation_info tool", () => {
     expect(text).toMatch(/loop:\s*infinite/);
     expect(text).toMatch(/duration:\s*300ms/);
     expect(text).toMatch(/palindrome:\s*yes/i);
-    expect(text).toMatch(/palindrome:\s*yes\s*\(mirror:/);
-    expect(text).toMatch(/half:\s*2/);
+    expect(text).toMatch(/palindrome:\s*yes, mirror \(/);
+    expect(text).toMatch(/\(2 unique frames/);
   });
 
   it("detects a seamless (cyclic) boomerang end to end", () => {
@@ -62,9 +62,9 @@ describe("animation_info tool", () => {
     expect(r.isError).toBeUndefined();
     expect((r.details as InfoDetails).frames).toBe(6);
     const text = textOf(r);
-    expect(text).toMatch(/palindrome:\s*yes\s*\(cyclic:/);
+    expect(text).toMatch(/palindrome:\s*yes, cyclic \(/);
     // 6 frames, 4 unique: both pivots (0 and n/2) are stored once.
-    expect(text).toMatch(/half:\s*4/);
+    expect(text).toMatch(/\(4 unique frames/);
     expect(text).toMatch(/analyze 0-3/);
     expect(text).toMatch(/replays them in reverse/);
   });

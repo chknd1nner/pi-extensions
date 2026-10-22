@@ -45,12 +45,6 @@ describe("detectPalindrome", () => {
     expect(detectPalindrome(["a", "b", "c", "d", "c"])).toEqual({ detected: false });
   });
 
-  it("prefers mirror when a sequence satisfies both forms", () => {
-    expect(detectPalindrome(["a", "b", "b", "a"])).toEqual({
-      detected: true, kind: "mirror", halfLength: 2,
-    });
-  });
-
   it("rejects a non-mirrored sequence", () => {
     expect(detectPalindrome(["a", "b", "c", "d"])).toEqual({ detected: false });
   });
@@ -60,7 +54,9 @@ describe("detectPalindrome", () => {
     expect(detectPalindrome([])).toEqual({ detected: false });
   });
 
-  it("treats all-identical frames as a palindrome", () => {
+  it("treats all-identical frames as a mirror (the only input matching both forms)", () => {
+    // Satisfying mirror AND cyclic forces h[j] === h[j-1] for every j, so only constant
+    // sequences match both; this pins the mirror-first precedence.
     expect(detectPalindrome(["a", "a", "a", "a"])).toEqual({
       detected: true, kind: "mirror", halfLength: 2,
     });

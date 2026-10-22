@@ -42,10 +42,10 @@ conventions exist and both are detected:
   frame `0` and frame `n/2` each stored once.
 
 ```
-palindrome: yes (cyclic: half: 112 frames — analyze 0-111, the rest replays them in reverse)
+palindrome: yes, cyclic (112 unique frames — analyze 0-111, the rest replays them in reverse)
 ```
 
-`half` is the count of unique frames. Advisory only — it never changes how frame ranges are
+The count covers both pivots, so `0..count-1` is every distinct frame. Advisory only — it never changes how frame ranges are
 interpreted.
 
 ### `animation_grid`
