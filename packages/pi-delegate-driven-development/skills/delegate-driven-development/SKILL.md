@@ -118,6 +118,10 @@ For each ticket in `ready`, ascending task number:
 - **3** → always stop and escalate to the user.
 
 ## Non-blocking wait details
+`delegate_check.last_activity_seconds_ago` measures process liveness — the last event π
+sent, including `[RETRY …]` and `[COMPACT …]` bookkeeping — so it stays small while π is
+retrying or compacting. It does not mean the worker is producing visible text.
+
 Three vocabularies are in play in this loop; do not cross them. The **worker process**
 status file holds exactly `running | completed | failed | aborted`. The **ticket** status
 holds `ready | active | review | needs-fix | blocked | done`. The **worker's own report**

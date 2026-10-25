@@ -148,12 +148,39 @@ describe("ProgressAccumulator", () => {
     expect(summary.last_activity_seconds_ago).toBe(30);
   });
 
-  it("marks finished on agent_end", () => {
-    progress.handleEvent({
-      type: "agent_end",
-      messages: [{ role: "assistant", content: "done" }],
-    });
-    expect(progress.isFinished()).toBe(true);
+  it("does not advance lastActivityAt on agent_settled so terminal workers report a real idle interval", () => {
+    progress.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "x" } });
+
+    vi.setSystemTime(new Date("2026-04-26T10:00:20Z"));
+    progress.handleEvent({ type: "agent_end", messages: [] });
+    progress.handleEvent({ type: "agent_settled" });
+
+    vi.setSystemTime(new Date("2026-04-26T10:00:50Z"));
+    expect(progress.getSummary().last_activity_seconds_ago).toBe(50);
+  });
+
+  it("counts automatic compaction as activity so a compacting worker is not seen as idle", () => {
+    progress.handleEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "x" } });
+
+    vi.setSystemTime(new Date("2026-04-26T10:01:00Z"));
+    progress.handleEvent({ type: "compaction_start", reason: "overflow" });
+
+    vi.setSystemTime(new Date("2026-04-26T10:01:10Z"));
+    expect(progress.getSummary().last_activity_seconds_ago).toBe(10);
+  });
+
+  it("does not claim to know whether the worker finished", () => {
+    // Terminal state belongs to index.ts (the finalize guard plus WorkerManager
+    // status). The accumulator used to set a `finished` flag on the first low-level
+    // agent_end, which stopped meaning anything once agent_settled became terminal.
+    expect((progress as { isFinished?: unknown }).isFinished).toBeUndefined();
+  });
+
+  it("keeps only the last low-level run's messages", () => {
+    progress.handleEvent({ type: "agent_end", messages: [{ role: "assistant", content: "first run" }] });
+    progress.handleEvent({ type: "agent_end", messages: [{ role: "assistant", content: "final run" }] });
+
+    expect(progress.getFinalMessages()).toEqual([{ role: "assistant", content: "final run" }]);
   });
 
   it("accumulates assistant usage across turn_end events", () => {

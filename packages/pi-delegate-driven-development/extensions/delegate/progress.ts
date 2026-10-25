@@ -32,6 +32,13 @@ function mergeToolOutput(previous: string | undefined, incoming: string): string
   return previous + incoming;
 }
 
+// Terminal events must not reset the idle clock: an orchestrator reading
+// last_activity_seconds_ago on a finished worker needs the real idle interval since the
+// worker's last output, not the instant π declared it settled. Every other event counts
+// as liveness, including retry and compaction bookkeeping — the field answers "is the
+// worker process still talking", not "is it producing visible text".
+const TERMINAL_EVENTS = new Set(["agent_end", "agent_settled"]);
+
 export class ProgressAccumulator {
   private transcript = "";
   private toolCalls: ToolCallRecord[] = [];
@@ -42,11 +49,13 @@ export class ProgressAccumulator {
   private cumulativeCacheRead = 0;
   private cumulativeCacheWrite = 0;
   private lastAssistantInput: number | null = null;
-  private finished = false;
+  // Messages of the last low-level run before settle. Correct for retries and
+  // overflow recovery, where the final answer is in the last run, but it is not a
+  // transcript of the whole worker session.
   private finalMessages: unknown[] = [];
 
   handleEvent(event: RPCEvent): void {
-    if (event.type !== "agent_end") {
+    if (!TERMINAL_EVENTS.has(event.type)) {
       this.lastActivityAt = Date.now();
     }
 
@@ -109,7 +118,6 @@ export class ProgressAccumulator {
         break;
       }
       case "agent_end": {
-        this.finished = true;
         this.finalMessages = (event.messages as unknown[]) ?? [];
         break;
       }
@@ -151,9 +159,5 @@ export class ProgressAccumulator {
 
   getFinalMessages(): unknown[] {
     return this.finalMessages;
-  }
-
-  isFinished(): boolean {
-    return this.finished;
   }
 }

@@ -60,6 +60,8 @@ Unset, empty, invalid, and non-positive values fall back to the default of five.
 
 If an async/background command runner is available, run `details.watch.command` there and watch for `DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT`. If not, run the same command in a shell; it blocks, but avoids frequent `delegate_check` polling. After any sentinel or timeout, call `delegate_check` once because in-memory delegate state is authoritative.
 
+`delegate_check` reports `last_activity_seconds_ago`, which measures process liveness: the last event π sent, including retry and compaction bookkeeping. Terminal events (`agent_end`, `agent_settled`) do not count, so a finished worker's idle time keeps growing from its last real output. A small value means the worker process is still talking, not that it is producing visible text.
+
 ## Source
 
 Development happens upstream at [chknd1nner/pi-extensions](https://github.com/chknd1nner/pi-extensions) under `packages/pi-delegate-driven-development/`. This repo is a publish mirror; PRs welcome upstream.
