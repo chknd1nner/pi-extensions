@@ -123,6 +123,9 @@ describe("delegate status lifecycle", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    // clearAllMocks clears call history but NOT implementations, so a
+    // mockReturnValue set by one test leaks into every later test.
+    rpcClientState.getStderr.mockReturnValue("");
     managerState.entry.status = "running";
     managerState.entry.startedAt = Date.now();
     managerState.setStatus.mockReturnValue(true);
@@ -288,6 +291,126 @@ describe("delegate status lifecycle", () => {
       .map(([text]) => text as string)
       .filter((text) => text.includes("[FAILED"));
     expect(failureLines).toEqual(["\n[FAILED] 529 overloaded\n"]);
+  });
+
+  it("reports completed when a retried run succeeds, not the first failed run", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: true,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }],
+    });
+    callbackState.onEvent?.({
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+      errorMessage: "529 overloaded",
+    });
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }],
+    });
+    callbackState.onEvent?.({ type: "auto_retry_end", success: true, attempt: 1 });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenCalledTimes(1);
+    expect(managerState.setStatus).toHaveBeenCalledWith("w1", "completed", undefined);
+    const appended = visibilityState.appendText.mock.calls.map(([text]) => text as string);
+    expect(appended.filter((text) => text.includes("[FAILED"))).toEqual([]);
+  });
+
+  it("reports completed when overflow recovery follows an errored run", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt is too long", content: [] }],
+    });
+
+    expect(managerState.setStatus).not.toHaveBeenCalled();
+    expect(rpcClientState.closeStdin).not.toHaveBeenCalled();
+
+    callbackState.onEvent?.({ type: "compaction_start", reason: "overflow" });
+    callbackState.onEvent?.({ type: "compaction_end", willRetry: true });
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "stop", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenCalledTimes(1);
+    expect(managerState.setStatus).toHaveBeenCalledWith("w1", "completed", undefined);
+  });
+
+  it("reports the last run's failure when a continuation fails after a clean run", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "stop", content: [] }],
+    });
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "boom", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", "failed", "boom");
+  });
+
+  it("does not abort the worker after it has settled", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    await fake.getTool("delegate_start")!.execute("call-start", {
+      task: "Do work.",
+      model: "gpt-5.5",
+      provider: "openai-codex",
+      timeout: 60,
+    });
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "stop", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(rpcClientState.kill).not.toHaveBeenCalled();
+    expect(managerState.setStatus).toHaveBeenCalledTimes(1);
+    expect(managerState.setStatus).toHaveBeenCalledWith("w1", "completed", undefined);
+  });
+
+  it("prefers the assistant error message over non-empty stderr", async () => {
+    rpcClientState.getStderr.mockReturnValue("unrelated deprecation warning");
+
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", "failed", "529 overloaded");
   });
 
   it("writes failed on transport errors while the worker is still running", async () => {
