@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.1 - 2026-10-25
+
+- A prompt rejected before acceptance (unknown model, missing credentials, expired auth), or consumed by an extension command without starting a run, now fails immediately with the reason π reported on the wire, instead of sitting `running` until its timeout and reporting only "Timed out".
+- `agent_settled` arriving without a preceding `agent_end` now reports `failed` ("worker settled without completing an agent run") rather than an empty `completed`.
+- Events arriving after settle are ignored, and the progress log no longer reopens its file after close. A run started by a worker extension's `agent_settled` handler could previously overwrite a completed worker's reported output.
+- Failure reasons are collapsed to a single line and capped at 500 characters, so a provider HTML error page cannot flood the orchestrator's context. A failure with neither a model message nor stderr now states that explicitly.
+- Corrected retry markers: `[RETRY succeeded on retry N]` and `[RETRY gave up after N retries: <error>]`. π's `attempt` counts retries rather than total attempts, and `success: false` also covers non-retryable and cancelled retries, which are not "exhausted".
+- Worker crashes (`onExit`) and transport errors now share the finalize path, so they emit a `[FAILED]` progress marker like every other failure.
+- Skill fixes: the `process` tool parameters it documented (`alertOnSuccess`, `alertOnFailure`, `logWatches`) do not exist — corrected to `notify`. Added guidance for handling delegate-level `failed`/`aborted`, for telling a retrying or compacting worker apart from a stuck one, and for sizing worker timeouts with headroom.
+- Tests: the v0.4.0 lifecycle tests did not distinguish the settle fix from the original bug — mutation testing confirmed a `pendingOutcome ??=` regression passed all 181. Added 11 cases; the mutants are now killed. Also fixed a mock leak where `vi.clearAllMocks()` left `getStderr` implementations set across tests.
+
 ## v0.4.0 - 2026-10-25
 
 - Bug fix: delegate workers are finalized when π reports `agent_settled` instead of at the first `agent_end`. The previous behaviour closed the worker's stdin after one low-level run, which killed workers on transient provider and network errors before π's automatic retry could fire.
