@@ -16,6 +16,7 @@ export class ProgressLogWriter {
   private fd: number | null = null;
   private filePath: string;
   private dirCreated = false;
+  private closed = false;
 
   constructor(
     projectRoot: string,
@@ -39,17 +40,19 @@ export class ProgressLogWriter {
   }
 
   private ensureOpen(): void {
-    if (this.fd !== null) return;
+    if (this.closed || this.fd !== null) return;
     this.ensureDir();
     this.fd = fs.openSync(this.filePath, "a");
   }
 
   appendText(text: string): void {
+    if (this.closed) return;
     this.ensureOpen();
     fs.writeSync(this.fd!, text);
   }
 
   appendToolCall(toolName: string, args: string): void {
+    if (this.closed) return;
     this.ensureOpen();
     fs.writeSync(this.fd!, `\n[TOOL: ${toolName}] ${args}\n`);
   }
@@ -59,6 +62,7 @@ export class ProgressLogWriter {
   }
 
   close(): void {
+    this.closed = true;
     if (this.fd !== null) {
       fs.closeSync(this.fd);
       this.fd = null;

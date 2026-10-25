@@ -26,6 +26,19 @@ describe("ProgressLogWriter", () => {
     expect(fs.readFileSync(filePath, "utf8")).toBe("Hello world");
   });
 
+  it("ignores writes after close", () => {
+    const writer = new ProgressLogWriter(tmpDir, "2026-04-26", "sess-abc", "w1");
+    writer.appendText("Hello world");
+    writer.close();
+
+    writer.appendText("late write");
+    writer.appendToolCall("bash", '{"command":"ls"}');
+    writer.close();
+
+    const filePath = path.join(tmpDir, ".pi", "delegate", "2026-04-26", "sess-abc", "w1.progress.md");
+    expect(fs.readFileSync(filePath, "utf8")).toBe("Hello world");
+  });
+
   it("appends tool call markers", () => {
     const writer = new ProgressLogWriter(tmpDir, "2026-04-26", "sess-abc", "w1");
     writer.appendToolCall("bash", '{"command":"ls"}');

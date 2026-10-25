@@ -147,18 +147,44 @@ function retryProgressLine(event: RPCEvent): string | null {
     return `\n[RETRY ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.errorMessage}]\n`;
   }
   if (event.type === "auto_retry_end") {
+    const retries = event.attempt === 1 ? "retry" : "retries";
     return event.success
-      ? `\n[RETRY resolved after ${event.attempt} attempts]\n`
-      : `\n[RETRY exhausted after ${event.attempt} attempts: ${event.finalError}]\n`;
+      ? `\n[RETRY succeeded on retry ${event.attempt}]\n`
+      : `\n[RETRY gave up after ${event.attempt} ${retries}: ${event.finalError}]\n`;
   }
   return null;
+}
+
+// Provider errors are sometimes whole HTML bodies; keep the reported reason
+// short and single-line so it cannot flood the orchestrator's context.
+const MAX_ERROR_CHARS = 500;
+
+function capToOneLine(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > MAX_ERROR_CHARS ? `${flat.slice(0, MAX_ERROR_CHARS - 1)}…` : flat;
 }
 
 // An errored low-level run does not always carry a message; the worker's own
 // stderr is the next best account of what happened.
 function settleError(outcome: AgentOutcome, stderr: string): string | undefined {
-  if (outcome.status !== "failed" || outcome.error) return outcome.error;
-  return stderr.trim().slice(-2000) || undefined;
+  if (outcome.status !== "failed") return outcome.error;
+
+  const raw = outcome.error ?? stderr.trim();
+  if (!raw) return "no error message from the model and no output on stderr";
+  return capToOneLine(raw);
+}
+
+// A prompt can be rejected before acceptance, or consumed by an extension
+// command without any run ever starting. Both mean "no agent_settled is coming".
+function promptRejectionReason(event: RPCEvent): string | null {
+  if (event.success === false) {
+    return `prompt rejected: ${event.error ?? "unknown reason"}`;
+  }
+  const disposition = (event.data as { disposition?: string } | undefined)?.disposition;
+  if (disposition === "handled") {
+    return "prompt was consumed by an extension command or input handler; no run started";
+  }
+  return null;
 }
 
 const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result", "delegate_anchor"];
@@ -433,6 +459,21 @@ export default function delegate(pi: ExtensionAPI) {
       }
 
       let pendingOutcome: AgentOutcome | undefined;
+      let finalized = false;
+
+      const finalize = (status: WorkerStatus, error?: string): void => {
+        if (finalized) return;
+        finalized = true;
+
+        const applied = transitionWorker(status, error);
+        if (applied && status === "failed") {
+          tryAppendText(`\n[FAILED] ${error ?? "(no reason reported)"}\n`);
+        }
+
+        rpcClient.closeStdin();
+        tryCloseLogWriter();
+        if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+      };
 
       const rpcClient = new RPCClient(
         {
@@ -448,7 +489,18 @@ export default function delegate(pi: ExtensionAPI) {
         },
         {
           onEvent(event) {
+            // π can keep emitting after settle (deferred settled actions, an
+            // extension starting a run from an agent_settled handler). The
+            // worker's outcome is already decided; late events would corrupt it.
+            if (finalized) return;
+
             progress.handleEvent(event);
+
+            if (event.type === "response" && event.command === "prompt") {
+              const rejection = promptRejectionReason(event);
+              if (rejection) finalize("failed", rejection);
+              return;
+            }
 
             if (event.type === "message_update") {
               const ame = event.assistantMessageEvent as { type: string; delta?: string } | undefined;
@@ -468,30 +520,18 @@ export default function delegate(pi: ExtensionAPI) {
             if (event.type === "agent_end") {
               pendingOutcome = outcomeFromAgentEndMessages((event as { messages?: unknown[] }).messages);
             } else if (event.type === "agent_settled") {
-              const outcome = pendingOutcome ?? { status: "completed" as const };
-              const error = settleError(outcome, rpcClient.getStderr());
-
-              const applied = transitionWorker(outcome.status, error);
-              if (applied && outcome.status === "failed" && error) {
-                tryAppendText(`\n[FAILED] ${error}\n`);
-              }
-
-              rpcClient.closeStdin();
-              tryCloseLogWriter();
-              if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+              const outcome =
+                pendingOutcome ?? { status: "failed" as const, error: "worker settled without completing an agent run" };
+              finalize(outcome.status, settleError(outcome, rpcClient.getStderr()));
             }
           },
           onExit(code, _signal) {
             tryCleanupTempFile();
-            transitionWorker("failed", `Process exited unexpectedly (code ${code})`);
-            tryCloseLogWriter();
-            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+            finalize("failed", `Process exited unexpectedly (code ${code})`);
           },
           onError(err) {
             tryCleanupTempFile();
-            transitionWorker("failed", err);
-            tryCloseLogWriter();
-            if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);
+            finalize("failed", err);
           },
         },
       );

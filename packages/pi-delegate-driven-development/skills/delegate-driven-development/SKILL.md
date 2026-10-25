@@ -72,13 +72,19 @@ For each ticket in `ready`, ascending task number:
    system_prompt_file: "<skill references dir>/implementer-prompt.md",
    provider/model: implementer, thinking, tools: ["read","edit","write","bash"] })`.
 4. **Wait (non-blocking):** launch `skills/delegate-driven-development/references/wait.sh <status_file> <timeout>` via the
-   `process` tool with `alertOnSuccess: true`, `alertOnFailure: true`, and
-   `logWatches: [{ pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT" }]`. While
+   `process` tool with `notify: { onSuccess: "turn", onFailure: "turn", logMatches:
+   [{ pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT", mode: "regex" }] }`. While
    waiting you MAY chat / investigate / pre-draft, but MUST NOT advance the pipeline,
    move the in-flight ticket, or edit worktree code.
 5. On alert → `delegate_check` (authoritative) → `delegate_result`; parse `STATUS:`.
    - `BLOCKED` / `NEEDS_CONTEXT` → `ticket_move blocked`; stop and escalate to the user.
    - `DONE` / `DONE_WITH_CONCERNS` → proceed to the commit-boundary gate.
+   - If the **delegate** status (not the worker's own `STATUS:`) is `failed`, read `error`
+     from `delegate_check`. A transient provider/network error means π already retried and
+     gave up → re-dispatch the same role once WITHOUT incrementing `review_failures`.
+     Anything else (auth, model not found, prompt rejected) → `ticket_move blocked` and
+     escalate. Delegate status `aborted` reading `Timed out after Ns` → see Non-blocking
+     wait details.
 6. **Commit-boundary gate (mandatory before EVERY review and re-review).** In the
    worktree, require `git rev-parse HEAD` ≠ `task_base_sha` AND `git status --porcelain`
    empty. If HEAD didn't advance or the tree is dirty, the task commit is missing —
@@ -113,6 +119,18 @@ Status files are best-effort; the watcher is only a trigger — `delegate_check`
 authoritative. On `DELEGATE_WATCH_TIMEOUT` with a still-`running` worker, decide whether
 to relaunch the watcher, `delegate_steer`, or `delegate_abort`. Get the `status_file`
 path from the `delegate_start` result details (or `delegate_check`).
+
+Before aborting, tail the `progress_file`. A worker stays `running` while π does
+automatic work it will not surface as a status change: `[RETRY 1/3 in 2000ms: …]` means a
+provider retry is pending, `[RETRY succeeded on retry N]` / `[RETRY gave up after N
+retries: …]` its outcome, and a silent gap after the last text delta can be automatic
+compaction near the context limit. Those mean π is still working — relaunch the watcher
+rather than abort. A worker that produced no progress-log content at all after several
+minutes is a stalled request, not a retrying one.
+
+Size the `delegate_start` `timeout` with headroom over the expected task time: workers
+now survive retries, overflow recovery, and compaction instead of dying at the first
+error, so wall-clock per worker is longer than it was.
 
 ## Worker roles & tools
 | Role | Tools |
