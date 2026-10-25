@@ -71,9 +71,12 @@ For each ticket in `ready`, ascending task number:
 3. `delegate_start({ task, cwd: <worktree>, context_pack: "plan-foundation",
    system_prompt_file: "<skill references dir>/implementer-prompt.md",
    provider/model: implementer, thinking, tools: ["read","edit","write","bash"] })`.
-4. **Wait (non-blocking):** launch `skills/delegate-driven-development/references/wait.sh <status_file> <timeout>` via the
-   `process` tool with `notify: { onSuccess: "turn", onFailure: "turn", logMatches:
-   [{ pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT", mode: "regex" }] }`. While
+4. **Wait (non-blocking):** run the `details.watch.command` string returned by
+   `delegate_start` via the `process` tool with `notify: { onSuccess: "turn", onFailure:
+   "turn", logMatches: [{ pattern: "DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT", mode:
+   "regex" }] }`. Do not hand-write a watcher: `details.watch.command` is the only watcher,
+   it is the tested one, and its `DELEGATE_WATCH_DONE` line carries `task_id=`, which you
+   need to attribute the alert when several workers are in flight. While
    waiting you MAY chat / investigate / pre-draft, but MUST NOT advance the pipeline,
    move the in-flight ticket, or edit worktree code.
 5. On alert → `delegate_check` (authoritative) → `delegate_result`; parse `STATUS:`.
@@ -115,6 +118,15 @@ For each ticket in `ready`, ascending task number:
 - **3** → always stop and escalate to the user.
 
 ## Non-blocking wait details
+Three vocabularies are in play in this loop; do not cross them. The **worker process**
+status file holds exactly `running | completed | failed | aborted`. The **ticket** status
+holds `ready | active | review | needs-fix | blocked | done`. The **worker's own report**
+carries `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT` and `VERDICT: PASS|FAIL`.
+`done` and `blocked` are ticket words and can never appear in a status file; `cancelled` is
+not a status at all — `delegate_abort` writes `aborted`. A watcher timeout exists only in
+the `DELEGATE_WATCH_TIMEOUT` sentinel line: the status file still reads `running` when the
+watcher gives up, so never poll the file for a timeout state.
+
 Status files are best-effort; the watcher is only a trigger — `delegate_check` is
 authoritative. On `DELEGATE_WATCH_TIMEOUT` with a still-`running` worker, decide whether
 to relaunch the watcher, `delegate_steer`, or `delegate_abort`. Get the `status_file`

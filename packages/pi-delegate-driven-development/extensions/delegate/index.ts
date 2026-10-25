@@ -120,8 +120,10 @@ function formatDelegateStartMessage(
     `- status: ${statusFileRelative}`,
     ``,
     `Recommended wait pattern:`,
-    `- If an async/background command runner is available, run details.watch.command there and watch for: DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT.`,
-    `- If no async/background runner is available, run the same command in a shell; it will block, but avoids frequent delegate_check polling.`,
+    `- Run details.watch.command in an async/background command runner if one is available; otherwise run it in a shell — it blocks, but avoids frequent delegate_check polling.`,
+    `- Watch for the sentinels: DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT.`,
+    `- The status file holds exactly one of: running | completed | failed | aborted. Never wait for another word — "done", "blocked" and "cancelled" are not worker statuses.`,
+    `- A timeout is reported only by the DELEGATE_WATCH_TIMEOUT sentinel; the status file still reads "running" when the watcher gives up.`,
     `- After any sentinel or timeout, call delegate_check("${taskId}") once; delegate_check is authoritative.`,
   ].join("\n");
 }
@@ -253,6 +255,7 @@ export default function delegate(pi: ExtensionAPI) {
       "The worker runs as a separate Pi process with its own context window.",
       "delegate_start returns progress/status artifact paths and a self-contained status-file wait command in details.watch.command.",
       "Prefer running details.watch.command with an async/background command runner when one is available; otherwise run it in a blocking shell rather than polling frequently.",
+      "The delegate status file holds exactly one of running | completed | failed | aborted; never wait for another word, and a timeout is reported only by the DELEGATE_WATCH_TIMEOUT sentinel, never written to the status file.",
       "After the wait command emits DELEGATE_WATCH_DONE or DELEGATE_WATCH_TIMEOUT, call delegate_check once for authoritative state, then delegate_result when terminal.",
       "Avoid tight polling loops around delegate_check; if polling is unavoidable, use a slow cadence.",
       "Use delegate_steer to send instructions to a running worker and delegate_abort to stop one.",

@@ -276,4 +276,29 @@ describe("delegate_start status file details", () => {
     expect(managerState.setStatus).toHaveBeenCalledWith("w1", "failed", "send failed");
     expect(visibilityState.writeStatus).toHaveBeenCalledWith("failed");
   });
+
+  it("names the status vocabulary in the start message so the watcher cannot invent a status", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const tool = fake.getTool("delegate_start")!;
+    const result = await tool.execute("call-1", {
+      task: "Review delegate status files.",
+      model: "gpt-5.5",
+      provider: "openai-codex",
+    });
+
+    const text = result.content[0]?.text ?? "";
+    expect(text).toContain("running | completed | failed | aborted");
+    expect(text).toContain("timeout is reported only by the DELEGATE_WATCH_TIMEOUT sentinel");
+  });
+
+  it("states the status vocabulary in the delegate_start tool guidelines", () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+
+    const guidelines = (fake.getTool("delegate_start") as unknown as { promptGuidelines?: string[] })
+      .promptGuidelines ?? [];
+    expect(guidelines.some((line) => line.includes("running | completed | failed | aborted"))).toBe(true);
+  });
 });
