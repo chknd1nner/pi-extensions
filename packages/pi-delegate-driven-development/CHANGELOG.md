@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.2 - 2026-10-25
+
+- Automatic compaction is now visible in the progress log. π emits `compaction_start`, `compaction_end`, and `summarization_retry_scheduled` on the RPC event stream and the extension was discarding all three, so a worker that hit its context limit went silent for the entire summarization call — a model call that can run for a minute or more. That silence looks identical to a hung worker and invited `delegate_abort` at exactly the moment the worker was most likely to recover.
+- New markers: `[COMPACT overflow: summarizing context]` / `[COMPACT threshold: summarizing context]` when it starts, `[COMPACT done: 150000 → 32000 tokens]` (plus `, resuming interrupted turn` when π replays the interrupted turn) when it succeeds, `[COMPACT failed: <reason>]` when recovery fails, `[COMPACT aborted]` when it was cancelled, and `[COMPACT retry 1/3 in 2000ms: <error>]` when the summarization request itself is retried.
+- The trigger is named on purpose: `overflow` means the worker hit its context limit and π is recovering; `threshold` means π compacted proactively between runs and the worker was never in trouble.
+- Skill and README updated so the orchestrator reads these markers instead of guessing what a silent gap means.
+- Tests: 8 new lifecycle cases, mutation-verified — suppressing compaction markers entirely fails 8 tests, dropping the start case fails 3, ignoring `willRetry` fails 2, dropping the aborted and summarization-retry cases fail 1 each.
+
 ## v0.4.1 - 2026-10-25
 
 - A prompt rejected before acceptance (unknown model, missing credentials, expired auth), or consumed by an extension command without starting a run, now fails immediately with the reason π reported on the wire, instead of sitting `running` until its timeout and reporting only "Timed out".
