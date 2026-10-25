@@ -30,6 +30,7 @@ const rpcClientState = vi.hoisted(() => ({
   kill: vi.fn(async () => {}),
   closeStdin: vi.fn(),
   isAlive: vi.fn(() => true),
+  getStderr: vi.fn(() => ""),
 }));
 
 const visibilityState = vi.hoisted(() => ({
@@ -69,6 +70,7 @@ vi.mock("../rpc-client", () => ({
       kill: rpcClientState.kill,
       closeStdin: rpcClientState.closeStdin,
       isAlive: rpcClientState.isAlive,
+      getStderr: rpcClientState.getStderr,
     };
   }),
 }));
@@ -131,30 +133,161 @@ describe("delegate status lifecycle", () => {
     vi.useRealTimers();
   });
 
-  it.each([
-    ["stop", "completed"],
-    ["aborted", "aborted"],
-    ["error", "failed"],
-  ])("maps agent_end stopReason %s to %s", async (stopReason, expectedStatus) => {
-    const fake = createFakePi();
-    delegate(fake.pi);
-
+  async function startWorker(fake: ReturnType<typeof createFakePi>) {
     await fake.getTool("delegate_start")!.execute("call-start", {
       task: "Do work.",
       model: "gpt-5.5",
       provider: "openai-codex",
       timeout: 60,
     });
+  }
+
+  it.each([
+    ["stop", "completed"],
+    ["aborted", "aborted"],
+    ["error", "failed"],
+  ])("maps agent_end stopReason %s to %s once agent_settled arrives", async (stopReason, expectedStatus) => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
 
     callbackState.onEvent?.({
       type: "agent_end",
+      willRetry: false,
       messages: [{ role: "assistant", stopReason, content: [] }],
     });
+    callbackState.onEvent?.({ type: "agent_settled" });
 
     expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", expectedStatus, undefined);
     expect(visibilityState.writeStatus).toHaveBeenLastCalledWith(expectedStatus);
     expect(rpcClientState.closeStdin).toHaveBeenCalledTimes(1);
     expect(visibilityState.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the worker running when agent_end says another run is scheduled", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: true,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }],
+    });
+
+    expect(managerState.setStatus).not.toHaveBeenCalled();
+    expect(rpcClientState.closeStdin).not.toHaveBeenCalled();
+    expect(visibilityState.writeStatus).toHaveBeenLastCalledWith("running");
+  });
+
+  it("finalizes as completed when agent_settled arrives without a preceding agent_end", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", "completed", undefined);
+  });
+
+  it("records the assistant errorMessage as the worker error when settling after an error", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", "failed", "529 overloaded");
+  });
+
+  it("falls back to the worker stderr when the errored turn carries no message", async () => {
+    rpcClientState.getStderr.mockReturnValue("socket hang up");
+
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenLastCalledWith("w1", "failed", "socket hang up");
+  });
+
+  it("logs a retry line to the progress file when a retry is scheduled", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "auto_retry_start",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+      errorMessage: "529 overloaded",
+    });
+
+    const retryLines = visibilityState.appendText.mock.calls
+      .map(([text]) => text as string)
+      .filter((text) => text.includes("[RETRY"));
+    expect(retryLines).toEqual(["\n[RETRY 1/3 in 2000ms: 529 overloaded]\n"]);
+  });
+
+  it("logs a resolved retry line to the progress file when a retry succeeds", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({ type: "auto_retry_end", success: true, attempt: 2 });
+
+    const retryLines = visibilityState.appendText.mock.calls
+      .map(([text]) => text as string)
+      .filter((text) => text.includes("[RETRY"));
+    expect(retryLines).toEqual(["\n[RETRY resolved after 2 attempts]\n"]);
+  });
+
+  it("logs an exhausted retry line to the progress file when retries run out", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "auto_retry_end",
+      success: false,
+      attempt: 3,
+      finalError: "connection reset",
+    });
+
+    const retryLines = visibilityState.appendText.mock.calls
+      .map(([text]) => text as string)
+      .filter((text) => text.includes("[RETRY"));
+    expect(retryLines).toEqual(["\n[RETRY exhausted after 3 attempts: connection reset]\n"]);
+  });
+
+  it("writes the failure reason to the progress log when the worker fails", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    const failureLines = visibilityState.appendText.mock.calls
+      .map(([text]) => text as string)
+      .filter((text) => text.includes("[FAILED"));
+    expect(failureLines).toEqual(["\n[FAILED] 529 overloaded\n"]);
   });
 
   it("writes failed on transport errors while the worker is still running", async () => {
@@ -192,7 +325,7 @@ describe("delegate status lifecycle", () => {
     expect(rpcClientState.kill).toHaveBeenCalledTimes(1);
   });
 
-  it("does not overwrite an aborted status when a later agent_end arrives", async () => {
+  it("does not overwrite an aborted status when a later agent_settled arrives", async () => {
     managerState.setStatus.mockReturnValueOnce(true).mockReturnValueOnce(false);
 
     const fake = createFakePi();
@@ -209,8 +342,10 @@ describe("delegate status lifecycle", () => {
 
     callbackState.onEvent?.({
       type: "agent_end",
+      willRetry: false,
       messages: [{ role: "assistant", stopReason: "stop", content: [] }],
     });
+    callbackState.onEvent?.({ type: "agent_settled" });
 
     expect(visibilityState.writeStatus.mock.calls).toEqual([
       ["running"],

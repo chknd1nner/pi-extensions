@@ -12,7 +12,7 @@ import type { PackItem } from "./pack";
 import { buildSessionSnapshot } from "./snapshot";
 import { ProgressLogWriter, StatusFileWriter } from "./visibility";
 import { WorkerManager } from "./worker-manager";
-import type { DelegateStartParams, WorkerStatus } from "./types";
+import type { DelegateStartParams, RPCEvent, WorkerStatus } from "./types";
 
 function resolveGitRoot(cwd: string): string {
   try {
@@ -126,18 +126,39 @@ function formatDelegateStartMessage(
   ].join("\n");
 }
 
-function statusFromAgentEndMessages(messages: unknown[] | undefined): WorkerStatus {
-  if (!Array.isArray(messages)) return "completed";
+type AgentOutcome = { status: WorkerStatus; error?: string };
+
+function outcomeFromAgentEndMessages(messages: unknown[] | undefined): AgentOutcome {
+  if (!Array.isArray(messages)) return { status: "completed" };
 
   for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as { role?: string; stopReason?: string };
+    const message = messages[i] as { role?: string; stopReason?: string; errorMessage?: string };
     if (message.role !== "assistant") continue;
-    if (message.stopReason === "aborted") return "aborted";
-    if (message.stopReason === "error") return "failed";
-    return "completed";
+    if (message.stopReason === "aborted") return { status: "aborted" };
+    if (message.stopReason === "error") return { status: "failed", error: message.errorMessage };
+    return { status: "completed" };
   }
 
-  return "completed";
+  return { status: "completed" };
+}
+
+function retryProgressLine(event: RPCEvent): string | null {
+  if (event.type === "auto_retry_start") {
+    return `\n[RETRY ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.errorMessage}]\n`;
+  }
+  if (event.type === "auto_retry_end") {
+    return event.success
+      ? `\n[RETRY resolved after ${event.attempt} attempts]\n`
+      : `\n[RETRY exhausted after ${event.attempt} attempts: ${event.finalError}]\n`;
+  }
+  return null;
+}
+
+// An errored low-level run does not always carry a message; the worker's own
+// stderr is the next best account of what happened.
+function settleError(outcome: AgentOutcome, stderr: string): string | undefined {
+  if (outcome.status !== "failed" || outcome.error) return outcome.error;
+  return stderr.trim().slice(-2000) || undefined;
 }
 
 const DELEGATE_TOOLS = ["delegate_start", "delegate_check", "delegate_steer", "delegate_abort", "delegate_result", "delegate_anchor"];
@@ -411,6 +432,8 @@ export default function delegate(pi: ExtensionAPI) {
         }
       }
 
+      let pendingOutcome: AgentOutcome | undefined;
+
       const rpcClient = new RPCClient(
         {
           model: params.model,
@@ -435,11 +458,24 @@ export default function delegate(pi: ExtensionAPI) {
             } else if (event.type === "tool_execution_start") {
               const args = JSON.stringify(event.args ?? {}).slice(0, 80);
               tryAppendToolCall(event.toolName as string, args);
+            } else {
+              const retryLine = retryProgressLine(event);
+              if (retryLine) tryAppendText(retryLine);
             }
 
+            // agent_end closes one low-level run; π may still retry, compact, or
+            // continue queued work. agent_settled is the terminal signal.
             if (event.type === "agent_end") {
-              const nextStatus = statusFromAgentEndMessages((event as { messages?: unknown[] }).messages);
-              transitionWorker(nextStatus);
+              pendingOutcome = outcomeFromAgentEndMessages((event as { messages?: unknown[] }).messages);
+            } else if (event.type === "agent_settled") {
+              const outcome = pendingOutcome ?? { status: "completed" as const };
+              const error = settleError(outcome, rpcClient.getStderr());
+
+              const applied = transitionWorker(outcome.status, error);
+              if (applied && outcome.status === "failed" && error) {
+                tryAppendText(`\n[FAILED] ${error}\n`);
+              }
+
               rpcClient.closeStdin();
               tryCloseLogWriter();
               if (entry.timeoutTimer) clearTimeout(entry.timeoutTimer);

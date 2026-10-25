@@ -54,8 +54,8 @@ Unset, empty, invalid, and non-positive values fall back to the default of five.
 
 `delegate_start` returns worker artifact paths and a self-contained status-file wait recipe:
 
-- `details.progress_file` / `details.progress_file_relative` — append-only markdown progress log.
-- `details.status_file` / `details.status_file_relative` — machine-readable lifecycle status file.
+- `details.progress_file` / `details.progress_file_relative` — append-only markdown progress log. Worker text and `[TOOL: name]` lines are interleaved with lifecycle markers: `[RETRY 1/3 in 2000ms: 529 overloaded]` when π schedules an automatic retry, `[RETRY resolved after 2 attempts]` or `[RETRY exhausted after 3 attempts: <error>]` when it resolves, and `[FAILED] <error>` when the worker settles as failed.
+- `details.status_file` / `details.status_file_relative` — machine-readable lifecycle status file. A worker is finalized when π reports `agent_settled`, not at the end of the first low-level run, so automatic retries, overflow recovery, and queued follow-up work all continue. When a worker fails, `delegate_check` and `delegate_result` report the reason: the assistant error message if the model produced one, otherwise the tail of the worker's stderr.
 - `details.watch.command` — Bash command that waits for `completed`, `failed`, or `aborted` status and emits `DELEGATE_WATCH_DONE` or `DELEGATE_WATCH_TIMEOUT`.
 
 If an async/background command runner is available, run `details.watch.command` there and watch for `DELEGATE_WATCH_DONE|DELEGATE_WATCH_TIMEOUT`. If not, run the same command in a shell; it blocks, but avoids frequent `delegate_check` polling. After any sentinel or timeout, call `delegate_check` once because in-memory delegate state is authoritative.
