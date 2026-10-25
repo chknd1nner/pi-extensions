@@ -142,6 +142,10 @@ function outcomeFromAgentEndMessages(messages: unknown[] | undefined): AgentOutc
   return { status: "completed" };
 }
 
+// Markers for the automatic work π does between low-level runs. Without them the
+// progress log goes silent for the whole duration of a retry delay or a
+// compaction summarization, which reads to an orchestrator exactly like a hung
+// worker and invites a premature delegate_abort.
 function retryProgressLine(event: RPCEvent): string | null {
   if (event.type === "auto_retry_start") {
     return `\n[RETRY ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.errorMessage}]\n`;
@@ -153,6 +157,32 @@ function retryProgressLine(event: RPCEvent): string | null {
       : `\n[RETRY gave up after ${event.attempt} ${retries}: ${event.finalError}]\n`;
   }
   return null;
+}
+
+function compactionProgressLine(event: RPCEvent): string | null {
+  if (event.type === "compaction_start") {
+    return `\n[COMPACT ${event.reason}: summarizing context]\n`;
+  }
+  if (event.type === "compaction_end") {
+    if (event.aborted) return "\n[COMPACT aborted]\n";
+    if (!event.result) {
+      return `\n[COMPACT failed: ${event.errorMessage ?? "unknown reason"}]\n`;
+    }
+    const result = event.result as { tokensBefore?: number; estimatedTokensAfter?: number };
+    const tokens = `${result.tokensBefore} \u2192 ${result.estimatedTokensAfter} tokens`;
+    return event.willRetry
+      ? `\n[COMPACT done: ${tokens}, resuming interrupted turn]\n`
+      : `\n[COMPACT done: ${tokens}]\n`;
+  }
+  if (event.type === "summarization_retry_scheduled") {
+    const label = event.source === "branchSummary" ? "SUMMARY" : "COMPACT";
+    return `\n[${label} retry ${event.attempt}/${event.maxAttempts} in ${event.delayMs}ms: ${event.errorMessage}]\n`;
+  }
+  return null;
+}
+
+function lifecycleProgressLine(event: RPCEvent): string | null {
+  return retryProgressLine(event) ?? compactionProgressLine(event);
 }
 
 // Provider errors are sometimes whole HTML bodies; keep the reported reason
@@ -511,8 +541,8 @@ export default function delegate(pi: ExtensionAPI) {
               const args = JSON.stringify(event.args ?? {}).slice(0, 80);
               tryAppendToolCall(event.toolName as string, args);
             } else {
-              const retryLine = retryProgressLine(event);
-              if (retryLine) tryAppendText(retryLine);
+              const lifecycleLine = lifecycleProgressLine(event);
+              if (lifecycleLine) tryAppendText(lifecycleLine);
             }
 
             // agent_end closes one low-level run; π may still retry, compact, or

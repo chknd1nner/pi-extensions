@@ -121,12 +121,16 @@ to relaunch the watcher, `delegate_steer`, or `delegate_abort`. Get the `status_
 path from the `delegate_start` result details (or `delegate_check`).
 
 Before aborting, tail the `progress_file`. A worker stays `running` while π does
-automatic work it will not surface as a status change: `[RETRY 1/3 in 2000ms: …]` means a
-provider retry is pending, `[RETRY succeeded on retry N]` / `[RETRY gave up after N
-retries: …]` its outcome, and a silent gap after the last text delta can be automatic
-compaction near the context limit. Those mean π is still working — relaunch the watcher
-rather than abort. A worker that produced no progress-log content at all after several
-minutes is a stalled request, not a retrying one.
+automatic work it will not surface as a status change, and that work is now marked:
+`[RETRY 1/3 in 2000ms: …]` means a provider retry is pending and `[RETRY succeeded on
+retry N]` / `[RETRY gave up after N retries: …]` its outcome; `[COMPACT overflow:
+summarizing context]` means the worker hit its context limit and is summarizing (the
+summarization is a model call and can run for a minute or more with no other output),
+`[COMPACT done: 150000 → 32000 tokens, resuming interrupted turn]` means it recovered and
+π is replaying the interrupted turn, and `[COMPACT failed: …]` means recovery is over. A
+worker whose last line is an open `[RETRY …]` or `[COMPACT …]` is working, not stuck —
+relaunch the watcher rather than abort. A worker that produced no progress-log content at
+all after several minutes is a stalled request, not a retrying one.
 
 Size the `delegate_start` `timeout` with headroom over the expected task time: workers
 now survive retries, overflow recovery, and compaction instead of dying at the first

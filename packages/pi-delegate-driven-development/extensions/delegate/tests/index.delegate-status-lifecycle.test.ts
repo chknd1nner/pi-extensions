@@ -145,6 +145,14 @@ describe("delegate status lifecycle", () => {
     });
   }
 
+  function appendedTexts(): string[] {
+    return visibilityState.appendText.mock.calls.map(([text]) => text as string);
+  }
+
+  function compactedLines(): string[] {
+    return appendedTexts().filter((text) => text.includes("[COMPACT"));
+  }
+
   it.each([
     ["stop", "completed", undefined],
     ["aborted", "aborted", undefined],
@@ -295,6 +303,137 @@ describe("delegate status lifecycle", () => {
       .map(([text]) => text as string)
       .filter((text) => text.includes("[RETRY"));
     expect(retryLines).toEqual(["\n[RETRY gave up after 1 retry: Retry cancelled]\n"]);
+  });
+
+  it("logs a compaction marker when compaction starts", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({ type: "compaction_start", reason: "overflow" });
+
+    expect(compactedLines()).toEqual(["\n[COMPACT overflow: summarizing context]\n"]);
+  });
+
+  it("names the trigger in the compaction marker", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({ type: "compaction_start", reason: "threshold" });
+
+    expect(compactedLines()).toEqual(["\n[COMPACT threshold: summarizing context]\n"]);
+  });
+
+  it("logs the token change when compaction succeeds", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "compaction_end",
+      reason: "threshold",
+      result: { tokensBefore: 150000, estimatedTokensAfter: 32000 },
+      aborted: false,
+      willRetry: false,
+    });
+
+    expect(compactedLines()).toEqual(["\n[COMPACT done: 150000 → 32000 tokens]\n"]);
+  });
+
+  it("says when compaction is followed by an automatic resume", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "compaction_end",
+      reason: "overflow",
+      result: { tokensBefore: 150000, estimatedTokensAfter: 32000 },
+      aborted: false,
+      willRetry: true,
+    });
+
+    expect(compactedLines()).toEqual([
+      "\n[COMPACT done: 150000 → 32000 tokens, resuming interrupted turn]\n",
+    ]);
+  });
+
+  it("logs a compaction failure with its reason", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      willRetry: false,
+      errorMessage: "Context overflow recovery failed after one compact-and-retry attempt.",
+    });
+
+    expect(compactedLines()).toEqual([
+      "\n[COMPACT failed: Context overflow recovery failed after one compact-and-retry attempt.]\n",
+    ]);
+  });
+
+  it("logs an aborted compaction", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false });
+
+    expect(compactedLines()).toEqual(["\n[COMPACT aborted]\n"]);
+  });
+
+  it("logs a retry of the compaction summarization request", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "summarization_retry_scheduled",
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+      errorMessage: "terminated",
+    });
+
+    expect(compactedLines()).toEqual(["\n[COMPACT retry 1/3 in 2000ms: terminated]\n"]);
+  });
+
+  it("shows the whole overflow recovery in the progress log", async () => {
+    const fake = createFakePi();
+    delegate(fake.pi);
+    await startWorker(fake);
+
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: true,
+      messages: [{ role: "assistant", stopReason: "error", errorMessage: "prompt is too long", content: [] }],
+    });
+    callbackState.onEvent?.({ type: "compaction_start", reason: "overflow" });
+    callbackState.onEvent?.({
+      type: "compaction_end",
+      reason: "overflow",
+      result: { tokensBefore: 180000, estimatedTokensAfter: 40000 },
+      aborted: false,
+      willRetry: true,
+    });
+    callbackState.onEvent?.({
+      type: "agent_end",
+      willRetry: false,
+      messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] }],
+    });
+    callbackState.onEvent?.({ type: "agent_settled" });
+
+    expect(managerState.setStatus).toHaveBeenCalledWith("w1", "completed", undefined);
+    expect(compactedLines()).toEqual([
+      "\n[COMPACT overflow: summarizing context]\n",
+      "\n[COMPACT done: 180000 → 40000 tokens, resuming interrupted turn]\n",
+    ]);
+    expect(appendedTexts().filter((text) => text.includes("[FAILED"))).toEqual([]);
   });
 
   it("writes the failure reason to the progress log when the worker fails", async () => {
