@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0 - 2026-10-25
+
+- Bug fix: delegate workers are finalized when π reports `agent_settled` instead of at the first `agent_end`. The previous behaviour closed the worker's stdin after one low-level run, which killed workers on transient provider and network errors before π's automatic retry could fire.
+- Failed workers now report a reason: the assistant `errorMessage`, falling back to the tail of the worker's stderr, surfaced through `delegate_check` and `delegate_result`.
+- The progress log records automatic retry activity (`[RETRY 1/3 in 2000ms: 529 overloaded]`, `[RETRY resolved after 2 attempts]`, `[RETRY exhausted after 3 attempts: <error>]`) and the failure reason (`[FAILED] <error>`), so a retrying worker is distinguishable from a hung one.
+- Closes chknd1nner/pi-extensions#6.
+
 ## v0.3.2 - 2026-08-08
 
 - Raise the default delegate worker concurrency limit from two to five.
