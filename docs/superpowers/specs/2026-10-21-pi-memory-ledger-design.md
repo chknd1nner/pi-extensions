@@ -1,305 +1,441 @@
-# pi-memory-ledger — Design Specification v0.2
+# pi-memory-ledger — Design Specification v0.3
 
 **Working title:** pi-memory-ledger (formerly pi-session-context)  
-**Status:** Revised engineering draft — 21 October 2026 (v0.1 preserved in Git history)  
-**Target:** Pi 0.87.1+ / current Pi 1.x, TypeScript extension  
-**Scope:** One active Pi session and its branches; cross-session memory deferred  
-**Principal idea:** *The working agent proposes memories. An auditor reconciles them against evidence and all prior memories. Compaction deterministically materialises the current state of knowledge.*
+**Status:** Revised engineering draft — 27 October 2026  
+**Target:** Current Pi coding-agent extension APIs, TypeScript  
+**Scope:** Intra-session continuity across context compactions and branches; cross-session continuity is an architectural extension, not a v0.3 delivery goal  
+**Principal idea:** *A compaction is a miniature session restart. Maintain living, dynamically organised knowledge documents; preserve every change and its evidence in an append-only history; reconstruct the useful current state at context boundaries.*
+
+**Revision history:** v0.1 introduced audited memories and deterministic compaction; v0.2 added the passive Session Activity Ledger; v0.3 changes the primary memory abstraction from an accumulating collection of audited claims to a versioned set of editable Markdown blocks, governed by a dynamic manifest and YAML templates. Previous versions remain in Git history.
 
 ---
 
 ## 1. Product vision
 
-A user converses naturally with a Pi agent. At moments it considers meaningful, the agent silently calls `remember` to propose a concise, self-contained memory. The proposal is audited against the original conversation and the entire existing session-memory ledger. The auditor may confirm it, correct it, merge it, qualify it, identify a contradiction, or change the status of an earlier memory. The operator sees an unobtrusive **[Memory saved]** acknowledgement after a successful commit, not a verbose tool call.
+The working agent and user gradually build a useful understanding of the current session. The representation is not a sequence of ever-growing summaries. It is a small, editable, evolving collection of Markdown memory blocks: current project decisions, constraints, hypotheses, user preferences, outstanding questions, and whatever other subjects prove useful.
 
-At a manual or configured automatic compaction boundary, the extension builds a new context **deterministically** from the ledger's current effective state, without another LLM summarisation request. Original session messages, tool results, memory proposals, audit decisions, and reconciliation events remain append-only and inspectable. The model can retrieve the underlying evidence on demand without navigating `/tree`.
+The subjects are **not hard-coded**. The agent and user can create, rename, split, merge, reorganise, and retire blocks or sections. YAML templates describe a suggested Markdown structure and instructions for maintaining a particular type of block. Templates themselves can evolve. A versioned manifest lists the available blocks and their loading policies, including blocks not currently included in context.
 
-A memory is **not** necessarily a completed task. It may concern an insight, a changing understanding, a hypothesis, a correction, a user preference, a decision, a useful dead end, or an open question. Conversations, brainstorming, learning, research, and coding are equal citizens.
+The agent normally **edits existing knowledge instead of appending another observation**. Changes are audited against current relevant knowledge and original source evidence, and committed as atomic, append-only changesets in the Pi session. The materialized documents can be reconstructed at any point along an active branch. Historical states, the evolution of the organisational scheme, and exact raw evidence are retrievable on demand.
 
-## 2. Goals and non-goals
+Compaction is a miniature session restart: materialize the current manifest and selected blocks, preserve working context and activity, and establish a fresh model context **without inference at compaction time**. Cross-session loading would use substantially the same projection machinery with a different persistence boundary.
 
-### Goals (v0.2)
+A memory need not describe a completed task. Brainstorming, changing understanding, provisional decisions, research, ordinary conversation and implementation work all count.
 
-- Model-initiated memory proposals via a simple `remember` tool, with no mandatory task-boundary semantics.
-- First-class **audit and cross-memory reconciliation for every committed memory**.
-- Audit access to **every earlier memory on the active branch**, including superseded, retired, and disputed records, plus targeted raw evidence.
-- Independently track whether a claim is supported and whether it is still applicable.
-- Maintain an append-only, branch-aware, recoverable knowledge ledger in Pi's session JSONL.
-- Deterministic compaction from audited memory, with no inference at compaction time.
-- Preserve uncovered/unfinished work and decline unsafe compactions rather than silently lose it.
-- Model-callable, source-accurate, bounded retrieval of raw messages/tool results using Pi entry IDs.
-- Low-noise TUI and Radius/RPC presentation; useful status, inspection and diagnostics commands.
-- Same-model auditing by default, optional separate model/provider; no dedicated model requirement.
-- Capture file reads, writes and edits in a deterministic, append-only **session activity ledger**, independent of model-authored memories.
-- Render a cumulative session-activity footer during compaction and store complete structured metadata in the compaction entry.
+## 2. Goals, non-goals, and guarantees
 
-### Non-goals (v0.2)
+### Goals
 
-- Cross-session, workspace-wide, or global memory; semantic vector search; embeddings.
-- Automatically saving every conversation turn or periodically summarising without model intent.
-- Guaranteeing that source context or historical provider KV caches survive compaction.
-- Modifying the original message content, deleting historical evidence, or rewriting existing memory records.
-- Invisible autonomous changes to the user's actual files or decisions.
-- Relying on an auditor's opinions as independent proof of external-world truth.
-- Perfect detection of arbitrary shell/subprocess or external filesystem mutations in v0.2; activity coverage limitations must be explicit.
-- Treating activity events as substitutes for audited narrative coverage.
+1. Maintain a **living current-state knowledge base** with concise, editable Markdown blocks.
+2. Let the user and agent choose **arbitrary categories and block names**, without fixed operator/project/family/pets schemas.
+3. Keep a small, always-discoverable **manifest** describing blocks, stable IDs, summaries and load policies.
+4. Define and evolve **YAML memory templates** containing suggested Markdown headings and block-specific editing instructions.
+5. Prefer **edit > append**; consolidate superseded understanding in the active document rather than preserving every previous wording in context.
+6. Audit proposed content and structural edits against exact source evidence and **relevant current blocks**, with historical investigation when challenged.
+7. Version changes to block contents, manifest, templates, block identities and organisation in a **branch-aware append-only ledger**.
+8. Preserve source-accurate, bounded retrieval of session messages, tool results, past versions, and audit decisions.
+9. Certify conversation-span coverage **separately** from saving individual memories; refuse unsafe deterministic compaction instead of claiming that a single remembered fact covers a whole interval.
+10. Rebuild memory and activity **deterministically** during compaction, with no model call at the folding boundary.
+11. Support selectively loaded blocks and **cache-aware, append-only in-session visibility** where model/provider/Pi capabilities allow it.
+12. Carry forward v0.2's deterministic passive **Session Activity Ledger**.
+
+### Non-goals for v0.3
+
+- Cross-session synchronisation, a global personal-memory database, Git repository mirroring, multi-agent shared memory, or automatic branch merging.
+- Mandatory embeddings, vector search, an always-on background summariser, or an external memory database.
+- Requiring every memory paragraph to be decomposed into a permanent graph of structured claims.
+- Guarantees of perfect recall, perfect auditor judgment, perfect semantic coverage, or prompt-cache hits on every provider.
+- Rewriting historical Pi entries; declaring that logical retirement is equivalent to secure erasure.
+- Inferring arbitrary shell/subprocess file effects as verified activity.
+
+### Distinct guarantees
+
+**Durability** means committed changes and their provenance can be replayed from the active Pi session branch.
+
+**Reconciliation** means a proposed edit was checked against its evidence and retrieved relevant current knowledge; it does *not* mean every historical memory was exhaustively scanned.
+
+**Coverage** means the specified source interval was deliberately reviewed and assigned a preservation/discard decision; it is a best-effort semantic assessment, **not a mathematical proof** that nothing important was omitted.
+
+**Determinism** means the extension renders an identical context for identical committed branch state, configuration, and selected compaction cut. It does not mean the earlier model-produced judgments were deterministic.
+
+**Cache preservation** means the extension avoids rewriting an otherwise unchanged prefix where the provider allows it. Actual cache eligibility, expiry, placement, cost and hit rate remain provider-dependent.
 
 ## 3. Non-negotiable invariants
 
-1. **Evidence is immutable.** Never rewrite or delete original Pi session entries; all state transitions are appended.
-2. **Proposal ≠ memory.** Only a committed, audited reconciliation is eligible for compaction. Pending or failed proposals are not authoritative.
-3. **Audit is holistic.** Every audit reviews the current proposal against the entire prior memory index, including inactive history. It may retrieve the supporting raw entries of any implicated memory. An incomplete scan cannot claim a complete audit.
-4. **Status is not truth.** `verified` and `active` are separate dimensions; a once-verified decision can later be superseded without becoming false.
-5. **Conflicts are explicit.** Recency alone never resolves factual disagreement. Unresolved contradictions remain visible and carry both sides.
-6. **Compaction is pure.** For identical session branch entries, configuration and cut point, the renderer must produce byte-identical compaction content and metadata, without calling an LLM.
-7. **No silent loss.** A compacted-away span must be covered by an audited checkpoint, or be preserved verbatim in Pi's retained tail. Failure to satisfy the condition blocks memory-based compaction.
-8. **Source-first retrieval.** All carried memories and reconciliation operations have usable source references. A model can request precise original evidence rather than trusting a paraphrase.
-9. **Branch locality.** Events from an abandoned `/tree` branch do not silently become authoritative on another branch.
-10. **Fail closed, recover explicitly.** A partial audit, corrupted record, unavailable provider, or over-budget ledger must not fabricate success.
-11. **Activity is evidence, not memory.** A successful tool operation is deterministic evidence that it reported success, not proof a file's current contents remain modified or correct.
-12. **Activity is materialized afresh.** Derive every activity footer from active-branch records, never by appending to the previous footer.
+1. **Source evidence remains immutable.** Pi's original session transcript and tool results are not edited or deleted by the extension.
+2. **Current state is a projection.** Manifest, templates and blocks are derived from validated, append-only changesets; materialized files or snapshots are caches, not competing authorities.
+3. **Stable identity beats filename.** Block IDs and template IDs survive rename and section reorganisation. Split/merge operations preserve lineage.
+4. **Every active revision is committed and auditable.** A proposal, draft diff or pending audit is not current knowledge until a validated atomic commit succeeds.
+5. **Edits are preferred over append-only prose growth.** Historical wording is recoverable from revisions; active context carries the best current formulation.
+6. **Evidence and authority are distinct.** User decisions, hypotheses, observed tool outputs, inferred conclusions and imported documents must not be conflated.
+7. **Recent is not necessarily true.** A later source may revise a project decision; a conflicting factual claim may instead require qualification, investigation or an explicit dispute.
+8. **The manifest is complete on its branch.** An unloaded block must remain discoverable and retrievable. No silent duplicate block creation after skipping relevant manifest entries.
+9. **No surprise authority promotion.** Retrieved/untrusted content does not become system-level instruction merely because it was placed in a memory block.
+10. **Coverage is separate from memory edits.** A successfully committed memory edit does not itself certify that every source since the last checkpoint was reviewed.
+11. **Compaction is a pure, validated projection.** No auditor or other model call occurs within the compaction hook.
+12. **No silently missing active knowledge.** The selected loaded block set and manifest must fit; other committed blocks are explicitly indexed and retrievable, not silently discarded.
+13. **Branch locality.** Replay, coverage and activity follow active ancestry, not every entry in the JSONL file.
+14. **Failure is visible and recoverable.** Stale revisions, missing evidence, parsing failures, unsafe cuts, conflicts and budget overflow never masquerade as successful writes.
+15. **Activity is independently observed.** Successful native file operations are not semantic memories, and cannot advance audited narrative coverage.
 
-## 4. User experience
+## 4. Conceptual architecture: current state and history
 
-### Normal conversation
+The v0.3 model has five components.
 
-```
-User: We originally considered WebSockets, but SSE is simpler.
-      Let's use SSE for the event stream.
+### 4.1 Manifest (always discoverable)
 
-Agent: Agreed. We'll use SSE and retain the relay's existing
-       authentication boundary.
-       ✓ Memory saved
-```
+The **manifest** is a small, versioned, first-class document or logical projection describing what memory exists. Its role comes from the user's prior Git-backed design, which injected a manifest even when some category documents were not always loaded.
 
-The visible acknowledgement is tied to **successful audit commit**, not merely invocation of `remember`.
+Proposed manifest fields:
 
-### Compacting
+- Stable block ID, current human-readable title and current logical path.
+- Short description, keywords/topic hints and optional relationships to other blocks.
+- Load policy: **core** (normally loaded), **on-demand** (indexed, retrievable), or **inactive** (retired but historical).
+- Template ID/version, current content revision, byte/token estimates, and optional priority.
+- Optional lineage and aliases for previous names.
+- A registry of available templates and the manifest schema version.
 
-```
-[Compacting]
-[Context compacted · 9 active memories · 2 superseded · 1 unresolved · 4 files modified]
-```
+Load policy is not a category. Any user-defined category can be core or on-demand. Only the manifest's *role* is special; its headings and presentation may evolve within validated schema limits.
 
-Compaction may be initiated via native `/compact`, Pi's threshold policy, or an overflow-recovery hook, subject to configuration and safety checks. Any claim about exact placement *beneath* the final assistant response in TUI/Radius is a UI integration requirement, not something guaranteed by a generic hidden custom-entry flag.
+A manifest can be rendered as Markdown for the model, while storing its canonical registry as a validated object for deterministic lookup. This prevents free-form prose edits from accidentally making a block invisible.
 
-### Inspecting and controlling
+### 4.2 YAML templates (editable policies)
 
-Proposed commands (namespace and details to be confirmed during implementation):
+Templates are **user- or agent-authored YAML artifacts**. They contain suggested Markdown structure and natural-language usage hints, not hard-coded application categories. Example:
 
-- `/memory status` — active/pending/disputed counts, audited coverage, safe compactability, last fold, rough context budget.
-- `/memory list [all|active|disputed|pending]` — concise ledger timeline.
-- `/memory show <id>` — current claims, audit, history, and references.
-- `/memory compact` — invoke the native compaction path with this extension's policy, or use native `/compact`.
-- `/memory audit <id>` — re-audit a record and reconcile all prior memories, without rewriting it.
-- `/memory mode [on|off]` — opt-in/opt-out without mutating global Pi settings.
+~~~yaml
+id: tmpl-project
+name: Project knowledge
+description: "For a project whose decisions evolve over time"
+markdown: |
+  # {title}
 
-## 5. Model-facing tools
+  ## Current understanding
 
-### `remember({ memory: string })`
+  ## Decisions and rationale
 
-Keep the primary interface deliberately small; no user-supplied source IDs, categories, confidence percentages, or supersession IDs.
+  ## Constraints
 
-**`promptSnippet`**
+  ## Open questions
 
-> `remember` — Save meaningful discoveries, decisions, evolving ideas, corrections, preferences, and open questions for later context compaction; an auditor verifies and reconciles them with earlier memories.
+editing:
+  instructions: |
+    Prefer replacing outdated paragraphs to appending dated observations.
+    Reconcile changed decisions in place; preserve meaningful current rationale.
+    Keep experiments provisional until adopted or independently verified.
+    Preserve unresolved disagreements explicitly.
+  prefer_edit_over_append: true
+~~~
 
-**Description**
+This is an **illustrative design schema**, not an already implemented Pi interface. Real YAML syntax/escaping, placeholders, fields and validation will be formalised in code. Templates must not contain arbitrary executable code. Template text is editorial guidance, not a way to bypass higher-priority user/developer safety boundaries.
 
-> Propose a focused, self-contained memory about something meaningful established or changed in the conversation. Use for coding, research, brainstorming, learning, or ordinary discussion; a completed task is not required. Include what happened or was established, why it matters, and any important uncertainty or unresolved question. Distinguish user decisions from your suggestions, observed evidence from interpretation, and confirmed findings from hypotheses. A separate audit will compare this proposal against the original conversation and all earlier memories, resolving refinements, contradictions, duplication and supersession. Do not manage entry IDs or earlier memory statuses. Do not remember every exchange; call only when the conversation's useful knowledge has changed meaningfully.
+A template can be revised, renamed or retired. An existing block can change templates with an explicit migration plan. No automatic rewrite of all blocks merely because a template changed.
 
-**`promptGuidelines`**
+### 4.3 Living Markdown blocks (current knowledge)
 
-1. Remember salient developments as they happen; do not wait for a task to end.
-2. Be precise about epistemic status: observed, user-decided, suggested, assumed, disputed, or open.
-3. Prefer focused memories containing independently verifiable claims; do not capture trivial chit-chat or repetitive paraphrases.
-4. Do not claim tests passed, decisions were final, or facts were verified unless the conversation supports that claim.
-5. You may propose a revision of earlier thinking without identifying an earlier memory; reconciliation is the auditor's responsibility.
+A block is a versioned Markdown document with stable identity, template association and evidence-backed revisions. Its current version captures the *present understanding*, rather than concatenating a full chronology.
 
-**Tool result:** small machine-readable acknowledgement with candidate/committed memory ID and status; TUI renderer hides the proposal body and displays a subtle status indicator. The raw Pi assistant tool-call arguments and result remain in the source transcript even if the UI hides them. They still count toward model context until compaction; v0.2 does not use per-unit `context_edit` to erase them and thereby invalidate cached prefixes.
+Example:
 
-### `memory_recall({ id, view?, anchor?, cursor?, limit? })`
+~~~markdown
+# Transport
 
-Read-only tool. `id` is an opaque memory or source ID. `view` may be `memory`, `audit`, `source-outline`, or `source-raw`; defaults to `memory`. For raw source, provide bounded output, pagination by source-entry ID, and optional exact-text windowing. Return source IDs, speaker/tool type and truncation notice on every chunk. Do not reduce a supposedly raw tool output to a paraphrase without labelling the reduction; support exact bytes for requested text ranges when feasible. Binary/image payloads require a separate media interface, not fake text.
+## Current decision
+Use SSE for the event stream.
 
-## 6. Data model: append-only ledger
+## Rationale
+Simpler transport requirements for the current client; existing authentication boundary remains.
 
-Store records as Pi `custom` session entries, e.g. `customType: "pi-memory-ledger"`. Pi's `custom` entries do not enter model context; their current state is obtained by replaying *active-branch* entries, not by scanning all file records indiscriminately.
+## Open questions
+Reconnect and event replay policy is not decided.
+~~~
 
-### Proposed events
+A later user decision would **edit** the current-decision section. Previous text stays accessible through the append-only ledger and source references, not copied into an ever-longer active file.
 
-- `memory.proposed`: candidate ID, raw model text, proposal time, evidence window start/end Pi entry IDs, working branch information, schema version.
-- `memory.reconciled`: **single logical commit** with auditor version/model, verdict, normalized memory/claims, evidence references, applied status deltas, audit coverage interval and rationale.
-- `memory.audit_failed`: candidate ID and explicit failure reason; never treated as committed.
-- `memory.reaudited`: later authoritative reconciliation of an existing memory/claim and any related memories.
-- `memory.compacted`: successful compact checkpoint/cut metadata (also included in Pi compaction `details`); no duplicate user-visible memory.
-- `memory.policy`: configuration changes that must follow the branch, if/when needed.
+A block may include compact uncertainty labels, supporting evidence links, or a conflict subsection. v0.3 does **not** require independent claim IDs and status state machines for every sentence. For high-risk or disputed material, optional structured assertions and links can coexist with Markdown.
 
-Only `memory.reconciled` or `memory.reaudited` changes effective memory state. Construct candidate and event IDs with collision-resistant identifiers; use Pi entry IDs for source positions, not ordinal offsets.
+### 4.4 Event ledger (changes and organisation)
 
-### Candidate (illustrative)
+The ledger records the evolution of the **content and organisation** of memory. It covers ordinary text edits, new blocks, renames, splits, merges, section changes, template revisions, manifest/load-policy changes, retired blocks, audits and coverage certificates.
 
-```json
+Use Pi's append-only **custom** session entries with customType **pi-memory-ledger**. These are not model-visible by default. The authoritative projection is reduced from events along the active branch.
+
+### 4.5 Original session evidence
+
+The Pi transcript remains the source of truth for what the user actually decided, what the model merely proposed, and what tools reported. References use durable Pi source entry IDs, tool-call IDs and bounded ranges. Memory history is not a substitute for exact primary evidence.
+
+## 5. Mutable taxonomy and organisational operations
+
+The memory categories are **created as needed**, not configured in a fixed list. An initially empty session may contain only the manifest and a small general template registry.
+
+Supported conceptual operations:
+
+- Create, rename, revise, retire or restore a memory block.
+- Add, edit, move, rename or delete a section of a block.
+- Split one block into multiple blocks while recording source/target lineage.
+- Merge several blocks into one, retaining all source identities/history.
+- Create, revise, retire or reassign a YAML template.
+- Change manifest descriptions, topic hints, aliases and per-block load policy.
+- Consolidate a bloated block without changing its intended current meaning.
+
+**Default organisational rule:** edit an existing block first; add a section second; create a new block only when separation helps retrieval, responsibility or context budgeting. Splits/merges are relatively high-impact operations and should be explicitly auditable. Direct user requests take precedence over heuristic preferences.
+
+A structural change affecting multiple blocks and the manifest MUST commit as a **single logical changeset**. A failed split cannot leave the manifest referring to missing blocks. Retire/rename is not physical deletion of session evidence.
+
+The reducer validates references, unique IDs, path/alias collisions, YAML parsing, block/template associations, split/merge lineage, load policies and base revisions before committing.
+
+## 6. Tools and agent-facing workflow
+
+### 6.1 remember({ memory: string })
+
+Preserve the deliberately minimal primary interface. The agent explains the meaningful new or changed knowledge in natural language; it does not need to know internal block IDs, section coordinates or diff syntax.
+
+**Proposed hint:**
+
+> Remember a meaningful discovery, decision, correction, hypothesis, constraint, preference or open question from the conversation. A completed task is not required. Record what currently matters and any uncertainty. Existing memory blocks should be *edited rather than appended to* where possible. The extension will locate related blocks, reconcile with original evidence and relevant current knowledge, and commit an audited revision. Do not save every exchange.
+
+Tool workflow:
+
+1. Persist a source-bounded proposal.
+2. Search the **entire current manifest** for relevant blocks, including unloaded ones, by deterministic index plus optional semantic ranking.
+3. Fetch relevant current block content and directly implicated evidence/history.
+4. Ask an isolated auditor to verify provenance and propose the smallest coherent document edits or new block.
+5. Validate and atomically commit a changeset against expected block and manifest revisions.
+6. Return a terse saved/updated/unchanged/pending/error result. Do not claim success before commit.
+
+### 6.2 organize_memory({ operation, ... })
+
+A separate model-facing or operator-accessible family of **typed, constrained structural operations**: create/rename/split/merge/retire blocks; edit template or manifest metadata; move/rename sections; change load policy. Exact schema can evolve, but must NOT accept an unrestricted filesystem shell command or unchecked arbitrary document replacement.
+
+Operations that materially change the meaning of active knowledge are audited with source evidence. Purely structural refactors are audited for completeness, lineage and unintended semantic loss. A rename alone does not imply a new fact has been learned.
+
+### 6.3 memory_read / memory_recall
+
+Provide a model-facing read operation, possibly as two tools or one tool with explicit view modes:
+
+- List current manifest entries and filters; retrieve current blocks by stable ID or alias, even if not loaded.
+- Read a template, its usage hints and revision.
+- Inspect current state, revision history, exact diff, provenance and audit receipt.
+- Retrieve bounded raw Pi messages/tool results by exact entry IDs; paginate and clearly mark truncation.
+- Look up historical names after rename/split/merge.
+
+Existing v0.2 **memory_recall({ id, view?, anchor?, cursor?, limit? })** semantics for source-accurate retrieval remain a requirement; extend its addressable objects to blocks, templates, manifest changes and revisions. Tool namespace is provisional.
+
+### 6.4 checkpoint_memory / coverage review
+
+A **separate checkpoint operation** audits a precisely bounded conversation interval, with or without any new memory proposal. It may produce multiple changesets, report that no additional material must be retained, or refuse certification.
+
+This operation should normally be scheduled proactively before context pressure becomes critical. No model call should be deferred to the compaction hook itself.
+
+### 6.5 Operator interface
+
+Proposed commands:
+
+- /memory status — manifest/version, loaded/on-demand counts, coverage frontier, activity, risks.
+- /memory list — blocks, templates, status and load policies.
+- /memory show <block-id> — rendered block, revision, sources, template, lineage.
+- /memory history <block-id> — changes and diffs; retrieve original evidence.
+- /memory organize — controlled operations and inspection.
+- /memory activity — deterministic file-operation history.
+- /memory checkpoint — request explicit audit/certification before compaction.
+- /memory compact — invoke Pi compaction with the extension's validation.
+- /memory mode [on|off] — enable/disable without mutating global Pi configuration.
+
+Exact commands and Radius UI affordances remain implementation choices.
+
+## 7. Audit and selective reconciliation
+
+### Shift from v0.2
+
+v0.2 required **every audit to inspect every earlier memory**, even retired ones. v0.3 explicitly removes that requirement. It grows quadratically, overfits the idea of a memory as a fixed claim, and ignores the user's practical current-state-document model.
+
+**New rule:** reconcile against the **current relevant state**. History is retrieved selectively when needed to understand disputed decisions, provenance, revisions, or suspicious inconsistencies.
+
+Retrieval is central to correctness. Use the complete manifest for candidate discovery, then a deterministic lexical/topic index as a minimum baseline. Semantic search or embeddings can be added later but are not required. If retrieval misses a relevant contradiction, the audit may be incomplete. Do NOT report global absence of contradictions merely because none appeared among retrieved blocks.
+
+### Audit input
+
+1. Exact candidate or structural changeset; original source span and provenance.
+2. Current manifest and the search criteria/results used to select relevant blocks.
+3. Current revisions of matched blocks, their YAML template guidance, and relevant related blocks.
+4. Historical diffs and raw evidence only for implicated earlier decisions or unresolved conflicts.
+5. Instructions to distinguish user decisions from assistant proposals, facts from hypotheses, and current authority from historical truth.
+
+An isolated model audit is synchronous by default, using the working model unless explicitly configured otherwise. A different provider may receive session data only with an explicit user-selected policy. Nested audit inference must not be granted arbitrary shell/network/write tools.
+
+### Auditor output and validation
+
+The auditor proposes **document-level edits with minimal diffs**, revision preconditions, source references, uncertainty notes, reconciliation rationale and optional structured conflict records.
+
+The deterministic runtime validates:
+
+- Changes affect only known/approved target IDs, sections and revision bases.
+- Diff application yields the exact proposed new content; no malformed or partial patch is accepted.
+- YAML/template and manifest invariants hold after the entire transaction.
+- User intent and evidence are attributed accurately to the extent checkable.
+- No independent un-audited modification is smuggled into a multi-block operation.
+- Audit/retrieval gaps are explicitly represented, not converted into verified status.
+
+Possible results: saved, updated, unchanged, corrected, contested, unsupported, incomplete or failed. **Only a validated committed transaction changes current memory.**
+
+### Factual versus decisional updates
+
+When a user revises a project decision, the current block may be updated to the latest explicit decision, preserving prior decisions in history. When two external factual claims conflict, chronology does not settle the dispute. The block must retain uncertainty, request more evidence, or describe the disagreement instead of asserting an arbitrary winner.
+
+### Provisional content
+
+A brainstormed option should appear under alternatives/open questions, not silently replace an adopted decision. A failed test is evidence of a failure, not a decision to abandon a feature. A successful tool call is evidence of a reported outcome, not necessarily proof of enduring state.
+
+## 8. Changesets, revision semantics and branch replay
+
+### Storage
+
+Persist a structured event in Pi's session JSONL as customType **pi-memory-ledger**. Pi custom entries are durable but excluded from the model context. Conceptual event kinds:
+
+- memory.proposed / memory.audit_failed
+- memory.changeset_committed
+- memory.coverage_reviewed / memory.coverage_refused
+- memory.snapshot_checkpoint (optional acceleration cache)
+- memory.context_published (what was made model-visible, tied to branch/cut)
+- activity.file (retained from v0.2)
+- memory.compacted / memory.policy
+
+A single **memory.changeset_committed** represents one atomic, audited logical transaction, whether it edits one paragraph or splits several blocks and updates the manifest. The event stores a schema version, stable ID, expected projection revision, operations, resulting checksums/diffs, exact source IDs, audit metadata, actor/user intent, and a complete commit outcome.
+
+### Illustrative changeset
+
+~~~json
 {
-  "v": 1,
-  "kind": "memory.proposed",
-  "candidateId": "p_a91...",
-  "text": "We chose SSE over WebSockets for the event stream...",
-  "source": {"afterEntryId": "...", "throughEntryId": "..."}
-}
-```
-
-### Atomic reconciliation (illustrative)
-
-```json
-{
-  "v": 1,
-  "kind": "memory.reconciled",
-  "candidateId": "p_a91...",
-  "memoryId": "m_007",
-  "audit": {"verdict": "supported", "coverage": "complete", "model": "provider/model"},
-  "claims": [
+  "schema": 3,
+  "kind": "memory.changeset_committed",
+  "changeId": "chg_...",
+  "baseRevision": "rev_...",
+  "sourceEntryIds": ["entry_..."],
+  "audit": {
+    "status": "supported",
+    "model": "provider/model",
+    "reviewedBlockIds": ["blk_transport"],
+    "retrievalScope": "relevant-current-state"
+  },
+  "operations": [
     {
-      "claimId": "m_007/c1",
-      "text": "SSE was selected for the event stream.",
-      "verification": "verified",
-      "lifecycle": "active",
-      "evidenceEntryIds": ["...", "..."]
+      "op": "block.replace_section",
+      "blockId": "blk_transport",
+      "sectionId": "current-decision",
+      "expectedBlockRevision": "rev_...",
+      "newText": "Use SSE for the event stream."
     }
-  ],
-  "mutations": [
-    {"targetClaimId": "m_003/c1", "action": "supersede", "byClaimId": "m_007/c1", "reason": "User explicitly changed transport choice", "evidenceEntryIds": ["..."]}
-  ],
-  "coverageThroughEntryId": "..."
+  ]
 }
-```
+~~~
 
-This is a **proposed schema**, not Pi's native format; the actual Pi `custom` entry supplies `id`, `parentId` and timestamp.
+This is a conceptual schema, **not a native Pi event format**. Schema and operation validation must be defined before code is shipped.
 
-### Two independent claim dimensions
+### Identity and reconstruction
 
-**Verification**: `verified | plausible | unverified | disputed | refuted`.
+- Block IDs and template IDs remain stable through rename; paths and aliases are mutable.
+- Section IDs may be assigned for robust patching; an implementation may use a Markdown AST, but must reject ambiguous matches rather than editing the wrong heading.
+- Split/merge operations retain explicit lineage and source mappings, including retired source IDs.
+- Every changeset has a monotonic logical projection revision on the active branch.
+- Concurrency uses optimistic revision preconditions and serial commit ordering. A stale proposal is re-audited or rejected, not blindly applied.
+- Materialized Markdown, rendered manifest, generated diffs and replay snapshots are **derived** and may be discarded/rebuilt.
+- Snapshots must be tied to a branch ancestor + content hash and validated before replay. A branch fork starts from its shared ancestor and does not inherit later sibling events.
+- A single active session writer is the default; simultaneous process writes are unsupported without tested locking.
 
-**Lifecycle**: `active | superseded | retired | retracted`.
+### Git relationship
 
-A claim can be verified-but-superseded, unverified-but-active, or disputed-but-active. An auditor may add graph relations such as `supports`, `qualifies`, `contradicts`, `supersedes`, `partially-supersedes`, and `duplicates`; the ledger reducer must validate references and avoid silent deletion. The claim/memory distinction prevents one changed sentence from retiring an entire multi-claim memory.
+Versioned Markdown blocks, templates and the manifest are deliberately **Git-like** in user experience. v0.3 does not require a real Git repository to persist them; Pi's append-only branch history is canonical. Export-to-files or Git mirroring is a possible later adapter, not an additional writer in the initial design.
 
-## 7. Audit and reconciliation protocol
+## 9. Load policy, context publication and prompt-cache economics
 
-### Trigger
+### Memory tiers
 
-Every `remember` call writes a proposal, then runs a mandatory audit before acknowledging a committed memory. Default **synchronous audit**: the memory tool awaits the audit and persistence of the reconciliation commit. This remains a deliberate v0.2 trade-off: correctness and clear UX versus latency. A queued/background mode is a later feature; it must show pending status rather than claiming success early.
+**Core:** manifest plus user-selected/essential blocks loaded into reconstructed context. The manifest is small and always visible, subject to safety constraints.
 
-### Auditor context
+**On-demand:** current blocks discoverable through the manifest and fetched as needed, without permanent occupation of every turn's context.
 
-The audit input contains:
+**Retired/historical:** old revisions and retired blocks available through explicit retrieval but not implicitly loaded.
 
-1. Candidate memory exactly as the working agent wrote it.
-2. The raw, ordered source messages/tool calls/results in the candidate's evidence interval; include provenance and truncation markers.
-3. The **entire previous memory ledger index** on the active branch, including current verification/lifecycle states, supersession edges, retired records and unresolved disputes. The index can be compactly rendered but may not silently omit history.
-4. A read-only evidence retrieval capability for the raw source of any earlier implicated memory.
-5. Explicit rules for user versus agent attribution, uncertainty, contradictions and time-varying decisions.
+Load policies and selected core blocks are versioned in the manifest. Initial loading should favour user selection and a modest budget, not an agent deciding that every interesting block is permanently resident.
 
-Default to the **same underlying model** as the working agent, in a separate audit inference context. Permit a configured alternative model/provider. Do not modify shared global Pi settings to launch an audit; audit is read-only and runs with strictly limited capabilities. Protect user privacy: do not silently route private session data to a different external provider.
+### Within a running session
 
-If the full ledger index cannot fit the audit window, perform documented multi-pass auditing with deterministic partitioning and a final reconciliation pass **or** fail the audit as incomplete. A truncated one-pass ledger is *not* an acceptable successful audit. This remains a material v0.2 implementation constraint.
+Avoid wholesale rewriting of the leading system prompt when a block changes. Use one of these progressively weaker strategies based on actual provider/model/Pi support:
 
-### Audit questions
+1. **Native appended system updates** at permitted turn boundaries, containing a trusted, bounded memory snapshot/delta and stable block/version markers. Preserve the existing conversation prefix and append a newer authoritative revision notice.
+2. **Append-only non-system update / tool result** with explicit version and provenance, when system-update authority is unavailable or inappropriate. The agent can also fetch blocks on demand.
+3. **Deferred materialization at compaction** for unsupported configurations, high-churn blocks, or where the prefix/cache economics are unfavourable.
 
-- Does the raw evidence support each candidate claim? Is it an observation, inference, user decision, agent suggestion, or unresolved hypothesis?
-- Are there claims or decisions in the evidence interval that need preservation but were omitted from the proposed memory?
-- Does the new memory duplicate, refine, contradict, supersede, qualify or invalidate *any* earlier record?
-- Is a change in decision explicit, or merely an alternative being explored?
-- Can a conflict be resolved with source evidence? If not, record both sides as disputed and identify what evidence would settle it.
-- Are older memories marked obsolete only at the claim level actually affected?
-- Is the evidence interval sufficiently reviewed to advance the **audited coverage frontier**?
+Never edit an earlier model-visible message merely to update memory in place; this commonly invalidates the cache following that position. Append-only updates themselves consume context tokens, so consolidate on compaction and bound maximum delta frequency/size.
 
-### Auditor output
+### Trust boundary
 
-Strict structured result with `verdict`, normalized candidate claims, claim-level updates to earlier memories, source references, evidence-gap list, and coverage decision. Verdicts: `supported | corrected | merged | redundant | contested | unverifiable` (reasons required for other-than-supported). The runtime validates IDs, references, scope, schema and supported operations **before** committing. Audit text is untrusted data, not executable instructions.
+A memory block contains *data about the user/project*, not automatically application instructions. The extension must not promote arbitrary user-supplied files, copied websites, shell output, third-party tool results, or untrusted document text to privileged system instructions. Any high-priority publication must be explicitly scoped to trusted, audited and appropriately attributed facts/configuration. Other information stays lower-trust even when cached or retrieved.
 
-A rejected/duplicate proposal may produce no new active memory but still commit a reconciliation event if the audit changed earlier states. UI should distinguish `Memory saved`, `Memory updated`, `Memory unchanged`, and `Memory pending/failed`.
+### Pi/provider integration status (researched, not assumed)
 
-### Conflict example
+Current Pi's model transcript has first-class **SystemMessage** objects with later updates, named sections and tool deltas. Its provider implementations gate native mid-conversation system messages using the model compatibility property **supportsMidConvoSystemMessages**. When false, Pi collapses the transcript's system updates into a reconstructed leading prompt; this may sacrifice the desired cache benefit.
 
-Earlier `m_003/c1`: "Use WebSockets" (verified, active). New evidence explicitly selects SSE. Auditor writes new `m_007/c1` "Use SSE" (verified, active), appends `supersede(m_003/c1, m_007/c1)`, leaves unrelated relay-authentication claims active. If the user only floated SSE as an option, retain the WebSocket decision and store the alternative as exploratory, or flag an unresolved conflict; **never apply last-write-wins to truth**.
+Pi's **before_agent_start**, **context**, and **context_with_system** hooks provide integration points, but merely changing prompt text in a hook does not prove a persisted, correctly positioned, cache-preserving provider message. Integration must produce valid Pi session entries and respect provider restrictions.
 
-## 8. Source coverage and compaction safety
+**Anthropic:** supported Claude models accept native mid-conversation system messages that preserve preceding cached context. Their content-bearing messages have specific placement restrictions (including the relation to user turns/tool results), cache controls must be enabled, and edits to earlier messages still invalidate prefix reuse.
 
-**The difficult part:** a remembered *insight* is not automatically a summary of everything said since the previous memory. Recording one salient fact must not certify that an entire conversation span can be safely discarded.
+**OpenAI:** Responses API supports cacheable append-only conversation histories and explicit/implicit prompt-cache breakpoints on applicable models. Pi exposes native mid-conversation system-message compatibility for supporting models. Changing top-level instructions, tools or certain request settings can invalidate a prefix; neither a compatibility flag nor an API capability guarantees every request will hit cache.
 
-Define an **audited coverage frontier**: the highest source-entry boundary through which an auditor has reviewed *all intervening relevant conversation*, including tool results, and decided what must survive. It may commit multiple memories, mark nothing salient, or refuse coverage if evidence was incomplete. The frontier advances only on explicit, complete, validated audit decisions. Persist the frontier as event data, so it survives restart and follows the active branch.
+**Other providers/local inference:** detect capabilities instead of presuming parity. A provider lacking native later system messages can continue using the on-demand read tool and compaction refresh.
 
-At compaction time:
+**Acceptance is empirical.** Inspect which Pi model entries set the compatibility flag, provider-native serialization and placement legality. Instrument actual cache read/write tokens, latency, cost, branch replay and compaction behaviour. Do not automatically select a high-priority transport where the source content does not deserve that authority.
 
-1. Derive Pi's proposed `firstKeptEntryId` from `event.preparation`.
-2. Rebuild the current branch-local audited ledger, including previous compactions and status deltas.
-3. Check that the whole interval Pi proposes to discard since the last trustworthy checkpoint is covered by committed audit decisions. Proposals alone never count. Raw source beyond the frontier must remain in the retained tail.
-4. If coverage is insufficient, move the cut point backwards to the earliest uncovered entry **if** the resulting context fits, otherwise refuse the ledger-based compaction with a clear reason. A deliberate operator fallback to native `/compact` can be offered, but must never be falsely described as fully audited or deterministic.
-5. Render the authoritative active and disputed claim set, with current status and evidence pointers; include open questions and materially relevant prior decisions. Omit superseded/retired full bodies from active context, but preserve minimal lineage pointers as needed.
-6. Verify projected post-compaction token budget. If all required memories cannot fit, do **not** silently drop active claims: refuse and require reconciliation/retirement or an explicit user-selected degradation policy.
-7. Build a deterministic session-activity footer from active-branch activity events and include the structured snapshot in compaction `details` (section 9). Activity never widens the audited conversation coverage frontier.
-8. Return `CompactionResult` with `summary`, validated `firstKeptEntryId`, `tokensBefore`, optional `estimatedTokensAfter`, and audit/coverage/provenance/activity data in `details`. Do not invoke a model.
-9. Confirm `session_compact` success before displaying a successful-compaction acknowledgement.
+### Publication version control
 
-**Repeated compaction:** the effective ledger is the single source of truth. Do not blindly concatenate `previousSummary` with a fresh memory stack, because it may contain decisions that were subsequently superseded. Import/track any pre-existing non-ledger compaction summary explicitly as legacy context or require an opt-in bootstrap; do not assume it is reconciled.
+Each published snapshot/delta identifies block IDs + revisions and a manifest revision. Later updates supersede earlier *semantic state* without rewriting earlier messages. The renderer and agent must be able to identify the latest authoritative version. If publication fails, durable memory still succeeds but user/model-facing status reports that live context was not refreshed; the next on-demand read or compaction can recover.
 
-**Automatic compaction:** use Pi's existing threshold and overflow lifecycle. The extension's choice to intercept must respect Pi's own auto-compaction settings. Avoid global settings mutations or a conflicting independent threshold loop. A memory-based compaction cannot be safe if the required audit is still pending and the cut would lose uncovered content.
+## 10. Coverage frontier and compaction safety
 
-## 9. Session activity ledger (new in v0.2)
+**Coverage certification remains a distinct operation.** A memory edit records a discovery; it does not automatically mean every earlier user message, tool result, outstanding task or unresolved decision was reviewed.
 
-### Purpose and independence
+Persist a **branch-local coverage frontier** and contiguous **coverage receipts** with precise source entry bounds, auditor identity, retrieval/truncation diagnostics, retained changesets, open work, and explicit no-salient-memory decisions where appropriate.
 
-Add a separate append-only, **deterministic activity stream** for observable operations carried out during the session. File operations are the initial type. This makes file bookkeeping both faster and more reliable than requiring the agent to spend its `remember` budget listing touched paths. Collection does **not** require a model call or an audit; the auditor may later consult recorded activity as supporting evidence.
+A checkpoint may advance the frontier only if the auditor actually reviewed the entire claimed interval under documented bounds. When the interval is too large, use bounded consecutive intervals; never claim a partial or truncated scan as complete. Coverage is best-effort and uncertainty must be visible. Unreviewed tool results cannot be silently counted as covered because the agent remembered a fact from the adjacent discussion.
 
-Activity records are not authoritative statements that a task succeeded, that a file is presently dirty, or that a span is safe to discard. Narrative preservation and audited source coverage remain separate responsibilities. Raw tool outputs and original session entries remain ground truth.
+### Compaction algorithm
 
-### Initial scope and provenance
+1. Read Pi's proposed cut point and the complete active branch up to that point.
+2. Rebuild authoritative current manifest/templates/blocks, committed coverage and the activity projection. Recover from validated snapshots only as an optimisation.
+3. Determine the exact compacted-away interval. Confirm continuous coverage for material that would leave context; pending/failed proposals do not count. If there is a gap, move the cut backward while within budget or refuse. No new LLM audit happens here.
+4. Choose core and context-relevant on-demand blocks **by a deterministic versioned policy**, using committed manifest selections and explicit user/operator choices. The manifest still indexes omitted blocks for later retrieval.
+5. Render each chosen block exactly once at its latest relevant revision, with stable IDs, concise source pointers, uncertainty and open work. Do not concatenate older compaction summaries or prior block snapshots.
+6. Append the deterministic Session Activity Ledger footer, as in v0.2, and store its complete metadata in the compaction details.
+7. Check all size, manifest completeness, identity, source and schema invariants. If the required core state + manifest + activity + retained tail cannot fit, refuse rather than silently truncate.
+8. Return a validated Pi CompactionResult with summary, cut, token estimates where supported, and structured revision/coverage/activity metadata. **No provider call.**
+9. After compaction, retain the new snapshot as the current context state. Raw Pi source entries and all custom ledger events remain available for explicit retrieval, including pre-compaction history.
 
-- **Supported native tools:** instrument Pi `read`, `write` and `edit` with path arguments and the associated results. A successful read enters the read set; successful writes/edits enter the modified set. Failed tool operations must not count as successful modifications.
-- **Success means reported operation success, not a verified filesystem diff.** A tool might make no material change; later operations could revert it. Label the footer as files operated on during this session, not as current Git working-tree state.
-- **Nested calls, shell commands and third-party tools:** Pi's native file extractor recognizes `read`/`write`/`edit` by name and a string `path` argument, including recorded nested calls. It does not reliably establish success or the filesystem effects of arbitrary shell scripts. Keep unknown/inferred operations separately with an explicit provenance class. Never promote inferred changes to confirmed file modifications.
-- **Canonical paths:** normalize against the session's recorded cwd and retain original path spelling, distinguish paths outside that cwd, and avoid collapsing distinct targets. Read-only and modified sets are deduplicated; if a file was both read and edited, show it only under modified.
-- **Privacy:** do not store file contents, command stdout or credentials in activity events. Apply configured path-redaction rules to footer output and diagnostics.
+**Important limitation:** semantic coverage is a judgment, not an absolute guarantee. Coverage receipts and deterministic compaction prevent accidental *procedural* loss, but cannot prove the auditor understood every important implication of the discarded conversation.
 
-### Capture, durable association and recovery
+### Compaction as session restart
 
-Observe `tool_result` or `tool_execution_end` for success status, inputs, name, and `toolCallId`. Do **not** assume the result message has already been persisted when those callbacks fire. Stage the observation until `turn_end` or `agent_before_settle` can associate it with durable Pi message/result entry IDs. Multiple tool calls can execute concurrently; do not rely on completion order.
+The same abstract operation — **assemble context from current materialized state** — underlies intra-session compaction and potential future cross-session startup. Their differences are scope, permission, retrieval and persistence boundaries. v0.3 only implements the Pi-session boundary.
 
-Append versioned Pi `custom` events with `pi.appendEntry("pi-memory-ledger", event)` after durable association. An illustrative event is:
+### Legacy/native compacted sessions
 
-```json
-{
-  "v": 1,
-  "kind": "activity.file",
-  "activityId": "act_007",
-  "operation": "edit",
-  "path": "src/auth.ts",
-  "originalPath": "./src/auth.ts",
-  "outcome": "tool-succeeded",
-  "confidence": "observed",
-  "cwd": "<session working directory>",
-  "source": {
-    "toolName": "edit",
-    "toolCallId": "call_123",
-    "resultEntryId": "<Pi message entry ID>"
-  }
-}
-```
+Importing a Pi session that was compacted before this extension started requires a clearly labelled bootstrap. A native summary is not retroactively an audited coverage receipt. Do not advertise a fully verified frontier before the first extension-controlled checkpoint.
 
-Deduplicate by stable source identity (result/call ID, operation, canonical path), not by arbitrary callback ordering. On restart, replay **the active branch** including records older than a prior compaction boundary. Where a crash occurred after a persisted successful native result but before its activity record, scan the persisted tool-call/result pairs and backfill idempotently. Branch switching rebuilds from that branch only; sibling-branch activities do not leak into the new effective ledger.
+## 11. Session Activity Ledger (v0.2 retained)
 
-Never cause a user-facing tool operation to fail solely because activity tracking failed. Record or surface a tracking-coverage gap rather than claiming perfect observation.
+The v0.2 passive Session Activity Ledger is **orthogonal** to model-authored memory documents. Carry forward its observation and replay rules unchanged in intent.
 
-### Pure reducer and repeated compactions
+- Instrument reported successful native **read**, **write** and **edit** calls with canonical paths, original spelling, cwd, tool-call IDs, associated durable result-entry IDs and outcome. Failed operations are not successful modifications.
+- Stage callbacks until durable message/result provenance can be associated. Recover missed events after a crash by idempotent backfill from persisted native tool results. Concurrent callbacks must not determine event order or commit identity.
+- Distinguish **reported tool success** from verified filesystem content, final Git state or historical truth. Shell commands, nested processes and third-party tools may produce unobservable changes; label these tracking gaps.
+- Do not store file contents, credentials or command stdout in activity events.
+- Replay only the active branch, including activity older than earlier compactions. Deduplicate and stably sort read/modified sets; a modified path supersedes its appearance in the read-only list.
+- At compaction, render one cumulative **session-activity** footer, and store the complete structured projection in CompactionResult.details. Never append the previous footer to a new one, and never let passive activity events advance narrative coverage.
+- Continue to fail explicitly if the configured full footer cannot fit. A later bounded-footer design must first supply reliable model-callable retrieval of the complete list.
+- Expose activity history and tracking limitations via /memory activity and compact status UI.
 
-Implement `reduceActivity(branchEntries, configuration)` as a deterministic, schema-versioned reducer. Validate provenance, canonicalize paths, deduplicate observations, and produce stably sorted `readFiles`, `modifiedFiles`, counts, and tracking limitations.
+Example footer:
 
-**Never treat an older text footer as the source for the next one.** Pi exposes `event.preparation.fileOps`, which can aid bootstrap/compatibility, but its native extractor examines projected messages and previous *Pi-generated* compaction metadata. Extension-generated compactions cannot rely on automatic native file-list carry-forward. Our full active-branch activity records are canonical, so repeated compactions neither duplicate nor lose paths.
-
-Render one recognizable model-visible footer, after the audited-memory materialization:
-
-```xml
+~~~xml
 <session-activity schema="1">
   <read-files>
     src/config.ts
@@ -309,171 +445,205 @@ Render one recognizable model-visible footer, after the audited-memory materiali
     src/session.ts
   </modified-files>
 </session-activity>
-```
+~~~
 
-The footer is **text in the compaction summary**; separately persist the complete structured snapshot in `CompactionResult.details`, e.g. `details.memoryLedger.activity = { schemaVersion: 1, readFiles, modifiedFiles, counts, trackingLimitations }`. Pi does not automatically expose `details` to the model. Use stable ordering and escaping, and ensure the full summary plus footer fits the configured token budget.
+Future adapters (Git commits, test outcomes, created artifacts) require their own observation rules, provenance, privacy and reducer validation.
 
-For v0.2, do not silently truncate the modified-file list if the full configured footer exceeds the budget: refuse this ledger-based compaction explicitly. A future bounded-footer mode must first supply a model-callable mechanism to retrieve the omitted full list.
+## 12. Failure, concurrency, privacy and security
 
-### Audit interaction, operator interface and extension points
+- **Audit unavailable/timeout:** persist proposal + failure; no block revision or coverage advance, no phantom success notification. Re-attempt explicitly and idempotently.
+- **Crash during commit:** a single logical changeset must replay all or none of its operations. Validate schema, IDs and resulting state before accepting an event.
+- **Concurrent proposals:** serialize commits; validate base revision; retry audit/patch generation after another successful edit when necessary.
+- **Structure edits:** a manifest/template/block migration either validates as a whole or fails. Block aliases must never resolve ambiguously after rename/split.
+- **Branch switching:** rebuild exact ancestor-local state and frontier; do not incorporate sibling changes without an explicit audited merge operation (deferred).
+- **Concurrent Pi processes:** single active writer per session by default.
+- **Untrusted YAML/Markdown:** treat content and editing hints as untrusted data relative to higher-priority instructions. Parse safely, bound sizes and disallow executable YAML tags or scripts.
+- **Prompt-injection resistance:** recalled webpages/tool outputs remain lower-trust even if summarized in memory; audit text is never executable code.
+- **Evidence and transparency:** keep source IDs and review scope; do not label a selective audit as exhaustive history verification. Preserve explicit disputes and unresolved questions.
+- **Privacy:** define redaction for UI/export; don't route private source to unselected external auditor providers; distinguish logical retirement from actual deletion of persisted raw data or backup files.
+- **Cache failures:** unsupported mid-conversation system placement or provider 400 errors must fall back without corrupting the transcript or causing an infinite retry loop.
+- **Activity tracking failures:** native file-tool operations should not fail solely because passive event collection failed; surface observation gaps.
 
-The auditor may consult activity when checking claims like "I modified `auth.ts`". It must still check relevant source outputs or current filesystem state before declaring the *effect* verified. Absence of an activity event does not prove no file changed; shell commands or uninstrumented tools may bypass observation.
+## 13. UI and Radius
 
-Expose `/memory activity` to inspect file events, normalized paths, source IDs and tracking gaps. Passive activity collection emits no `[Memory saved]` acknowledgement; compaction success may show activity counts.
+Normal conversation should show concise **Memory saved**, **Memory updated**, **Memory unchanged** or **Memory pending/failed** only when appropriate. Structural revisions may show **Memory reorganized** with inspectable details.
 
-Keep event envelopes extensible for later deterministic adapters: Git commits/branches, test execution results, consulted resources, and output artifacts. Each new type needs explicit observation semantics, privacy rules, reducer behavior and tests before it is rendered into the model's context.
+The TUI and Radius/RPC client can expose a manifest browser, current block Markdown, source links, revision diffs, active/on-demand state, audits, coverage and file activity. The default interactive display stays quiet. A custom entry renderer, client integration or notifications may be needed; do not assume a hidden custom entry magically appears below the relevant final assistant response.
 
-## 10. UI and Radius integration
+After successful compaction, show meaningful counts (blocks loaded, on-demand entries indexed, activity paths, last covered source) rather than legacy counts of all historical active claims.
 
-- Custom `remember` tool renderer (`renderCall`/`renderResult`) displays only a short status, not memory text or auditor payload; raw tool arguments remain inspectable in session history/exports.
-- In TUI, show a subtle success/pending/error notification. A persistent inline entry under the last agent response may require a custom entry renderer or client-specific handling; avoid claiming `custom` invisibility automatically gives that placement.
-- For Radius/RPC, surface the committed custom entry or an extension notification with a stable `memoryId` and `status`; Radius can render `[Memory saved]` as a lightweight annotation on the relevant assistant turn, with click-through details later.
-- During native compaction, show `[Compacting]`; after success, show counts and savings, optionally including deduplicated file-operation counts. Never call a memory `verified` if the audit only classified it as plausible or unverified.
-- Avoid verbose tool chatter in normal operation. Operator inspection and diagnostic tracing are explicit commands.
+## 14. Pi integration map
 
-## 11. Pi integration map
-
-| Capability | Pi integration |
+| Capability | Candidate integration |
 |---|---|
-| Model-initiated memory | `pi.registerTool({ name: "remember", ... })` |
-| Persistent, non-contextual memory | `pi.appendEntry("pi-memory-ledger", event)` |
-| Model-initiated retrieval | `pi.registerTool({ name: "memory_recall", ... })` |
-| Native tool activity observation | `tool_result` / `tool_execution_end` for inputs, result, outcome and tool-call IDs |
-| Durable activity recording | `turn_end` / `agent_before_settle` to associate source entry IDs, then `pi.appendEntry` |
-| Activity replay and inspection | Active-branch `activity.file` reducer; `/memory activity` |
-| Current branch state | `ctx.sessionManager.getBranch()` and entry-ID lookups |
-| Audit inference | `ctx.modelRegistry.streamSimple()` or equivalent current SDK facility; isolate audit request/context |
-| Custom tool presentation | `renderCall`, `renderResult`, `ctx.ui.notify`, registered entry renderer where supported |
-| Native compaction override | `pi.on("session_before_compact", ...)` returning `{ compaction: CompactionResult }` |
-| Compact success/failure | `session_compact`, `session_compact_failed` |
-| Session reconstruction | `session_start`, rebuild reducer from active branch |
-| Process lifetime | `session_shutdown`, cancel pending audit, preserve recoverable proposal |
-| Pi client transport | Extension events/custom entries; Radius adapts display |
+| remember / read / organize / checkpoint tools | pi.registerTool |
+| Branch-local canonical event persistence | pi.appendEntry with customType pi-memory-ledger |
+| Branch projection and exact evidence references | ctx.sessionManager active branch APIs + source entry IDs |
+| Audit model inference | ctx.modelRegistry.streamSimple in isolated bounded context |
+| Current prompt/section updates | before_agent_start or compatible system-update mechanism, subject to source verification |
+| Model request-local transforms | context / context_with_system, **not** a substitute for durable state |
+| Live publication | Persisted or safely appended model-visible system/custom context when provider capability and Pi lifecycle allow |
+| Deterministic compaction | session_before_compact returning CompactionResult |
+| Successful/failing compaction | session_compact / session_compact_failed |
+| File operations | tool_result / tool_execution_end with durable association later in the turn |
+| Recovery, source replay, activity replay | session_start and active-branch reducer |
+| TUI / Radius | renderers, notifications, commands, client-specific event presentation |
 
-Pi's `custom` entries are *not* included in the model's message projection. They are suitable for the ledger, while model-visible active memory is carried in the compaction summary. A separate `custom_message` would enter the prompt and is not required for ordinary memory writes. Pi's `context_edit` is **not** used for routine v0.2 memory formation: changing an old projected message can invalidate prompt-prefix caching despite preserving append-only raw history.
+Pi's current session format supports custom entries, compaction entries, later system messages and branch-local replay. Exact event types, registration signatures and timing must be checked against the installed Pi version before implementation.
 
-## 12. Configuration (proposed)
+## 15. Proposed configuration
 
-```json
+All names and defaults are **design placeholders**, not verified Pi settings or benchmark-tuned optimal values.
+
+~~~json
 {
   "enabled": true,
+  "memory": {
+    "representation": "markdown-blocks",
+    "manifest": "always-visible",
+    "defaultLoadPolicy": "on-demand",
+    "editPreference": "replace-existing",
+    "allowAgentCreateBlocks": true,
+    "allowAgentRenameBlocks": true,
+    "allowAgentSplitMerge": "audited",
+    "maxLoadedBlockTokens": 12000
+  },
+  "templates": {
+    "format": "yaml",
+    "allowUserDefined": true,
+    "allowAgentRevision": "audited"
+  },
   "auditor": {
     "provider": "same-as-session",
     "model": "same-as-session",
     "mode": "synchronous",
+    "reconciliation": "relevant-current-state",
     "timeoutMs": 120000,
     "onFailure": "retain-pending"
   },
+  "contextPublication": {
+    "strategy": "auto-capability",
+    "preferAppendOnly": true,
+    "promoteRawRetrievedDataToSystem": false,
+    "onUnsupported": "tool-read-or-compaction",
+    "maxPendingDeltaTokens": 2500
+  },
+  "coverage": {
+    "enabled": true,
+    "reviewStrategy": "explicit-bounded-checkpoints",
+    "onGap": "retain-or-refuse",
+    "proactiveCheckpoint": true
+  },
   "compaction": {
-    "strategy": "audited-ledger",
+    "strategy": "materialized-current-state",
     "interceptManual": true,
     "interceptAutomatic": true,
     "onUnsafeCoverage": "refuse",
-    "maxSummaryTokens": 20000,
-    "respectPiKeepRecentTokens": true
+    "respectPiKeepRecentTokens": true,
+    "maxSummaryTokens": 20000
+  },
+  "activity": {
+    "enabled": true,
+    "nativeTools": ["read", "write", "edit"],
+    "trackReads": true,
+    "trackWritesAndEdits": true,
+    "includeInCompactionFooter": true,
+    "onFooterOverflow": "refuse"
   },
   "retrieval": {
     "defaultMaxChars": 8000,
     "allowRawSources": true
-  },
-  "activity": {
-    "enabled": true,
-    "trackReads": true,
-    "trackWritesAndEdits": true,
-    "nativeTools": ["read", "write", "edit"],
-    "recordUncertainNestedOperations": true,
-    "includeInCompactionFooter": true,
-    "onFooterOverflow": "refuse"
   },
   "ui": {
     "compactNotifications": true,
     "showMemoryBodyByDefault": false
   }
 }
-```
+~~~
 
-Values are **initial proposals**, not confirmed Pi setting names or benchmark-tuned defaults. Configuration must specify the data-sharing implications if a separate remote auditor is selected.
+## 16. Acceptance tests
 
-## 13. Failure, concurrency and security
+1. **Dynamic categories:** start with no fixed domain blocks; user and agent establish arbitrary new block names and purposes.
+2. **Manifest discovery:** a block not loaded in context remains listed in the manifest and retrievable by its stable ID.
+3. **Template authoring:** YAML template defines Markdown headings and editing hints; a new block adopts them without a compiled category enum.
+4. **Template evolution:** revising a template is independently versioned; old blocks are not silently rewritten.
+5. **Edit over append:** a changed transport decision updates an existing paragraph rather than appending an obsolete duplicate to active memory.
+6. **Reversible history:** retrieve exact previous document text, diff, edit rationale and original Pi evidence from an earlier revision.
+7. **Rename stability:** block rename preserves ID, revision history, provenance and prior-name alias.
+8. **Atomic split/merge:** a multi-block structural change updates the manifest and lineage together; a failed partial operation changes nothing.
+9. **User versus suggestion:** brainstorming an alternative does not supersede an adopted decision without explicit authority.
+10. **Factual conflict:** contradictory unsupported external claims remain disputed instead of arbitrary last-write-wins.
+11. **Selective audit:** unrelated historical blocks need not be sent to every auditor; retrieved matches and retrieval gaps are recorded.
+12. **Search miss caution:** a relevant unloaded block cannot be silently treated as nonexistent merely because it was absent from the current prompt.
+13. **False proposal:** nonexistent passing tests are rejected/corrected using actual source results.
+14. **Coverage independence:** saving an important fact does not certify every intervening turn for compaction.
+15. **No-op checkpoint:** a complete bounded source review may advance the frontier without creating or editing any block.
+16. **Coverage gap:** cutting an uncertified interval retains the necessary tail or refuses safely.
+17. **No model at compaction:** instrument inference calls; the compaction hook makes zero calls.
+18. **Deterministic render:** same active branch/cut/config yields byte-identical manifest, block selection, snapshot and footer.
+19. **No duplicate memory:** repeated compactions render each selected block once at its latest revision; old snapshots don't accumulate.
+20. **On-demand retrieval:** unloaded current blocks and exact pre-compaction source ranges remain accessible.
+21. **Provider compatibility:** native later system messages are emitted only for verified-capable model/provider pairs and valid turn boundaries.
+22. **Cache measurement:** compare cached tokens and latency for appended updates versus leading-prompt replacement; do not infer hits merely from successful requests.
+23. **Stale update detection:** an audit against an earlier block version cannot overwrite a newer concurrent revision.
+24. **Branch isolation:** rewinding to an ancestor restores the ancestor manifest, templates, blocks, coverage and file activity.
+25. **Recovery:** restart between proposal/audit/commit never yields half an applied structural change or a false saved indicator.
+26. **Activity accuracy:** successful read/write/edit operations generate deduplicated branch-local records; failed and inferred shell effects are not counted as verified modifications.
+27. **Activity persistence:** two compactions retain cumulative activity with exactly one footer; metadata remains complete.
+28. **Budget refusal:** a required core block, manifest or full activity footer that cannot fit produces an explicit failure rather than silent truncation.
+29. **Privacy/authority:** untrusted imported document text and YAML hints cannot become privileged system instructions, and separate audit provider use is opt-in.
+30. **Legacy bootstrap:** a pre-extension native compaction is not falsely advertised as an audited source frontier.
 
-- **Audit timeout/crash:** retain `memory.proposed` and append `memory.audit_failed`; no active-memory commit; user sees failure/pending. Optional retry later is explicit and idempotent.
-- **Crash after successful audit, before commit:** replay treats proposal as pending; rerun or resume. The reconciliation event is a single append-only logical transaction.
-- **Multiple `remember` calls in one turn:** serialize reconciliation commits against a versioned ledger snapshot. Reject stale audits and rerun against newer state; do not lose supersession updates.
-- **Multiple Pi processes or Radius clients:** Pi session file concurrency needs an explicit policy: v0.2 single active writer per session or a tested append/locking strategy; never assume arbitrary concurrent append is safe.
-- **Tree navigation:** replay branch-local state and coverage; do not make memories from abandoned sibling branches active without an explicit merge process.
-- **Compaction while audit runs:** ensure no uncommitted proposal is counted toward coverage; coordinate with any compaction event without waiting indefinitely or deadlocking Pi.
-- **Activity callback failure/retries:** persist observations only with valid source provenance, recover missed native operations on restart, and deduplicate parallel or retried callbacks.
-- **Uninstrumented file changes:** shell commands, scripts and external processes may bypass native tools. Report incomplete tracking; never infer confirmed modified paths from command text alone.
-- **Foreign compaction extensions:** detect competing `session_before_compact` implementations where possible and warn/refuse rather than stack incompatible takeovers.
-- **Untrusted tool outputs / prompt injection:** auditor sees source records as data, not instructions. Disallow dangerous tools or autonomous file/network writes in its context. Strictly validate JSON and permitted update operations.
-- **Privacy:** memory data and raw source can contain secrets; avoid logging them, do not send to unexpected audit providers, avoid embedding file contents in UI notifications.
-- **Audit reliability:** the same model re-checking its own summary is a consistency check, not an independent guarantee. Measure and label evidence support; support cross-model audits later.
+## 17. Implementation slices
 
-## 14. Acceptance tests
+**A — Core event store and materializer:** define stable IDs, changeset schema, active-branch reducer, canonical registry/manifest, Markdown blocks, template parsing, snapshots, revision/diff inspection and invariants. Test all structural operations with no LLM.
 
-1. **Conversation memory:** a brainstorming exchange produces a useful tentative idea without any completed task; memory audit preserves tentative wording and source references.
-2. **Decision revision:** an explicit WebSockets → SSE user decision supersedes only the transport claim and keeps the authentication claim active.
-3. **False memory proposal:** agent claims nonexistent passing tests; auditor rejects/corrects claim from recorded tool output; status and evidence remain traceable.
-4. **Unresolved contradiction:** two claims conflict without deciding evidence; both become disputed; no arbitrary newest-wins selection.
-5. **Memory duplication:** near-identical proposal is merged/redundant; context does not accumulate needless duplicates.
-6. **Cross-history audit:** a new proposal can update a superseded memory and a currently active memory, demonstrating access to all prior records.
-7. **Recovery:** restart after proposal but before commit leaves it pending; no phantom `[Memory saved]`, no unauthorized coverage advance.
-8. **Repeatability:** same branch snapshot and cutoff produce byte-identical compaction summary (including deterministic claim ordering).
-9. **No LLM at fold:** instrument provider calls and prove none occur inside memory-based compaction hook.
-10. **Coverage hole:** no memory audit covers a to-be-discarded interval; extension retains it, adjusts cutoff, or refuses—never silently discards.
-11. **Over-budget ledger:** summary exceeds configured cap; compaction fails safely and names offending constraints.
-12. **Raw retrieval:** retrieve exact original source excerpts by entry ID, even after compaction, with reliable pagination/truncation markers.
-13. **Branch isolation:** `/tree` to a prior entry does not inherit future-branch memory claims; source retrieval remains possible by explicit ID when permitted.
-14. **Cache instrumentation:** storing a memory does not inject/replace historical model-visible messages; compaction may cause expected KV-prefix re-prefill.
-15. **TUI/RPC parity:** memory statuses and errors are accessible in Pi TUI and Radius; hidden memory bodies do not leak into routine screen output.
-16. **Concurrent writes:** two proposals or a proposal plus compaction do not produce partial, reordered, or contradictory commits.
-17. **File capture:** successful `read`, `write` and `edit` results generate replayable records; failed writes never become successful modified-file claims.
-18. **Read/edit overlap:** a file read and later edited appears exactly once in the sorted modified list.
-19. **Recovery:** restarting between tool-result persistence and activity-event append backfills exactly once.
-20. **Branch/repeated compact:** two compactions retain the same cumulative active-branch file ledger without duplicate footers; abandoned sibling changes never leak.
-21. **Unknown shell effects:** arbitrary `bash` invocations do not generate fabricated successful file changes, and the diagnostics expose their coverage gap.
-22. **Footer fidelity:** configured files appear in model-visible summary text and in `details`; overflow refuses safely rather than silently truncating modified files.
-23. **Separate authority:** activity can exist with zero `remember` calls and never advances audited narrative coverage.
+**B — Model memory and relevant-state audit:** implement remember, manifest search, selective current-state retrieval, isolated audit, minimal edit/diff generation, atomic commit, provenance and failure recovery. Expose concise UI.
 
-## 15. Suggested implementation slices
+**C — Coverage and deterministic compaction:** implement bounded proactive coverage checkpoints, manifest/block selection, evidence gates, renderer, cut/budget verification and repeatability tests. No inference inside the hook.
 
-**Slice A — Event store and inspection:** schema, append-only session events, active-branch reducer, typed validation, `/memory status/list/show`, source-range extraction, unit tests.
+**D — In-session visibility and provider compatibility:** prototype append-only system updates where supported; confirm Pi serialization, message placement, prompt authority and actual cache metrics. Add fallback tool-result/on-demand behaviour; ship no speculative cache promises.
 
-**Slice B — Model memory + mandatory audit:** `remember`, same-model audit request, full-ledger reconciliation, atomic commit, provenance, failures/retry, small UI acknowledgement.
+**E — Retrieval, structural organisation and presentation:** model/operator tools to inspect, rename, split/merge, edit templates, view history; Radius integration; robust source pagination.
 
-**Slice C — Deterministic compaction:** audited-coverage tracking, renderer, Pi `session_before_compact` interception, budget gates, repeatability and no-provider-call tests.
+**F — Session Activity Ledger from v0.2:** instrument and backfill native file activity, deterministic reducer and footer, track limitations and operator inspection. Implement early enough to avoid losing pre-hook tool observations.
 
-**Slice D — Raw retrieval and Radius polish:** `memory_recall`, exact source/anchor/pagination, RPC events and Radius annotation, audit review UI.
+These are engineering slices, not a commitment to include speculative capability flags without testing. User-facing memory commits require a validating auditor from the first release.
 
-**Slice E — Activity ledger (v0.2):** observe successful native file operations, stage durable provenance, append and replay idempotent activity events, expose `/memory activity`, and render a cumulative activity footer plus structured `details`. Ship early capture wiring so v0.2 includes working file metadata; no LLM is involved.
+## 18. Open decisions and experimental risks
 
-Slices are implementation order only; **do not ship a v0.2 that commits memory without auditing**. Slice B is a prerequisite for user-facing memory creation.
+The following are **not blockers to a v0.3 draft**, but must be resolved before claiming production reliability.
 
-## 16. Open decisions
+1. **Coverage completeness and cost.** How frequently should the agent checkpoint? What is a defensible bounded evidence window, and how are very large tool results handled? The v0.3 baseline is explicit contiguous best-effort review; no automatic advancement based solely on remember.
+2. **Native high-priority update transport.** For each Pi version/model/provider combination, determine legal message placement, persistence, model compatibility flags and actual cache economics. Baseline fallback is on-demand retrieval and compaction refresh, not leading-prompt mutation every turn.
+3. **Memory structure autonomy.** The user can explicitly reorganise freely. For autonomous splits/merges, initial implementation should apply strict size/risk limits, audited lineage and optional user approval for high-impact changes; calibrate after real usage.
+4. **Markdown patch representation.** Compare section-ID operations, Markdown AST transformations and unified patches for reliability, diff clarity and deterministic replay.
+5. **Manifest search quality.** Deterministic lexical indexing is the baseline. Evaluate retrieval misses and conflicts before deciding whether embeddings or broader cross-block checks are necessary.
+6. **Claim metadata.** Determine the minimum structured uncertainty/dispute representation needed without reinstating v0.2's full claim graph.
+7. **Manifest size and budgeting.** Decide when a single manifest grows too large and needs compact hierarchical indexes; require bounded complete discoverability.
+8. **Publication invalidation.** Establish how an agent recognises older in-context block versions as superseded by newly appended versions, particularly for providers that fold later system messages.
+9. **Mixed manual/native compaction and crashes.** Test overflow recovery, session forks, competing compaction hooks, and pre-existing compacted sessions under actual Pi.
+10. **Auditor operational costs.** Model contention, synchronous delay, retries, provider privacy, tool restrictions and deterministic commit ordering.
+11. **Retention/privacy policy.** Logical retirement is not deletion of raw Pi evidence, backups or exported Git artifacts; user-facing removal semantics require a separate design.
+12. **Concurrent multi-process access.** Maintain single-writer assumption until a locking/merge strategy is tested.
+13. **Session-activity limits.** Native tool result coverage, arbitrary bash effects, huge file sets and optional bounded footer retrieval.
+14. **Cross-session durability.** The architecture naturally extends to startup/restart, but scope, file store, user identity, sharing permissions and memory promotion across sessions are deferred.
 
-1. **Audited coverage:** should `remember` audit only the proposed fact and source span, or explicitly review *everything* since the last coverage frontier? This draft requires the latter for advancing coverage, but that can increase audit cost.
-2. **Audit resource policy:** synchronous same-model audit avoids a separate model but may contend with local inference/KV caches; determine operational timeouts and interruption semantics.
-3. **Atomic claim granularity:** one `remember` proposal may produce one or several claim records; evaluate prompt burden, audit complexity and partial supersession fidelity.
-4. **Historical ledger growth:** eventually every prior memory may exceed the audit model's context; design trustworthy multi-pass reconciliation or an audited index hierarchy without silent omission.
-5. **Legacy sessions:** explicit import/bootstrap of sessions already compacted natively before installation, versus fresh-session-only guarantee.
-6. **Compaction under hard overflow:** formalise safe refusal/recovery when retaining all uncovered text still exceeds the model window.
-7. **Branch merges:** whether and how to reconcile memories across sibling branches without merging unrelated conversations.
-8. **Retention and deletion policy:** user privacy, session exports, explicit redaction requests, and the distinction between logical retirement and actual removal of sensitive raw data.
-9. **Activity completeness:** whether future adapters verify filesystem changes using hashes/Git diffs, or instrument shell/subprocess effects.
-10. **Large activity lists:** an opt-in bounded footer must include model-callable full-list retrieval before replacing the v0.2 fail-on-overflow policy.
+## 19. References
 
-## 17. Source references
-
-- [Pi extension APIs](https://pi.dev/docs/latest/extensions)
-- [Pi session file format (CustomEntry, ContextEditEntry, CompactionEntry)](https://pi.dev/docs/latest/session-format)
-- [Pi compaction reference and `session_before_compact`](https://pi.dev/docs/latest/compaction)
-- [Pi session manager source](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts)
-- [Pi extension event and tool types](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts)
-- [Pi native file-operation extraction and footer formatting](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/compaction/utils.ts)
+- [Pi coding-agent repository](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)
+- [Pi extension documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
+- [Pi session format and branch projection](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)
+- [Pi compaction documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
+- [Pi model transcript SystemMessage types](https://github.com/earendil-works/pi/blob/main/packages/ai/src/types.ts)
+- [Pi Anthropic Messages provider](https://github.com/earendil-works/pi/blob/main/packages/ai/src/api/anthropic-messages.ts)
+- [Pi OpenAI Responses provider](https://github.com/earendil-works/pi/blob/main/packages/ai/src/api/openai-responses.ts)
+- [Anthropic mid-conversation system messages and tool changes](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
+- [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 - [SAM reference](https://github.com/LePrau/pi-self-aware-memory)
-- [POM reference](https://github.com/elpapi42/pi-observational-memory)
-- [Blackhole reference](https://github.com/k0valik/pi-blackhole)
+- [Pi observational memory reference](https://github.com/elpapi42/pi-observational-memory)
+- [Pi Blackhole reference](https://github.com/k0valik/pi-blackhole)
 
 ---
 
-**Guiding principle:** The working model decides what might matter. The auditor decides what the evidence supports and how the existing knowledge changes. The extension deterministically preserves the resulting knowledge and recorded session activity across context compaction. The original transcript is always the source of truth.
+**Guiding principle:** The agent maintains a compact, revisable representation of its *current understanding*, not an ever-expanding transcript summary. The manifest says what exists; templates govern how documents are maintained; selective audits check changes; the ledger preserves their full evolution; explicit source coverage protects compaction; and deterministic context reconstruction gives each new context epoch the latest appropriate knowledge.
